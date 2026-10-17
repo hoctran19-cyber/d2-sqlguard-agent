@@ -28,3 +28,7 @@ src = ["src", "tests"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP"]
+
+
+[tool.setuptools]
+package-dir = {"" = "src"}

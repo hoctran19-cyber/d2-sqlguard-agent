@@ -9,6 +9,7 @@ from uuid import uuid4
 class RunStatus(StrEnum):
     RUNNING = "running"
     SUCCEEDED = "succeeded"
+    REFUSED = "refused"
     FAILED = "failed"
     TIMED_OUT = "timed_out"
     BUDGET_EXHAUSTED = "budget_exhausted"
@@ -26,10 +27,13 @@ class ExecutionBudget:
     max_tool_calls: int = 8
     query_timeout_seconds: float = 3.0
     run_timeout_seconds: float = 60.0
+    max_sql_attempts: int | None = None
 
     def __post_init__(self) -> None:
         if min(self.max_retries, self.max_llm_calls, self.max_tool_calls) < 0:
             raise ValueError("Call and retry limits cannot be negative")
+        if self.max_sql_attempts is not None and self.max_sql_attempts < 0:
+            raise ValueError("SQL attempt limit cannot be negative")
         if self.query_timeout_seconds <= 0 or self.run_timeout_seconds <= 0:
             raise ValueError("Timeouts must be positive")
 
@@ -48,6 +52,7 @@ class AgentState:
     failure_reason: str | None = None
     started_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     finished_at: datetime | None = None
+    sql_attempt_count: int = 0
 
 
 @dataclass(frozen=True)
