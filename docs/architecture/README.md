@@ -8,7 +8,7 @@ flowchart TD
     C --> M[Short-term Memory<br/>in-process implementation]
     C --> P[Planner interface<br/>deterministic demo only]
     P --> S{SQL Security Gate<br/>SQLGlot read-only check}
-    S -- deny --> F[Fail run; do not call tool]
+    S -- deny --> F[Refuse run; do not call tool]
     S -- allow --> T[ToolRegistry interface<br/>in-process mock only]
     T --> R[Result processing<br/>string formatting]
     R --> A[AgentResult]
@@ -22,9 +22,9 @@ flowchart TD
 
 ## Execution and recovery notes
 
-Each run creates an `AgentState`, stores the request, calls a planner once, and checks the returned SQL. Only an allowed query reaches the tool registry. Retry is limited to retryable tool errors/timeouts and consumes the tool-call budget; the SQL policy is rechecked only once because retries reuse the same SQL, and a security rejection is never retried. Planner failures and exhausted retries terminate the run. Run timeout cancels the active coroutine and returns `timed_out`.
+Each run creates an independent `AgentState`, retrieves run-scoped context, calls a planner once, and checks the returned SQL before each tool attempt. Only an allowed query reaches the tool registry. Retry is limited to retryable tool errors/timeouts and consumes retry, SQL-attempt, and tool-call budgets; a security rejection is never retried. Security rejection returns `refused`, while planner failures and exhausted retries return a failure. Run timeout cancels the active coroutine and returns `timed_out`.
 
-The in-memory event sink records lifecycle events with run ID, timestamp, status, and coarse error category. It deliberately does not carry question, SQL, or result payloads. The memory store is process-local and should be scoped/cleared appropriately before long-lived deployments.
+The in-memory event sink records lifecycle events with run ID, timestamp, status, and coarse error category. It deliberately does not carry question, SQL, or result payloads. Memory stores only terminal status, retry counts, and coarse error categories; it does not persist request text, generated SQL, plans, or raw tool results. A memory retrieval failure stops the run before planning. An event sink exception fails the run and prevents subsequent work; terminal event delivery cannot be guaranteed if the sink itself raises. Both implementations are process-local and should be scoped/cleared appropriately before long-lived deployments.
 
 ## Not yet designed as production-ready
 

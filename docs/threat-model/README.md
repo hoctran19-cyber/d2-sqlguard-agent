@@ -16,10 +16,10 @@ This is a starter checklist, not a completed threat analysis. The current reposi
 | --- | --- | --- |
 | Generated DDL/DML or malformed SQL executes | SQLGlot parse; accept exactly one `SELECT`; reject parse failure | Define dialect, functions, CTE policy, resource limits, and comprehensive attack tests |
 | Unauthorized table access | Optional case-insensitive table allowlist | Resolve schemas/aliases/identity-specific authorization; enforce grants at the database |
-| Bypass through a retry | Security rejection is terminal; retries reuse only already-checked SQL | Revalidate any future regenerated SQL on every attempt |
+| Bypass through a retry | SQL is revalidated before every tool attempt; security rejection is terminal | Revalidate any future regenerated SQL on every attempt |
 | Slow/hung tool call | Per-tool `asyncio.wait_for`; retry and overall budgets | Ensure real adapters propagate cancellation and server-side query cancellation |
 | Prompt injection in data/schema | No LLM or retrieved untrusted content in demo | Define instruction/data separation, retrieval handling, and injection tests before LLM integration |
-| Secret or private data leaks to logs | Event schema excludes request, SQL, and result | Review adapter exceptions, provider telemetry, memory retention and redaction |
+| Secret or private data leaks to logs or memory | Events contain metadata only; memory excludes request, SQL, plans, and raw results | Review adapter exceptions, provider telemetry, and redaction |
 
 ## Important limitation
 

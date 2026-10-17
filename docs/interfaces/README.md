@@ -4,7 +4,7 @@ The current contracts are Python `Protocol`s and dataclasses. Implementations ar
 
 | Contract | Current interface | Current status |
 | --- | --- | --- |
-| Controller | `AgentController.run(AgentRequest) -> AgentResult` | Implemented; asynchronous bounded loop |
+| Controller | `AgentController.run(AgentRequest) -> AgentResult` | Implemented; asynchronous bounded loop with distinct refusal outcome |
 | LLM/planning | `Planner.create_plan(question, context) -> Plan` | Interface and deterministic placeholder; no LLM call |
 | Tool/MCP | `ToolRegistry.call(name, arguments, timeout_seconds)` | Interface, registry, and mock; no MCP transport |
 | Security | `SecurityGate.check(sql) -> SecurityDecision` | Interface and SQLGlot read-only baseline |
@@ -22,4 +22,4 @@ The current contracts are Python `Protocol`s and dataclasses. Implementations ar
 
 ## State and failure meanings
 
-`RunStatus` distinguishes `succeeded`, `failed`, `timed_out`, and `budget_exhausted`. `AgentState` carries counters, coarse errors, final answer, and failure reason. The demo does not expose provider token usage, cost, or database execution duration.
+`RunStatus` distinguishes `succeeded`, `refused`, `failed`, `timed_out`, and `budget_exhausted`. `AgentState` carries planner-call (`llm_call_count` for compatibility), tool-call, SQL-attempt and retry counters, along with coarse errors, final answer, and failure reason. `max_sql_attempts=None` uses the configured tool-call limit. The demo does not expose provider token usage, cost, or database execution duration.
