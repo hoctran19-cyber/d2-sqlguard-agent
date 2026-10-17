@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sqlguard-agent"
+version = "0.1.0"
+description = "Security-aware Text-to-SQL agent starter platform"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = ["sqlglot==26.16.4"]
+
+[project.optional-dependencies]
+dev = ["pytest==8.3.5", "ruff==0.11.0"]
+
+[project.scripts]
+sqlguard-demo = "sqlguard.demo:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
