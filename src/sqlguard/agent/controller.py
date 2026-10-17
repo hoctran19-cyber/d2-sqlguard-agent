@@ -108,6 +108,11 @@ class AgentController:
                 state.failure_reason = "event_sink_error"
                 state.errors.append(state.failure_reason)
                 self._set_terminal_step(state)
+                try:
+                    # Correct the stale status written before terminal emission.
+                    self._memory.append(state.run_id, "state", state.status.value)
+                except Exception:
+                    state.errors.append("memory_error")
         return AgentResult(state=state)
 
     async def _execute(self, state: AgentState, deadline: float) -> None:

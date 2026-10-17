@@ -391,6 +391,43 @@ def test_event_sink_failure_fails_closed_before_tool_execution():
     assert_single_terminal_event(events.events, "run_failed", "failed", "event_sink_error")
 
 
+class RejectTerminalEvents(InMemoryEventSink):
+    def emit(self, event):
+        if event.event_type == "run_completed":
+            raise RuntimeError("private sink details")
+        super().emit(event)
+
+
+def test_terminal_event_failure_corrects_stored_status():
+    memory = InMemoryMemory()
+    result = asyncio.run(
+        make_controller(memory=memory, events=RejectTerminalEvents()).run(AgentRequest("Question"))
+    )
+
+    assert result.state.status == RunStatus.FAILED
+    assert result.state.failure_reason == "event_sink_error"
+    assert result.state.current_step == "failed"
+    assert memory.get(result.state.run_id, "state") == ("succeeded", "failed")
+    assert memory.get(result.state.run_id, "state")[-1] == result.state.status.value
+
+
+def test_failed_status_correction_write_is_contained():
+    class FailSecondStateWrite(InMemoryMemory):
+        def append(self, run_id, kind, value):
+            if kind == "state" and self.get(run_id, "state"):
+                raise RuntimeError("private memory details")
+            super().append(run_id, kind, value)
+
+    result = asyncio.run(
+        make_controller(memory=FailSecondStateWrite(), events=RejectTerminalEvents()).run(
+            AgentRequest("Question")
+        )
+    )
+
+    assert result.state.status == RunStatus.FAILED
+    assert result.state.failure_reason == "event_sink_error"
+
+
 def test_mock_tool_exposes_input_and_output_schemas():
     tool = MockQueryTool()
 
