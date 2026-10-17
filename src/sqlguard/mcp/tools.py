@@ -14,6 +14,8 @@ class ToolError(Exception):
 
 class Tool(Protocol):
     name: str
+    input_schema: dict[str, Any]
+    output_schema: dict[str, Any]
 
     async def call(self, arguments: dict[str, Any], *, timeout_seconds: float) -> Any: ...
 
@@ -33,6 +35,18 @@ class MockQueryTool:
     failure: ToolError | None = None
     delay_seconds: float = 0
     calls: int = 0
+
+    @property
+    def input_schema(self) -> dict[str, Any]:
+        return {
+            "type": "object",
+            "required": ["sql"],
+            "properties": {"sql": {"type": "string"}},
+        }
+
+    @property
+    def output_schema(self) -> dict[str, Any]:
+        return {"type": "string"}
 
     async def call(self, arguments: dict[str, Any], *, timeout_seconds: float) -> Any:
         del timeout_seconds

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import UTC, datetime
+from time import perf_counter
 from typing import Any
 
 from sqlguard.agent.models import (
@@ -55,11 +56,13 @@ class AgentController:
         finally:
             state.finished_at = datetime.now(UTC)
             self._memory.append(state.run_id, "state", state.status.value)
+            duration_ms = (state.finished_at - state.started_at).total_seconds() * 1000
             self._emit(
                 state,
                 "run_completed" if state.status == RunStatus.SUCCEEDED else "run_failed",
                 status=state.status.value,
                 error_category=state.failure_reason,
+                duration_ms=duration_ms,
             )
         return AgentResult(state=state)
 
@@ -72,11 +75,27 @@ class AgentController:
             raise _BudgetExceeded("LLM call budget exhausted")
         state.llm_call_count += 1
         self._emit(state, "llm_call_started")
-        plan = await self._planner.create_plan(state.request.question, context)
+        planner_started = perf_counter()
+        try:
+            plan = await self._planner.create_plan(state.request.question, context)
+        except Exception:
+            self._emit(
+                state,
+                "llm_call_completed",
+                status="failed",
+                error_category="planner_error",
+                duration_ms=(perf_counter() - planner_started) * 1000,
+            )
+            raise
         self._memory.append(state.run_id, "plan", plan.summary)
         self._memory.append(state.run_id, "sql", plan.sql)
         self._emit(state, "plan_created")
-        self._emit(state, "llm_call_completed", status="completed")
+        self._emit(
+            state,
+            "llm_call_completed",
+            status="completed",
+            duration_ms=(perf_counter() - planner_started) * 1000,
+        )
 
         state.current_step = "security_check"
         decision = self._security_gate.check(plan.sql)
@@ -95,6 +114,7 @@ class AgentController:
                 raise _BudgetExceeded("Tool call budget exhausted")
             state.tool_call_count += 1
             self._emit(state, "tool_call_started")
+            tool_started = perf_counter()
             try:
                 output = await asyncio.wait_for(
                     self._tools.call(
@@ -105,7 +125,12 @@ class AgentController:
                     timeout=self._budget.query_timeout_seconds,
                 )
                 self._memory.append(state.run_id, "tool_result", repr(output))
-                self._emit(state, "tool_call_completed", status="completed")
+                self._emit(
+                    state,
+                    "tool_call_completed",
+                    status="completed",
+                    duration_ms=(perf_counter() - tool_started) * 1000,
+                )
                 state.current_step = "result_processing"
                 state.final_answer = _format_result(output)
                 state.status = RunStatus.SUCCEEDED
@@ -118,12 +143,19 @@ class AgentController:
                 retryable = error.retryable
             state.errors.append(category)
             self._memory.append(state.run_id, "error", category)
-            self._emit(state, "tool_call_completed", status="failed", error_category=category)
+            self._emit(
+                state,
+                "tool_call_completed",
+                status="failed",
+                error_category=category,
+                duration_ms=(perf_counter() - tool_started) * 1000,
+            )
             if not retryable:
                 raise ToolError(category, category=category) from None
             if state.retry_count >= self._budget.max_retries:
                 raise ToolError(category, category=category) from None
             state.retry_count += 1
+            self._memory.append(state.run_id, "retry", str(state.retry_count))
             self._emit(state, "retry_started", status="retrying", error_category=category)
 
     def _emit(self, state: AgentState, event_type: str, **details: Any) -> None:
