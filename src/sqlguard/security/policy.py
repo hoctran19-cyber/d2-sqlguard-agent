@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from importlib import resources
 from pathlib import Path
 from typing import Any
@@ -49,6 +49,8 @@ class RolePolicy:
     cast_types: frozenset[str]
     limits: PolicyLimits
     canaries: tuple[Canary, ...] = ()
+    # Reviewed descriptions for get_schema; key "_table" describes the table itself.
+    descriptions: dict[str, dict[str, str]] = field(default_factory=dict)
 
     def has_role(self, role: str) -> bool:
         return role.casefold() in self.roles
@@ -102,6 +104,10 @@ class RolePolicy:
                 Canary(str(item["value"]), _fold(item["table"]), _fold(item["column"]))
                 for item in data.get("canaries", ())
             )
+            descriptions = {
+                _fold(table): {_fold(key): str(text) for key, text in entries.items()}
+                for table, entries in data.get("descriptions", {}).items()
+            }
         except (KeyError, TypeError, AttributeError) as error:
             raise PolicyError("Policy file is missing a required field") from error
 
@@ -118,6 +124,9 @@ class RolePolicy:
         for canary in canaries:
             if canary.column not in tables.get(canary.table, ()):
                 raise PolicyError("Canary references an unknown column")
+        for table, entries in descriptions.items():
+            if table not in tables or not set(entries) - {"_table"} <= tables[table]:
+                raise PolicyError(f"Description references an unknown table or column: {table}")
         return cls(
             version=version,
             schema=schema,
@@ -128,6 +137,7 @@ class RolePolicy:
             cast_types=cast_types,
             limits=limits,
             canaries=canaries,
+            descriptions=descriptions,
         )
 
     @classmethod

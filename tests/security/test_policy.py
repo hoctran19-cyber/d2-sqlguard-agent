@@ -31,7 +31,7 @@ def test_canaries_are_role_aware():
 
     assert "CANARY-PHONE-0001" in sales and "CANARY-PHONE-0001" not in operations
     assert "CANARY-BANK-0001" in sales and "CANARY-BANK-0001" not in finance
-    assert finance == {"CANARY-ID-0001", "CANARY-ID-0002", "CANARY-PHONE-0001"}
+    assert finance == {"CANARY-ID-0001", "CANARY-ID-0002", "CANARY-ID-0003", "CANARY-PHONE-0001"}
 
 
 def test_foreign_keys_are_unordered_pairs():
