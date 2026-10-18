@@ -1,0 +1,842 @@
+{
+ "policy_version": "d2-synthetic-v1",
+ "description": "Gate regression corpus: each payload with the expected decision kind and the most severe violation code. 'mode' defaults to column_level.",
+ "cases": [
+  {
+   "id": "STRUCT-01",
+   "group": "STRUCT",
+   "role": "sales",
+   "sql": "DELETE FROM orders",
+   "expect": "deny",
+   "violation": "write_operation"
+  },
+  {
+   "id": "STRUCT-02",
+   "group": "STRUCT",
+   "role": "sales",
+   "sql": "UPDATE orders SET status = 'paid'",
+   "expect": "deny",
+   "violation": "write_operation"
+  },
+  {
+   "id": "STRUCT-03",
+   "group": "STRUCT",
+   "role": "sales",
+   "sql": "DROP TABLE payments",
+   "expect": "deny",
+   "violation": "write_operation"
+  },
+  {
+   "id": "STRUCT-04",
+   "group": "STRUCT",
+   "role": "sales",
+   "sql": "INSERT INTO orders SELECT * FROM orders",
+   "expect": "deny",
+   "violation": "write_operation"
+  },
+  {
+   "id": "STRUCT-05",
+   "group": "STRUCT",
+   "role": "sales",
+   "sql": "WITH d AS (DELETE FROM orders RETURNING *) SELECT order_id FROM d",
+   "expect": "deny",
+   "violation": "write_operation"
+  },
+  {
+   "id": "STRUCT-06",
+   "group": "STRUCT",
+   "role": "sales",
+   "sql": "SELECT * INTO stolen FROM orders",
+   "expect": "deny",
+   "violation": "select_into"
+  },
+  {
+   "id": "STRUCT-07",
+   "group": "STRUCT",
+   "role": "sales",
+   "sql": "SELECT full_name FROM customers FOR UPDATE",
+   "expect": "deny",
+   "violation": "locking_clause"
+  },
+  {
+   "id": "STRUCT-08",
+   "group": "STRUCT",
+   "role": "sales",
+   "sql": "COPY customers TO '/tmp/customers.csv'",
+   "expect": "deny",
+   "violation": "write_operation"
+  },
+  {
+   "id": "STRUCT-09",
+   "group": "STRUCT",
+   "role": "sales",
+   "sql": "SELECT 1; DROP TABLE orders",
+   "expect": "deny",
+   "violation": "multiple_statements"
+  },
+  {
+   "id": "STRUCT-10",
+   "group": "STRUCT",
+   "role": "sales",
+   "sql": "BEGIN; SELECT full_name FROM customers",
+   "expect": "deny",
+   "violation": "multiple_statements"
+  },
+  {
+   "id": "STRUCT-11",
+   "group": "STRUCT",
+   "role": "sales",
+   "sql": "SET ROLE sqlguard_finance_ro",
+   "expect": "deny",
+   "violation": "not_select"
+  },
+  {
+   "id": "STRUCT-12",
+   "group": "STRUCT",
+   "role": "sales",
+   "sql": "VALUES (1)",
+   "expect": "deny",
+   "violation": "not_select"
+  },
+  {
+   "id": "STRUCT-13",
+   "group": "STRUCT",
+   "role": "sales",
+   "sql": "SELECT full_name FROM customers /* ; DROP TABLE orders */",
+   "expect": "allow"
+  },
+  {
+   "id": "STRUCT-14",
+   "group": "STRUCT",
+   "role": "sales",
+   "sql": "SELECT full_name FROM customers;",
+   "expect": "allow"
+  },
+  {
+   "id": "STRUCT-15",
+   "group": "STRUCT",
+   "role": "sales",
+   "sql": "SELECT FROM WHERE",
+   "expect": "deny",
+   "violation": "parse_error"
+  },
+  {
+   "id": "STRUCT-16",
+   "group": "STRUCT",
+   "role": "sales",
+   "sql": "   ",
+   "expect": "deny",
+   "violation": "empty_sql"
+  },
+  {
+   "id": "STRUCT-17",
+   "group": "STRUCT",
+   "role": "sales",
+   "sql": "SELECT full_name FROM customers\u0000",
+   "expect": "deny",
+   "violation": "invalid_characters"
+  },
+  {
+   "id": "STRUCT-18",
+   "group": "STRUCT",
+   "role": "sales",
+   "sql": "SELECT full_name FROM customers WHERE city = '​HCM'",
+   "expect": "deny",
+   "violation": "invalid_characters"
+  },
+  {
+   "id": "STRUCT-19",
+   "group": "STRUCT",
+   "role": "sales",
+   "sql": "SELECT full_name FROM customers WHERE city = 'xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'",
+   "expect": "deny",
+   "violation": "sql_too_long"
+  },
+  {
+   "id": "UNSUP-01",
+   "group": "UNSUPPORTED",
+   "role": "sales",
+   "sql": "SELECT order_id FROM orders UNION SELECT payment_id FROM payments",
+   "expect": "unsupported",
+   "violation": "set_operation"
+  },
+  {
+   "id": "UNSUP-02",
+   "group": "UNSUPPORTED",
+   "role": "sales",
+   "sql": "SELECT full_name FROM customers WHERE customer_id IN (SELECT customer_id FROM orders)",
+   "expect": "unsupported",
+   "violation": "subquery_not_supported"
+  },
+  {
+   "id": "UNSUP-03",
+   "group": "UNSUPPORTED",
+   "role": "sales",
+   "sql": "SELECT (SELECT identity_number FROM customers LIMIT 1)",
+   "expect": "unsupported",
+   "violation": "subquery_not_supported"
+  },
+  {
+   "id": "UNSUP-04",
+   "group": "UNSUPPORTED",
+   "role": "sales",
+   "sql": "WITH x AS (SELECT order_id FROM orders) SELECT order_id FROM x",
+   "expect": "unsupported",
+   "violation": "cte_not_supported"
+  },
+  {
+   "id": "UNSUP-05",
+   "group": "UNSUPPORTED",
+   "role": "sales",
+   "sql": "SELECT full_name FROM customers c WHERE EXISTS (SELECT 1 FROM orders o WHERE o.customer_id = c.customer_id)",
+   "expect": "unsupported",
+   "violation": "subquery_not_supported"
+  },
+  {
+   "id": "UNSUP-06",
+   "group": "UNSUPPORTED",
+   "role": "sales",
+   "sql": "SELECT order_id FROM orders WHERE order_id = $1",
+   "expect": "unsupported",
+   "violation": "unsupported_syntax"
+  },
+  {
+   "id": "UNSUP-07",
+   "group": "UNSUPPORTED",
+   "role": "sales",
+   "sql": "SELECT DISTINCT ON (city) city, full_name FROM customers",
+   "expect": "unsupported",
+   "violation": "unsupported_syntax"
+  },
+  {
+   "id": "UNSUP-08",
+   "group": "UNSUPPORTED",
+   "role": "sales",
+   "sql": "SELECT city, COUNT(*) FROM customers GROUP BY ROLLUP (city)",
+   "expect": "unsupported",
+   "violation": "unsupported_syntax"
+  },
+  {
+   "id": "FN-01",
+   "group": "FN",
+   "role": "sales",
+   "sql": "SELECT pg_sleep(100)",
+   "expect": "deny",
+   "violation": "function_not_allowed"
+  },
+  {
+   "id": "FN-02",
+   "group": "FN",
+   "role": "sales",
+   "sql": "SELECT pg_read_file('/etc/passwd')",
+   "expect": "deny",
+   "violation": "function_not_allowed"
+  },
+  {
+   "id": "FN-03",
+   "group": "FN",
+   "role": "sales",
+   "sql": "SELECT lo_import('/etc/passwd')",
+   "expect": "deny",
+   "violation": "function_not_allowed"
+  },
+  {
+   "id": "FN-04",
+   "group": "FN",
+   "role": "sales",
+   "sql": "SELECT set_config('role', 'sqlguard_finance_ro', false)",
+   "expect": "deny",
+   "violation": "function_not_allowed"
+  },
+  {
+   "id": "FN-05",
+   "group": "FN",
+   "role": "sales",
+   "sql": "SELECT dblink('host=attacker', 'SELECT 1')",
+   "expect": "deny",
+   "violation": "function_not_allowed"
+  },
+  {
+   "id": "FN-06",
+   "group": "FN",
+   "role": "sales",
+   "sql": "SELECT pg_advisory_lock(1)",
+   "expect": "deny",
+   "violation": "function_not_allowed"
+  },
+  {
+   "id": "FN-07",
+   "group": "FN",
+   "role": "sales",
+   "sql": "SELECT current_setting('is_superuser')",
+   "expect": "deny",
+   "violation": "function_not_allowed"
+  },
+  {
+   "id": "FN-08",
+   "group": "FN",
+   "role": "sales",
+   "sql": "SELECT version()",
+   "expect": "deny",
+   "violation": "function_not_allowed"
+  },
+  {
+   "id": "FN-09",
+   "group": "FN",
+   "role": "sales",
+   "sql": "SELECT n FROM generate_series(1, 100000000) AS n",
+   "expect": "deny",
+   "violation": "function_not_allowed"
+  },
+  {
+   "id": "FN-10",
+   "group": "FN",
+   "role": "sales",
+   "sql": "SELECT ROW_NUMBER() OVER (ORDER BY order_id) FROM orders",
+   "expect": "deny",
+   "violation": "function_not_allowed"
+  },
+  {
+   "id": "FN-11",
+   "group": "FN",
+   "role": "sales",
+   "sql": "SELECT CAST(order_id AS regclass) FROM orders",
+   "expect": "unsupported",
+   "violation": "cast_not_allowed"
+  },
+  {
+   "id": "TABLE-01",
+   "group": "TABLE",
+   "role": "sales",
+   "sql": "SELECT usename, passwd FROM pg_catalog.pg_shadow",
+   "expect": "deny",
+   "violation": "system_catalog"
+  },
+  {
+   "id": "TABLE-02",
+   "group": "TABLE",
+   "role": "sales",
+   "sql": "SELECT * FROM pg_user",
+   "expect": "deny",
+   "violation": "system_catalog"
+  },
+  {
+   "id": "TABLE-03",
+   "group": "TABLE",
+   "role": "sales",
+   "sql": "SELECT table_name, column_name FROM information_schema.columns",
+   "expect": "deny",
+   "violation": "system_catalog"
+  },
+  {
+   "id": "TABLE-04",
+   "group": "TABLE",
+   "role": "sales",
+   "sql": "SELECT full_name FROM audit.customers",
+   "expect": "deny",
+   "violation": "schema_not_allowed"
+  },
+  {
+   "id": "TABLE-05",
+   "group": "TABLE",
+   "role": "sales",
+   "sql": "SELECT username FROM users",
+   "expect": "deny",
+   "violation": "table_unknown"
+  },
+  {
+   "id": "TABLE-06",
+   "group": "TABLE",
+   "role": "operations",
+   "sql": "SELECT amount_vnd FROM payments",
+   "expect": "deny",
+   "violation": "table_not_allowed"
+  },
+  {
+   "id": "TABLE-07",
+   "group": "TABLE",
+   "role": "operations",
+   "sql": "SELECT o.order_id FROM orders o JOIN payments p ON p.order_id = o.order_id",
+   "expect": "deny",
+   "violation": "table_not_allowed"
+  },
+  {
+   "id": "JOIN-01",
+   "group": "JOIN",
+   "role": "sales",
+   "sql": "SELECT o.order_id FROM orders o, customers c",
+   "expect": "unsupported",
+   "violation": "join_not_allowed"
+  },
+  {
+   "id": "JOIN-02",
+   "group": "JOIN",
+   "role": "sales",
+   "sql": "SELECT o.order_id FROM orders o CROSS JOIN customers c",
+   "expect": "unsupported",
+   "violation": "join_not_allowed"
+  },
+  {
+   "id": "JOIN-03",
+   "group": "JOIN",
+   "role": "sales",
+   "sql": "SELECT o.order_id FROM orders o JOIN customers c ON o.order_id = c.customer_id",
+   "expect": "unsupported",
+   "violation": "join_not_allowed"
+  },
+  {
+   "id": "JOIN-04",
+   "group": "JOIN",
+   "role": "sales",
+   "sql": "SELECT order_id FROM orders NATURAL JOIN payments",
+   "expect": "unsupported",
+   "violation": "join_not_allowed"
+  },
+  {
+   "id": "JOIN-05",
+   "group": "JOIN",
+   "role": "sales",
+   "sql": "SELECT amount_vnd FROM orders JOIN payments USING (order_id)",
+   "expect": "unsupported",
+   "violation": "join_not_allowed"
+  },
+  {
+   "id": "JOIN-06",
+   "group": "JOIN",
+   "role": "sales",
+   "sql": "SELECT o.order_id FROM orders o RIGHT JOIN customers c ON o.customer_id = c.customer_id",
+   "expect": "unsupported",
+   "violation": "join_not_allowed"
+  },
+  {
+   "id": "JOIN-07",
+   "group": "JOIN",
+   "role": "sales",
+   "sql": "SELECT c.full_name, COUNT(o.order_id) AS orders FROM customers c LEFT JOIN orders o ON o.customer_id = c.customer_id GROUP BY c.full_name",
+   "expect": "allow"
+  },
+  {
+   "id": "COL-01",
+   "group": "COL",
+   "role": "sales",
+   "sql": "SELECT identity_number FROM customers",
+   "expect": "deny",
+   "violation": "column_forbidden"
+  },
+  {
+   "id": "COL-02",
+   "group": "COL",
+   "role": "sales",
+   "sql": "SELECT full_name, identity_number FROM customers",
+   "expect": "allow_partial",
+   "removed": [
+    "customers.identity_number"
+   ]
+  },
+  {
+   "id": "COL-03",
+   "group": "COL",
+   "role": "sales",
+   "sql": "SELECT full_name FROM customers WHERE identity_number LIKE '0%'",
+   "expect": "deny",
+   "violation": "column_forbidden"
+  },
+  {
+   "id": "COL-04",
+   "group": "COL",
+   "role": "sales",
+   "sql": "SELECT full_name FROM customers ORDER BY identity_number",
+   "expect": "deny",
+   "violation": "column_forbidden"
+  },
+  {
+   "id": "COL-05",
+   "group": "COL",
+   "role": "sales",
+   "sql": "SELECT full_name, COUNT(*) FROM customers GROUP BY full_name, identity_number",
+   "expect": "deny",
+   "violation": "column_forbidden"
+  },
+  {
+   "id": "COL-06",
+   "group": "COL",
+   "role": "sales",
+   "sql": "SELECT city, COUNT(*) FROM customers GROUP BY city HAVING MAX(identity_number) > '5'",
+   "expect": "deny",
+   "violation": "column_forbidden"
+  },
+  {
+   "id": "COL-07",
+   "group": "COL",
+   "role": "sales",
+   "sql": "SELECT p.amount_vnd FROM payments p JOIN orders o ON o.order_id = p.order_id WHERE p.bank_reference = 'X'",
+   "expect": "deny",
+   "violation": "column_forbidden"
+  },
+  {
+   "id": "COL-08",
+   "group": "COL",
+   "role": "sales",
+   "sql": "SELECT full_name, LENGTH(identity_number) FROM customers",
+   "expect": "deny",
+   "violation": "column_forbidden"
+  },
+  {
+   "id": "COL-09",
+   "group": "COL",
+   "role": "sales",
+   "sql": "SELECT COUNT(DISTINCT bank_reference) FROM payments",
+   "expect": "deny",
+   "violation": "column_forbidden"
+  },
+  {
+   "id": "COL-10",
+   "group": "COL",
+   "role": "sales",
+   "sql": "SELECT c.identity_number AS ref, c.full_name FROM customers c",
+   "expect": "allow_partial",
+   "removed": [
+    "customers.identity_number"
+   ]
+  },
+  {
+   "id": "COL-11",
+   "group": "COL",
+   "role": "sales",
+   "sql": "SELECT full_name, \"Identity_Number\" FROM customers",
+   "expect": "allow_partial",
+   "removed": [
+    "customers.identity_number"
+   ]
+  },
+  {
+   "id": "COL-12",
+   "group": "COL",
+   "role": "sales",
+   "sql": "SELECT public.customers.identity_number FROM public.customers",
+   "expect": "deny",
+   "violation": "column_forbidden"
+  },
+  {
+   "id": "COL-13",
+   "group": "COL",
+   "role": "sales",
+   "sql": "SELECT * FROM customers",
+   "expect": "unsupported",
+   "violation": "star_not_allowed"
+  },
+  {
+   "id": "COL-14",
+   "group": "COL",
+   "role": "sales",
+   "sql": "SELECT c.* FROM customers c",
+   "expect": "unsupported",
+   "violation": "star_not_allowed"
+  },
+  {
+   "id": "COL-15",
+   "group": "COL",
+   "role": "sales",
+   "sql": "SELECT identity_number AS k, full_name FROM customers ORDER BY k",
+   "expect": "deny",
+   "violation": "column_forbidden"
+  },
+  {
+   "id": "COL-16",
+   "group": "COL",
+   "role": "sales",
+   "sql": "SELECT DISTINCT city, identity_number FROM customers",
+   "expect": "deny",
+   "violation": "column_forbidden"
+  },
+  {
+   "id": "COL-17",
+   "group": "COL",
+   "role": "sales",
+   "sql": "SELECT identity_number, full_name FROM customers ORDER BY 2",
+   "expect": "deny",
+   "violation": "positional_reference"
+  },
+  {
+   "id": "COL-18",
+   "group": "COL",
+   "role": "sales",
+   "sql": "SELECT full_name, CASE WHEN identity_number LIKE '0%' THEN 1 ELSE 0 END AS flag FROM customers",
+   "expect": "deny",
+   "violation": "column_forbidden"
+  },
+  {
+   "id": "COL-19",
+   "group": "COL",
+   "role": "sales",
+   "sql": "SELECT full_name, phone_number FROM customers",
+   "expect": "allow_partial",
+   "removed": [
+    "customers.phone_number"
+   ]
+  },
+  {
+   "id": "COL-20",
+   "group": "COL",
+   "role": "sales",
+   "sql": "SELECT product_id, unit_cost_vnd FROM order_items",
+   "expect": "allow_partial",
+   "removed": [
+    "order_items.unit_cost_vnd"
+   ]
+  },
+  {
+   "id": "COL-21",
+   "group": "COL",
+   "role": "finance",
+   "sql": "SELECT full_name, identity_number FROM customers WHERE city = 'HCM'",
+   "expect": "allow_partial",
+   "removed": [
+    "customers.identity_number"
+   ]
+  },
+  {
+   "id": "COL-22",
+   "group": "COL",
+   "role": "finance",
+   "sql": "SELECT identity_number FROM customers",
+   "expect": "deny",
+   "violation": "column_forbidden"
+  },
+  {
+   "id": "COL-23",
+   "group": "COL",
+   "role": "operations",
+   "sql": "SELECT full_name, phone_number FROM customers",
+   "expect": "allow"
+  },
+  {
+   "id": "COL-24",
+   "group": "COL",
+   "role": "finance",
+   "sql": "SELECT payment_id, bank_reference FROM payments",
+   "expect": "allow"
+  },
+  {
+   "id": "COL-25",
+   "group": "COL",
+   "role": "sales",
+   "sql": "SELECT salary FROM customers",
+   "expect": "deny",
+   "violation": "column_unknown"
+  },
+  {
+   "id": "COL-26",
+   "group": "COL",
+   "role": "sales",
+   "sql": "SELECT order_id FROM orders o JOIN payments p ON p.order_id = o.order_id",
+   "expect": "deny",
+   "violation": "column_ambiguous"
+  },
+  {
+   "id": "COL-27",
+   "group": "COL",
+   "role": "sales",
+   "sql": "SELECT x.full_name FROM customers c",
+   "expect": "deny",
+   "violation": "column_unknown"
+  },
+  {
+   "id": "COL-28",
+   "group": "COL",
+   "role": "sales",
+   "sql": "SELECT customers.full_name FROM customers c",
+   "expect": "deny",
+   "violation": "column_unknown"
+  },
+  {
+   "id": "DOS-01",
+   "group": "DOS",
+   "role": "sales",
+   "sql": "SELECT order_id FROM orders",
+   "expect": "allow",
+   "notices": [
+    "limit_added"
+   ],
+   "normalized": "SELECT order_id FROM orders LIMIT 100"
+  },
+  {
+   "id": "DOS-02",
+   "group": "DOS",
+   "role": "sales",
+   "sql": "SELECT order_id FROM orders LIMIT 1000000000",
+   "expect": "allow",
+   "notices": [
+    "limit_capped"
+   ],
+   "normalized": "SELECT order_id FROM orders LIMIT 100"
+  },
+  {
+   "id": "DOS-03",
+   "group": "DOS",
+   "role": "sales",
+   "sql": "SELECT order_id FROM orders LIMIT ALL",
+   "expect": "unsupported",
+   "violation": "limit_invalid"
+  },
+  {
+   "id": "DOS-04",
+   "group": "DOS",
+   "role": "sales",
+   "sql": "SELECT order_id FROM orders LIMIT 1 + 1",
+   "expect": "unsupported",
+   "violation": "limit_invalid"
+  },
+  {
+   "id": "DOS-05",
+   "group": "DOS",
+   "role": "sales",
+   "sql": "SELECT order_id FROM orders LIMIT 5 OFFSET 99999999",
+   "expect": "unsupported",
+   "violation": "limit_invalid"
+  },
+  {
+   "id": "DOS-06",
+   "group": "DOS",
+   "role": "sales",
+   "sql": "SELECT i.order_item_id FROM order_items i JOIN orders o ON i.order_id = o.order_id JOIN customers c ON o.customer_id = c.customer_id JOIN products p ON i.product_id = p.product_id JOIN payments y ON y.order_id = o.order_id JOIN orders o2 ON y.order_id = o2.order_id",
+   "expect": "unsupported",
+   "violation": "query_too_complex"
+  },
+  {
+   "id": "ALLOW-01",
+   "group": "ALLOW",
+   "role": "sales",
+   "sql": "SELECT c.full_name, SUM(p.amount_vnd) AS revenue FROM customers c JOIN orders o ON o.customer_id = c.customer_id JOIN payments p ON p.order_id = o.order_id WHERE p.status = 'success' AND o.status <> 'cancelled' AND p.paid_date >= DATE '2026-09-01' AND p.paid_date < DATE '2026-10-01' GROUP BY c.full_name ORDER BY revenue DESC LIMIT 5",
+   "expect": "allow"
+  },
+  {
+   "id": "ALLOW-02",
+   "group": "ALLOW",
+   "role": "sales",
+   "sql": "SELECT DATE_TRUNC('month', paid_date) AS month, SUM(amount_vnd) AS revenue FROM payments WHERE status = 'success' GROUP BY 1 ORDER BY 1",
+   "expect": "allow"
+  },
+  {
+   "id": "ALLOW-03",
+   "group": "ALLOW",
+   "role": "sales",
+   "sql": "SELECT status, COUNT(*) AS n FROM orders GROUP BY status ORDER BY n DESC",
+   "expect": "allow"
+  },
+  {
+   "id": "ALLOW-04",
+   "group": "ALLOW",
+   "role": "sales",
+   "sql": "SELECT EXTRACT(MONTH FROM order_date) AS m, COUNT(order_id) FROM orders GROUP BY EXTRACT(MONTH FROM order_date)",
+   "expect": "allow"
+  },
+  {
+   "id": "ALLOW-05",
+   "group": "ALLOW",
+   "role": "sales",
+   "sql": "SELECT ROUND(AVG(COALESCE(total_amount_vnd, 0)), 0) AS avg_order FROM orders WHERE status IN ('completed', 'shipped')",
+   "expect": "allow"
+  },
+  {
+   "id": "ALLOW-06",
+   "group": "ALLOW",
+   "role": "sales",
+   "sql": "SELECT full_name FROM customers WHERE city ILIKE 'h%' AND segment IS NOT NULL AND created_at BETWEEN DATE '2026-01-01' AND DATE '2026-06-30'",
+   "expect": "allow"
+  },
+  {
+   "id": "ALLOW-07",
+   "group": "ALLOW",
+   "role": "sales",
+   "sql": "SELECT order_id FROM orders WHERE order_date >= CURRENT_DATE - INTERVAL '30 days'",
+   "expect": "allow"
+  },
+  {
+   "id": "ALLOW-08",
+   "group": "ALLOW",
+   "role": "sales",
+   "sql": "SELECT p.category, SUM(i.quantity * i.unit_price_vnd) AS sales FROM order_items i JOIN products p ON p.product_id = i.product_id GROUP BY p.category",
+   "expect": "allow"
+  },
+  {
+   "id": "ALLOW-09",
+   "group": "ALLOW",
+   "role": "sales",
+   "sql": "SELECT COUNT(*) FROM customers",
+   "expect": "allow"
+  },
+  {
+   "id": "ALLOW-10",
+   "group": "ALLOW",
+   "role": "operations",
+   "sql": "SELECT full_name, phone_number FROM customers WHERE city = 'HCM' ORDER BY full_name LIMIT 10 OFFSET 10",
+   "expect": "allow"
+  },
+  {
+   "id": "ALLOW-11",
+   "group": "ALLOW",
+   "role": "finance",
+   "sql": "SELECT p.category, SUM((i.unit_price_vnd - i.unit_cost_vnd) * i.quantity) AS margin FROM order_items i JOIN products p ON p.product_id = i.product_id GROUP BY p.category ORDER BY margin DESC",
+   "expect": "allow"
+  },
+  {
+   "id": "ALLOW-12",
+   "group": "ALLOW",
+   "role": "sales",
+   "sql": "SELECT LOWER(c.city) AS city, UPPER(c.segment) AS segment FROM public.customers c",
+   "expect": "allow"
+  },
+  {
+   "id": "ROLE-01",
+   "group": "ROLE",
+   "role": "admin",
+   "sql": "SELECT order_id FROM orders",
+   "expect": "deny",
+   "violation": "unknown_role"
+  },
+  {
+   "id": "MODE-01",
+   "group": "MODE",
+   "role": "sales",
+   "sql": "SELECT * FROM orders",
+   "expect": "allow",
+   "mode": "table_level"
+  },
+  {
+   "id": "MODE-02",
+   "group": "MODE",
+   "role": "sales",
+   "sql": "SELECT full_name FROM customers",
+   "expect": "deny",
+   "violation": "table_not_allowed",
+   "mode": "table_level"
+  },
+  {
+   "id": "MODE-03",
+   "group": "MODE",
+   "role": "finance",
+   "sql": "SELECT full_name FROM customers",
+   "expect": "deny",
+   "violation": "table_not_allowed",
+   "mode": "table_level"
+  },
+  {
+   "id": "MODE-04",
+   "group": "MODE",
+   "role": "sales",
+   "sql": "DELETE FROM orders",
+   "expect": "deny",
+   "violation": "write_operation",
+   "mode": "table_level"
+  },
+  {
+   "id": "MODE-05",
+   "group": "MODE",
+   "role": "sales",
+   "sql": "SELECT identity_number FROM customers",
+   "expect": "allow",
+   "mode": "off"
+  }
+ ]
+}
