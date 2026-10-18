@@ -1,0 +1,310 @@
+{
+  "policy_version": "d2-synthetic-v1",
+  "status": "draft: synthetic reference schema; remap if D2-03 freezes BIRD Mini-Dev",
+  "schema": "public",
+  "tables": {
+    "customers": [
+      "customer_id",
+      "full_name",
+      "city",
+      "segment",
+      "created_at",
+      "phone_number",
+      "identity_number",
+      "note"
+    ],
+    "orders": [
+      "order_id",
+      "customer_id",
+      "order_date",
+      "status",
+      "channel",
+      "total_amount_vnd",
+      "note"
+    ],
+    "order_items": [
+      "order_item_id",
+      "order_id",
+      "product_id",
+      "quantity",
+      "unit_price_vnd",
+      "unit_cost_vnd"
+    ],
+    "products": [
+      "product_id",
+      "product_name",
+      "category",
+      "list_price_vnd"
+    ],
+    "payments": [
+      "payment_id",
+      "order_id",
+      "paid_date",
+      "amount_vnd",
+      "method",
+      "status",
+      "bank_reference"
+    ]
+  },
+  "foreign_keys": [
+    [
+      "orders.customer_id",
+      "customers.customer_id"
+    ],
+    [
+      "order_items.order_id",
+      "orders.order_id"
+    ],
+    [
+      "order_items.product_id",
+      "products.product_id"
+    ],
+    [
+      "payments.order_id",
+      "orders.order_id"
+    ]
+  ],
+  "roles": {
+    "sales": {
+      "customers": [
+        "customer_id",
+        "full_name",
+        "city",
+        "segment",
+        "created_at",
+        "note"
+      ],
+      "orders": [
+        "order_id",
+        "customer_id",
+        "order_date",
+        "status",
+        "channel",
+        "total_amount_vnd",
+        "note"
+      ],
+      "order_items": [
+        "order_item_id",
+        "order_id",
+        "product_id",
+        "quantity",
+        "unit_price_vnd"
+      ],
+      "products": [
+        "product_id",
+        "product_name",
+        "category",
+        "list_price_vnd"
+      ],
+      "payments": [
+        "payment_id",
+        "order_id",
+        "paid_date",
+        "amount_vnd",
+        "method",
+        "status"
+      ]
+    },
+    "finance": {
+      "customers": [
+        "customer_id",
+        "full_name",
+        "city",
+        "segment",
+        "created_at",
+        "note"
+      ],
+      "orders": [
+        "order_id",
+        "customer_id",
+        "order_date",
+        "status",
+        "channel",
+        "total_amount_vnd",
+        "note"
+      ],
+      "order_items": [
+        "order_item_id",
+        "order_id",
+        "product_id",
+        "quantity",
+        "unit_price_vnd",
+        "unit_cost_vnd"
+      ],
+      "products": [
+        "product_id",
+        "product_name",
+        "category",
+        "list_price_vnd"
+      ],
+      "payments": [
+        "payment_id",
+        "order_id",
+        "paid_date",
+        "amount_vnd",
+        "method",
+        "status",
+        "bank_reference"
+      ]
+    },
+    "operations": {
+      "customers": [
+        "customer_id",
+        "full_name",
+        "city",
+        "segment",
+        "created_at",
+        "phone_number",
+        "note"
+      ],
+      "orders": [
+        "order_id",
+        "customer_id",
+        "order_date",
+        "status",
+        "channel",
+        "total_amount_vnd",
+        "note"
+      ],
+      "order_items": [
+        "order_item_id",
+        "order_id",
+        "product_id",
+        "quantity",
+        "unit_price_vnd"
+      ],
+      "products": [
+        "product_id",
+        "product_name",
+        "category",
+        "list_price_vnd"
+      ]
+    }
+  },
+  "functions": [
+    "Count",
+    "Sum",
+    "Avg",
+    "Min",
+    "Max",
+    "Round",
+    "Coalesce",
+    "Nullif",
+    "TimestampTrunc",
+    "DateTrunc",
+    "Extract",
+    "Lower",
+    "Upper",
+    "Abs",
+    "Length",
+    "CurrentDate",
+    "CurrentTimestamp"
+  ],
+  "cast_types": [
+    "SMALLINT",
+    "INT",
+    "BIGINT",
+    "DECIMAL",
+    "FLOAT",
+    "DOUBLE",
+    "TEXT",
+    "VARCHAR",
+    "CHAR",
+    "DATE",
+    "TIMESTAMP",
+    "TIMESTAMPTZ",
+    "BOOLEAN",
+    "INTERVAL"
+  ],
+  "limits": {
+    "max_sql_bytes": 4096,
+    "max_ast_nodes": 400,
+    "max_joins": 4,
+    "max_rows": 100,
+    "max_offset": 10000,
+    "max_result_bytes": 65536,
+    "max_text_length": 500,
+    "query_timeout_seconds": 3.0
+  },
+  "canaries": [
+    {
+      "value": "CANARY-ID-0001",
+      "table": "customers",
+      "column": "identity_number"
+    },
+    {
+      "value": "CANARY-ID-0002",
+      "table": "customers",
+      "column": "identity_number"
+    },
+    {
+      "value": "CANARY-ID-0003",
+      "table": "customers",
+      "column": "identity_number"
+    },
+    {
+      "value": "CANARY-PHONE-0001",
+      "table": "customers",
+      "column": "phone_number"
+    },
+    {
+      "value": "CANARY-BANK-0001",
+      "table": "payments",
+      "column": "bank_reference"
+    },
+    {
+      "value": "CANARY-BANK-0002",
+      "table": "payments",
+      "column": "bank_reference"
+    }
+  ],
+  "descriptions": {
+    "customers": {
+      "_table": "Khách hàng (customer)",
+      "customer_id": "Mã khách hàng",
+      "full_name": "Tên khách hàng",
+      "city": "Thành phố",
+      "segment": "Phân khúc: retail, enterprise",
+      "created_at": "Ngày tạo khách hàng",
+      "phone_number": "Số điện thoại",
+      "identity_number": "Số CCCD/CMND",
+      "note": "Ghi chú tự do do nhân viên nhập (dữ liệu không tin cậy)"
+    },
+    "orders": {
+      "_table": "Đơn hàng (order)",
+      "order_id": "Mã đơn hàng",
+      "customer_id": "Mã khách hàng đặt đơn",
+      "order_date": "Ngày đặt đơn",
+      "status": "Trạng thái: completed, shipped, cancelled",
+      "channel": "Kênh bán: web, store",
+      "total_amount_vnd": "Tổng tiền đơn hàng (VND)",
+      "note": "Ghi chú tự do của đơn hàng (dữ liệu không tin cậy)"
+    },
+    "order_items": {
+      "_table": "Dòng sản phẩm trong đơn",
+      "order_item_id": "Mã dòng",
+      "order_id": "Mã đơn hàng",
+      "product_id": "Mã sản phẩm",
+      "quantity": "Số lượng",
+      "unit_price_vnd": "Đơn giá bán (VND)",
+      "unit_cost_vnd": "Giá vốn mỗi đơn vị (VND)"
+    },
+    "products": {
+      "_table": "Sản phẩm (product)",
+      "product_id": "Mã sản phẩm",
+      "product_name": "Tên sản phẩm",
+      "category": "Danh mục sản phẩm",
+      "list_price_vnd": "Giá niêm yết (VND)"
+    },
+    "payments": {
+      "_table": "Thanh toán (payment); doanh thu = thanh toán thành công theo paid_date",
+      "payment_id": "Mã thanh toán",
+      "order_id": "Mã đơn hàng được thanh toán",
+      "paid_date": "Ngày thanh toán",
+      "amount_vnd": "Số tiền thanh toán (VND), dùng để tính doanh thu",
+      "method": "Phương thức: card, transfer",
+      "status": "Trạng thái: success, refunded",
+      "bank_reference": "Mã tham chiếu ngân hàng"
+    }
+  }
+}
