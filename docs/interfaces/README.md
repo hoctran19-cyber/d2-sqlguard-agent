@@ -9,6 +9,8 @@ The current contracts are Python `Protocol`s and dataclasses. Implementations ar
 | Tool/MCP | `ToolRegistry.call(name, arguments, timeout_seconds)` | Interface, registry, and mock; no MCP transport |
 | Security | `SecurityGate.check(sql) -> SecurityDecision`; `PolicySQLGate(SecurityContext, RolePolicy, mode=...)` | Role/column policy gate (Postgres dialect) with partial answers, `normalized_sql`, hashes, `repairable` and audit; legacy `ReadOnlySQLGate` kept |
 | Secure query | `SecureSqlTool(gate, QueryExecutor, audit=...)` (tool name `query`) | Execute boundary: re-check, execute `normalized_sql` only, caps, sanitizer, canary check, untrusted envelope; `PostgresExecutor` per-role credentials |
+| Schema / prompt | `SchemaTool(context)` (`get_schema`), `build_system_prompt`, `render_tool_result`, `render_denial` | Role-filtered schema from the reviewed policy; fixed system prompt and nonce-fenced untrusted blocks. Integration guide: [`SECURITY_INTEGRATION.md`](SECURITY_INTEGRATION.md) |
+| Attack Lab | `AttackLab(PostgresNoteWriter(dsn), enabled=...)` | Demo-only note save/restore with revisions, active-run lock and audit; not an agent tool |
 | Memory | `MemoryStore.append(run_id, kind, value)` / `get(run_id, kind)` | Interface and process-local implementation |
 | Events | `EventSink.emit(Event)` | Interface and in-memory structured event sink |
 | Evaluation | `BenchmarkCase`, `EvaluationResult`, `evaluate(...)` | Offline runner; no official dataset or metric claims |

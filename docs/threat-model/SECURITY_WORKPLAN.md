@@ -270,25 +270,18 @@ Mỗi case ghi: `case_id, attack_type, payload_location, role, question, setup (
 
 ## 11. Tiến độ (cập nhật 18/10/2026)
 
-Chi tiết và bằng chứng: [`README.md`](README.md) (threat model v1).
+Chi tiết và bằng chứng: [`README.md`](README.md) (threat model v1). Nhánh: `feature/security-policy`. Phân công chính thức: `SQLGuard_D2_Team_Plan.md` (K1–K5).
 
-| Hạng mục (§7) | Trạng thái | Ở đâu |
+| Hạng mục | Trạng thái | Ở đâu |
 | --- | --- | --- |
-| Policy matrix role × table × column (synthetic, chờ D2-03) | Xong, bản nháp | `src/sqlguard/security/policies/d2_synthetic_v1.json`, `policy.py` |
-| Gate v2 bước 1–11, mode `column_level`/`table_level`/`off`, partial, LIMIT, `normalized_sql`, hash | Xong | `gate.py`, `violations.py` |
-| Corpus ≥ 40 payload | Xong: 104 payload | `tests/security/attack_corpus.json` |
-| `roles.sql`, session settings, test gate-bypass trên Postgres | Xong: 22 test DB pass trên PostgreSQL 16; có job CI | `db/security/`, `tests/security/test_db_grants.py` |
-| Audit JSONL | Xong | `audit.py` |
-| Execute boundary: sanitizer, envelope, canary, output check | Xong ở tool; check answer cuối chờ controller | `service.py`, `sanitizer.py`, `postgres.py` |
-| INJ-D1..I2 + 2 clean pairs chạy offline | Xong (mô hình bị chiếm quyền giả lập) | `evaluation/datasets/security/d2_injection_v1.json`, `test_injection_offline.py` |
-| Ghép vào controller | Chạy được, **không sửa controller** (gate ở pre-check + tool ở execute boundary) | `tests/security/test_controller_security.py` |
-| Chạy injection với model thật × 3 runs | Chưa: cần planner LLM + harness của Kiệt | — |
-| Threat của Attack Lab (API, revision lock, restore, audit) | Mới có DB role `sqlguard_note_writer`; API chưa có | — |
-| Mục 5 report + phần permission mục 3 | Chưa: có thể viết từ `README.md` §2–7 | — |
+| K1. Permission matrix (synthetic, chờ D2-03) | Xong, bản nháp | `src/sqlguard/security/policies/d2_synthetic_v1.json`, `policy.py` |
+| K2. Gate v2 (dialect Postgres, mọi tham chiếu cột, partial, narrowable, LIMIT, `normalized_sql`, 3 mode baseline) | Xong | `gate.py`, `violations.py`; corpus 105 payload |
+| K3. PostgreSQL grants + test khi tắt gate | Xong: 23 test DB pass trên PostgreSQL 16; có job CI | `db/security/`, `tests/security/test_db_grants.py` |
+| K4. Injection: 5 direct + 5 indirect + 10 clean pair | Offline xong; **model thật chưa chạy** (cần planner LLM + harness) | `evaluation/datasets/security/injection_cases_v1.json` |
+| 20 authorization task (Proposal §7) | Xong, có `gold_sql`; `gold_result` do harness sinh | `evaluation/datasets/security/authorization_tasks_v1.json` |
+| K5. Audit + threat model v1 + nháp mục 5 | Xong | `audit.py`, `README.md`, `docs/report/D2_section5_threat_model.md` |
+| Execute boundary (sanitizer, envelope, canary) | Xong | `service.py`, `sanitizer.py`, `postgres.py` |
+| System prompt + `get_schema` theo role | Xong, chờ Học ghép vào planner | `prompting.py`, `schema.py` |
+| Attack Lab phía security (revision, restore, lock, audit) | Service + DB xong; route/auth chờ owner API | `attack_lab.py`, `ATTACK_LAB.md` |
 
-Việc cần chốt với Học (không tự sửa code controller):
-
-1. Đăng ký `SecureSqlTool` làm tool `query`/`execute_sql`; truyền `SecurityContext` (role từ session) khi tạo run.
-2. Cho phép `run_id` từ API đi vào `AgentState` để audit nối được với events.
-3. Reflection: `SecurityToolError.decision.repairable` / `SecurityDecision.repairable` → observation cho LLM; còn lại → `REFUSED`. Hiện controller coi mọi denial là terminal (an toàn, nhưng chưa có repair).
-4. Gọi `find_leaks(final_answer, policy, role)` trước khi trả answer; event thêm `violation_codes`, `decision_kind`, `policy_version`.
+Bàn giao cho Học: [`../interfaces/SECURITY_INTEGRATION.md`](../interfaces/SECURITY_INTEGRATION.md) (đăng ký tool, `run_id`, reflection theo `repairable`, `find_leaks` trước answer, dùng `prompting.py`). Phần security không sửa file của agent runtime.
