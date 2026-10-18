@@ -267,3 +267,28 @@ Mỗi case ghi: `case_id, attack_type, payload_location, role, question, setup (
 - **Học**: contract `SecurityGate`/`SecurityDecision`, execute `normalized_sql`, repairable vs terminal, event fields, sanitizer trong `execute_sql`.
 - **Kiệt**: format security case trong manifest, metric ASR/canary leak/false refusal, cost logging cho injection runs.
 - **Owner frontend/API** (chưa chốt): role binding từ session, ownership check, manual SQL dùng cùng service, Attack Lab credential.
+
+## 11. Tiến độ (cập nhật 18/10/2026)
+
+Chi tiết và bằng chứng: [`README.md`](README.md) (threat model v1).
+
+| Hạng mục (§7) | Trạng thái | Ở đâu |
+| --- | --- | --- |
+| Policy matrix role × table × column (synthetic, chờ D2-03) | Xong, bản nháp | `src/sqlguard/security/policies/d2_synthetic_v1.json`, `policy.py` |
+| Gate v2 bước 1–11, mode `column_level`/`table_level`/`off`, partial, LIMIT, `normalized_sql`, hash | Xong | `gate.py`, `violations.py` |
+| Corpus ≥ 40 payload | Xong: 104 payload | `tests/security/attack_corpus.json` |
+| `roles.sql`, session settings, test gate-bypass trên Postgres | Xong: 22 test DB pass trên PostgreSQL 16; có job CI | `db/security/`, `tests/security/test_db_grants.py` |
+| Audit JSONL | Xong | `audit.py` |
+| Execute boundary: sanitizer, envelope, canary, output check | Xong ở tool; check answer cuối chờ controller | `service.py`, `sanitizer.py`, `postgres.py` |
+| INJ-D1..I2 + 2 clean pairs chạy offline | Xong (mô hình bị chiếm quyền giả lập) | `evaluation/datasets/security/d2_injection_v1.json`, `test_injection_offline.py` |
+| Ghép vào controller | Chạy được, **không sửa controller** (gate ở pre-check + tool ở execute boundary) | `tests/security/test_controller_security.py` |
+| Chạy injection với model thật × 3 runs | Chưa: cần planner LLM + harness của Kiệt | — |
+| Threat của Attack Lab (API, revision lock, restore, audit) | Mới có DB role `sqlguard_note_writer`; API chưa có | — |
+| Mục 5 report + phần permission mục 3 | Chưa: có thể viết từ `README.md` §2–7 | — |
+
+Việc cần chốt với Học (không tự sửa code controller):
+
+1. Đăng ký `SecureSqlTool` làm tool `query`/`execute_sql`; truyền `SecurityContext` (role từ session) khi tạo run.
+2. Cho phép `run_id` từ API đi vào `AgentState` để audit nối được với events.
+3. Reflection: `SecurityToolError.decision.repairable` / `SecurityDecision.repairable` → observation cho LLM; còn lại → `REFUSED`. Hiện controller coi mọi denial là terminal (an toàn, nhưng chưa có repair).
+4. Gọi `find_leaks(final_answer, policy, role)` trước khi trả answer; event thêm `violation_codes`, `decision_kind`, `policy_version`.
