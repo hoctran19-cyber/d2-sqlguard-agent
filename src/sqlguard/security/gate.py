@@ -510,35 +510,58 @@ class _Evaluation:
                 output_aliases[projection.alias.casefold()] = index
 
         readable: set[str] = set()
-        forbidden_direct: dict[int, str] = {}
-        alias_references: list[str] = []
+        forbidden_direct: dict[int, str] = {}  # projection index -> table.column
+        tainted: set[int] = set()  # projections that read a forbidden column inside an expression
+        in_filter = in_group = False
+        alias_references: list[exp.Column] = []
         for column in root.find_all(exp.Column):
             resolved = self._resolve_column(column, alias_map, output_aliases)
             if resolved is None:
                 if not column.table and column.name.casefold() in output_aliases:
-                    alias_references.append(column.name.casefold())
+                    alias_references.append(column)
                 continue
             table, name = resolved
             if policy.can_read(role, table, name):
                 readable.add(f"{table}.{name}")
-            elif id(column) in direct and gate._auto_partial:
+                continue
+            clause = _clause_of(column, root)
+            if clause == "filter":
+                in_filter = True
+            elif clause == "group":
+                in_group = True
+            elif id(column) in direct:
                 forbidden_direct[direct[id(column)]] = f"{table}.{name}"
             else:
-                self.violations.add("column_forbidden")
-        if self.violations or not forbidden_direct:
+                tainted.add(_projection_index(column, root))
+        if not (forbidden_direct or tainted or in_filter or in_group):
             return root, (), tuple(sorted(readable))
 
-        # Partial answer: drop forbidden display columns only when doing so cannot change the
-        # filtered/grouped/ranked row set (D2-02 §2: no silent WHERE/ranking change).
-        removed_aliases = {a for a, index in output_aliases.items() if index in forbidden_direct}
-        if len(forbidden_direct) == len(projections) or root.args.get("distinct"):
+        # An output alias of a forbidden projection used elsewhere carries the forbidden value.
+        dropped = set(forbidden_direct) | tainted
+        for column in alias_references:
+            if output_aliases[column.name.casefold()] in dropped:
+                clause = _clause_of(column, root)
+                in_filter = in_filter or clause == "filter"
+                in_group = in_group or clause == "group"
+
+        # Filtering/ranking on a forbidden column, or asking only for forbidden data, has no
+        # narrower equivalent: terminal. Dropping a display/grouping column does (D1 Axis 4).
+        clean = [index for index in range(len(projections)) if index not in dropped]
+        if in_filter or not clean:
             self.violations.add("column_forbidden")
-        elif removed_aliases.intersection(alias_references):
-            self.violations.add("column_forbidden")
-        elif _has_positional_reference(root):
-            self.violations.add("positional_reference")
+        elif (
+            not gate._auto_partial
+            or tainted
+            or in_group
+            or root.args.get("distinct")
+            or _has_positional_reference(root)
+        ):
+            self.violations.add("column_forbidden_narrowable")
         if self.violations:
             return root, (), ()
+
+        # Partial answer: only direct display columns are dropped, so the filtered, grouped and
+        # ranked row set is unchanged (D2-02 §2: no silent WHERE/ranking change).
         tree = root.copy()
         tree.set(
             "expressions",
@@ -599,6 +622,23 @@ def _resolve_join_column(node, alias_map, policy) -> tuple[str, str] | None:
     if table is None or name not in policy.tables.get(table, ()):
         return None
     return table, name
+
+
+def _clause_of(node: exp.Expression, root: exp.Select) -> str:
+    """Which top-level clause of ``root`` contains ``node``: filter, group or select."""
+    while node.parent is not None and node.parent is not root:
+        node = node.parent
+        if isinstance(node, exp.Where | exp.Having | exp.Order | exp.Join):
+            return "filter"
+        if isinstance(node, exp.Group):
+            return "group"
+    return "select"
+
+
+def _projection_index(node: exp.Expression, root: exp.Select) -> int:
+    while node.parent is not root:
+        node = node.parent
+    return next(index for index, item in enumerate(root.expressions) if item is node)
 
 
 def _has_positional_reference(root: exp.Select) -> bool:

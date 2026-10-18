@@ -455,7 +455,7 @@
    "role": "sales",
    "sql": "SELECT full_name, COUNT(*) FROM customers GROUP BY full_name, identity_number",
    "expect": "deny",
-   "violation": "column_forbidden"
+   "violation": "column_forbidden_narrowable"
   },
   {
    "id": "COL-06",
@@ -479,7 +479,7 @@
    "role": "sales",
    "sql": "SELECT full_name, LENGTH(identity_number) FROM customers",
    "expect": "deny",
-   "violation": "column_forbidden"
+   "violation": "column_forbidden_narrowable"
   },
   {
    "id": "COL-09",
@@ -534,20 +534,12 @@
    "violation": "star_not_allowed"
   },
   {
-   "id": "COL-15",
-   "group": "COL",
-   "role": "sales",
-   "sql": "SELECT identity_number AS k, full_name FROM customers ORDER BY k",
-   "expect": "deny",
-   "violation": "column_forbidden"
-  },
-  {
    "id": "COL-16",
    "group": "COL",
    "role": "sales",
    "sql": "SELECT DISTINCT city, identity_number FROM customers",
    "expect": "deny",
-   "violation": "column_forbidden"
+   "violation": "column_forbidden_narrowable"
   },
   {
    "id": "COL-17",
@@ -555,7 +547,7 @@
    "role": "sales",
    "sql": "SELECT identity_number, full_name FROM customers ORDER BY 2",
    "expect": "deny",
-   "violation": "positional_reference"
+   "violation": "column_forbidden_narrowable"
   },
   {
    "id": "COL-18",
@@ -563,7 +555,7 @@
    "role": "sales",
    "sql": "SELECT full_name, CASE WHEN identity_number LIKE '0%' THEN 1 ELSE 0 END AS flag FROM customers",
    "expect": "deny",
-   "violation": "column_forbidden"
+   "violation": "column_forbidden_narrowable"
   },
   {
    "id": "COL-19",
@@ -837,6 +829,22 @@
    "sql": "SELECT identity_number FROM customers",
    "expect": "allow",
    "mode": "off"
+  },
+  {
+   "id": "COL-29",
+   "group": "COL",
+   "role": "finance",
+   "sql": "SELECT c.full_name, SUM(p.amount_vnd) AS revenue, c.phone_number FROM customers c JOIN orders o ON o.customer_id = c.customer_id JOIN payments p ON p.order_id = o.order_id GROUP BY c.full_name, c.phone_number ORDER BY revenue DESC LIMIT 5",
+   "expect": "deny",
+   "violation": "column_forbidden_narrowable"
+  },
+  {
+   "id": "COL-30",
+   "group": "COL",
+   "role": "sales",
+   "sql": "SELECT identity_number AS k, full_name FROM customers ORDER BY k",
+   "expect": "deny",
+   "violation": "column_forbidden"
   }
  ]
 }

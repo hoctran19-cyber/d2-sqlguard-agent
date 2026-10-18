@@ -89,8 +89,8 @@ def test_auto_partial_can_be_disabled_for_agent_driven_narrowing():
     )
 
     assert decision.kind is DecisionKind.DENY
-    assert decision.violations == ("column_forbidden",)
-    assert not decision.repairable
+    assert decision.violations == ("column_forbidden_narrowable",)
+    assert decision.repairable
 
 
 def test_denial_reason_does_not_name_hidden_columns_or_tables():
@@ -110,6 +110,11 @@ def test_repairable_flag_separates_syntax_from_policy_denials():
     assert gate_for().check("SELECT * FROM orders").repairable
     assert gate_for().check("SELECT FROM WHERE").repairable
     assert not gate_for().check("SELECT identity_number FROM customers").repairable
+    assert not gate_for().check("SELECT full_name FROM customers ORDER BY phone_number").repairable
+    narrowable = gate_for().check(
+        "SELECT city, COUNT(*) FROM customers GROUP BY city, phone_number"
+    )
+    assert narrowable.violations == ("column_forbidden_narrowable",) and narrowable.repairable
     assert not gate_for().check("SELECT pg_sleep(1)").repairable
     # A terminal finding is never hidden behind a repairable one.
     mixed = gate_for().check("SELECT * FROM pg_catalog.pg_user")

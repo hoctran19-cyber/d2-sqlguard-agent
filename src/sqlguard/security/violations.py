@@ -64,8 +64,10 @@ VIOLATIONS: dict[str, ViolationInfo] = {
     "column_unknown": ViolationInfo("Query references an unknown column", True, _SCHEMA),
     "column_ambiguous": ViolationInfo("Query references an ambiguous column", True, _SCHEMA),
     "column_forbidden": ViolationInfo("Query uses a column this role may not read", False, _POLICY),
-    "positional_reference": ViolationInfo(
-        "Positional GROUP BY/ORDER BY cannot be combined with removed columns", False, _POLICY
+    "column_forbidden_narrowable": ViolationInfo(
+        "Query displays or groups by a column this role may not read; remove it and retry",
+        True,
+        _POLICY,
     ),
     # Context
     "unknown_role": ViolationInfo("The caller role is not recognized", False, _POLICY),
