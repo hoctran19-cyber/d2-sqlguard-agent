@@ -36,12 +36,12 @@ def test_allowed_query_executes_normalized_sql_and_returns_untrusted_envelope():
 
     assert executor.executed == ["SELECT full_name FROM customers LIMIT 100"]
     assert envelope["trust"] == "untrusted" and envelope["source"] == "database"
-    assert envelope["rows"] == [["Nguyen Van A"], ["Tran Thi B"]]
+    assert envelope["rows"] == [["Nguyen Van A"], ["Tran Thi B"], ["Le Van C"]]
     assert envelope["executed_sql"] == executor.executed[0]
     (record,) = audit.records
     assert record.phase == "execute" and record.outcome == "executed"
     assert record.run_id == "run-7" and record.user_id == "sales-demo"
-    assert record.row_count == 2 and record.query_hash == envelope["query_hash"]
+    assert record.row_count == 3 and record.query_hash == envelope["query_hash"]
 
 
 def test_partial_answer_never_returns_forbidden_values():
