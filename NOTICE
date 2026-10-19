@@ -1,0 +1,12 @@
+SQLGuard includes material derived from the BIRD benchmark (BIg Bench for LaRge-scale Database
+Grounded Text-to-SQL Evaluation), Mini-Dev release, https://github.com/bird-bench/mini_dev,
+licensed under CC BY-SA 4.0 (https://creativecommons.org/licenses/by-sa/4.0/):
+
+- evaluation/datasets/bird_financial/financial_questions_v1.json: questions, evidence and
+  PostgreSQL gold SQL of the "financial" database, unchanged; fields allowed_roles and
+  uses_subquery were added.
+- db/bird_financial/00_schema.sql and src/sqlguard/security/policies/bird_financial_v1.json:
+  the "financial" schema and column descriptions (translated to Vietnamese).
+
+The security overlay (client.national_id, client.note, trans.note and their values) is not part
+of BIRD. Derived data in these files is shared under the same CC BY-SA 4.0 license.

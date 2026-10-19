@@ -1,6 +1,6 @@
 # Plan: chuyển phần security sang BIRD Mini-Dev — Financial
 
-Trạng thái: **đề xuất, chờ nhóm chốt mục 0**. Owner: Khang. Ngày lập: 19/10/2026. Nhánh: `feature/security-policy` (PR chưa merge vào repo nhóm, nên làm tiếp trên nhánh này để nhóm review thẳng bản BIRD, không merge bản synthetic).
+Trạng thái: **nhóm đã chốt mục 0 theo đề xuất (19/10); đang thực hiện, xem mục 9**. Owner: Khang. Ngày lập: 19/10/2026. Nhánh: `feature/security-policy` (PR chưa merge vào repo nhóm, nên làm tiếp trên nhánh này để nhóm review thẳng bản BIRD, không merge bản synthetic).
 
 Nguồn đã kiểm: schema và 32 câu hỏi Financial lấy từ repo chính thức `github.com/bird-bench/mini_dev` (`finetuning/inference/mini_dev_prompt.jsonl`). Số dòng dữ liệu ở mục 2 là theo bộ PKDD'99 gốc, **phải kiểm lại khi nạp**.
 
@@ -125,3 +125,10 @@ Lấy từ `database_description/` của BIRD (A2 = tên quận, A3 = vùng, A11
 - 27 gold SQL không subquery: gate cho phép với role đọc được đủ cột (0 từ chối nhầm), từ chối với role thiếu quyền.
 - 20 authorization task + 10 injection case + clean pair theo ngữ cảnh ngân hàng, có test offline.
 - Threat model, mục 5, Attack Lab, hướng dẫn tích hợp cập nhật; có `NOTICE` ghi nguồn BIRD (CC BY-SA 4.0).
+
+## 9. Tiến độ
+
+| Giai đoạn | Nội dung | Trạng thái |
+| --- | --- | --- |
+| 1 (không cần dữ liệu) | Policy `bird_financial_v1` (ma trận đã chốt, mô tả cột từ `database_description` của BIRD); gate cho phép `ON` là AND các khóa ngoại (bảng cầu `disp`), `TO_CHAR`; Attack Lab/prompt/executor lấy bảng, domain, role từ policy; `db/bird_financial/` (schema, loader, overlay, grants); 32 câu Financial + gold SQL PostgreSQL (`evaluation/datasets/bird_financial/`), `NOTICE` | **Xong**. Gate: 27/27 câu không subquery được chấp nhận với Tín dụng, 13 câu với cả 3 role, đúng 5 câu subquery bị chặn. Script DB áp được trên PostgreSQL 16 |
+| 2 (cần `financial.sqlite`) | Nạp dữ liệu, chọn ID note + `20_overlay_seed.sql`, fixture con cho test, chuyển policy mặc định sang BIRD, port test/dataset (20 auth + 10 injection), xóa bản synthetic, cập nhật tài liệu | Chờ dữ liệu (Drive API giới hạn 10 MB/file; mạng của môi trường chặn Google Drive) |
