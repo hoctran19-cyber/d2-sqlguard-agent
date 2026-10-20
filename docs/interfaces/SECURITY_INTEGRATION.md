@@ -17,26 +17,24 @@ Mục đích: anh Học nối các thành phần security vào controller/planne
 ## 2. Tạo một run
 
 ```python
-from sqlguard.security.audit import JsonlAuditSink
-from sqlguard.security.gate import PolicySQLGate, SecurityContext
-from sqlguard.security.postgres import PostgresExecutor
-from sqlguard.security.schema import SchemaTool
-from sqlguard.security.service import SecureSqlTool
+from sqlguard.agent.controller import AgentController, RunScope
+from sqlguard.agent.runtime import build_query_runtime_factory
 
-# role lấy từ session đã xác thực (API), KHÔNG từ request body, KHÔNG từ LLM.
-context = SecurityContext(role=session.role, user_id=session.user_id, run_id=run_id,
-                          request_mode="nl")          # "manual_sql" cho tab SQL thủ công
-audit = JsonlAuditSink("artifacts/audit/security.jsonl")
-gate = PolicySQLGate(context, audit=audit)            # controller pre-check, ghi mọi quyết định
-tools = InProcessToolRegistry([
-    SecureSqlTool(PolicySQLGate(context), PostgresExecutor.from_env(), audit=audit),
-    SchemaTool(context),
-])
-controller = AgentController(planner=..., tools=tools, security_gate=gate, ...)
+# role lấy từ cấu hình/session đã xác thực, KHÔNG từ request body, KHÔNG từ LLM.
+# Factory dựng PostgresExecutor theo DSN riêng của role (SQLGUARD_DB_DSN_<ROLE>).
+factory = build_query_runtime_factory(role, env, audit=audit)
+
+def run_scope(run_id: str) -> RunScope:
+    built = factory.for_run(run_id)  # SecurityContext + gate + SecureSqlTool mới cho từng run
+    return RunScope(
+        built.gate, InProcessToolRegistry([built.tool]), output_check=built.output_check
+    )
+
+controller = AgentController(planner=..., tools=..., security_gate=..., run_scope_factory=run_scope, ...)
 ```
 
 - **Mỗi run tạo tool/gate mới** (đếm attempt và audit theo run).
-- `run_id`: hiện `AgentState` tự sinh `run_id`, nên audit không nối được với events. Đề nghị: cho `AgentRequest` mang `run_id` (do API tạo) hoặc cho controller nhận `run_id` từ ngoài. Đây là thay đổi phía anh.
+- `run_id`: controller gọi `run_scope_factory(state.run_id)` cho mỗi request, nên `SecurityContext`, audit và events dùng cùng `run_id` của `AgentState`.
 - Biến môi trường DB: `SQLGUARD_DB_DSN_SALES`, `SQLGUARD_DB_DSN_FINANCE`, `SQLGUARD_DB_DSN_OPERATIONS` (login role `sqlguard_*_app`, xem `db/security/README.md`).
 
 ## 3. Planner: dựng messages
@@ -72,19 +70,19 @@ Quy tắc:
 | `not decision.allowed and not decision.repairable` | Vi phạm chính sách (ghi, catalog, hàm cấm, cột cấm ở WHERE/ORDER BY/JOIN/HAVING, bảng cấm) | `REFUSED` ngay, không gọi planner lại |
 | `SecurityToolError` từ tool | Gate ở execute boundary chặn (khi pre-check yếu hơn) | Như hàng trên, đọc `error.decision` |
 | `ToolError.category == "canary_leak"` | Output check giữ lại kết quả | Dừng, `FAILED`/`REFUSED`, không retry |
-| `db_timeout`, `db_permission_denied`, `db_read_only_violation` | DB chặn hoặc quá thời gian | Không retry cùng SQL; có thể cho planner một lần sửa nếu là `db_schema_error`/`db_syntax_error` |
+| `db_timeout`, `db_permission_denied`, `db_read_only_violation`, `db_error` | DB chặn, quá thời gian hoặc lỗi khác | Dừng `FAILED`, không retry cùng SQL, không gọi planner |
+| `db_schema_error`, `db_syntax_error` | SQL đã qua gate nhưng DB không chấp nhận | Controller cho planner **đúng một lần sửa mỗi run** (chỉ gửi mã lỗi cố định, không gửi lỗi DB thô); SQL mới qua gate lại và tính vào budget. Vẫn lỗi thì `FAILED` |
+| `db_unavailable` (retryable) | DB không kết nối được | Retry cùng SQL tối đa `max_retries`, không gọi planner |
 
 Mọi SQL mới (kể cả do repair) **phải** qua gate lần nữa. Controller hiện tại đã làm đúng điều này.
 
 ## 5. Trước khi trả answer
 
-```python
-from sqlguard.security.service import find_leaks
-if find_leaks(final_answer, policy, context.role):
-    # không trả answer; status REFUSED/FAILED, error_category="canary_leak"
-```
+Controller tự kiểm tra câu trả lời cuối qua `RunScope.output_check`. Với `QueryRuntime` truyền `output_check=built.output_check`: hàm này dùng `find_leaks` với role lấy từ `SecurityContext` tin cậy của run (không bao giờ từ câu hỏi hay model).
 
-Đề nghị thêm vào event (vẫn metadata-only): `decision_kind`, `violation_codes`, `policy_version`, `repairable`.
+- Phát hiện canary: không trả answer, run `FAILED` với `failure_reason="canary_leak"`, event `output_check_completed` (`status="blocked"`) và một audit record `phase="output"`, `outcome="blocked"`; cả hai chỉ có metadata, không có giá trị bị rò.
+- Bước kiểm tra hoặc ghi audit của nó lỗi: chặn answer, `failure_reason="output_check_error"` (fail closed).
+- Nếu không truyền `output_check` (chế độ mock) thì không kiểm tra thêm; lớp chặn chính vẫn là output check bên trong `SecureSqlTool`.
 
 ## 6. Manual SQL mode
 

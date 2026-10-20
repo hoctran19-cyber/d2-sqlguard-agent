@@ -32,7 +32,7 @@ from sqlguard.security.audit import AuditSink, InMemoryAuditSink, JsonlAuditSink
 from sqlguard.security.gate import PolicySQLGate, SecurityContext
 from sqlguard.security.policy import RolePolicy, load_default_policy
 from sqlguard.security.postgres import DSN_ENV_PREFIX, PostgresExecutor
-from sqlguard.security.service import QueryExecutor, SecureSqlTool
+from sqlguard.security.service import QueryExecutor, SecureSqlTool, find_leaks
 
 SCHEMA_SOURCE_ENV = "SQLGUARD_SCHEMA_SOURCE"
 QUERY_SOURCE_ENV = "SQLGUARD_QUERY_SOURCE"
@@ -93,6 +93,32 @@ class QueryRuntime:
     context: SecurityContext
     gate: PolicySQLGate  # gate kiểm tra trước ở controller
     tool: SecureSqlTool  # ranh giới thực thi, tự kiểm tra lại policy bằng gate riêng
+    # Policy và audit của run, dùng cho output_check; None thì không kiểm tra thêm.
+    policy: RolePolicy | None = None
+    audit: AuditSink | None = None
+
+    def output_check(self, answer: str) -> bool:
+        """Kiểm tra câu trả lời cuối; True nghĩa là có canary của role và phải giữ lại.
+
+        Role lấy từ SecurityContext tin cậy của run, không từ câu hỏi hay đầu ra của model.
+        Khi rò rỉ, ghi một audit record chỉ có băm/danh mục (không có câu trả lời hay giá trị
+        rò); lỗi ghi audit sẽ ném ra để controller chặn kết quả (fail closed).
+        """
+        if self.policy is None or not find_leaks(answer, self.policy, self.context.role):
+            return False
+        # Mượn quyết định gate gần nhất của tool để audit mang đủ băm/policy_version của run.
+        decision = self.tool.last_decision
+        if self.audit is not None and decision is not None:
+            self.audit.record(
+                self.gate.audit_record(
+                    decision,
+                    phase="output",
+                    attempt=0,
+                    outcome="blocked",
+                    error_category="canary_leak",
+                )
+            )
+        return True
 
 
 @dataclass(frozen=True)
@@ -117,6 +143,9 @@ class QueryRuntimeFactory:
             tool=SecureSqlTool(
                 PolicySQLGate(context, self.policy), self.executor, audit=self.audit
             ),
+            # Truyền policy/audit để output_check dùng đúng role và nơi ghi audit của run này.
+            policy=self.policy,
+            audit=self.audit,
         )
 
 

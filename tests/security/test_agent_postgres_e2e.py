@@ -42,7 +42,10 @@ def make_controller(role, dsn, planner, audit, events=None, budget=None):
 
     def scope(run_id):
         built = factory.for_run(run_id)
-        return RunScope(built.gate, InProcessToolRegistry([built.tool]))
+        # output_check giống production: kiểm tra câu trả lời cuối bằng role tin cậy của run.
+        return RunScope(
+            built.gate, InProcessToolRegistry([built.tool]), output_check=built.output_check
+        )
 
     return AgentController(
         planner=planner,

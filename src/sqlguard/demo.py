@@ -133,7 +133,10 @@ async def run_demo_report(
         def scope_factory(run_id: str) -> RunScope:
             built = query_factory.for_run(run_id)
             return RunScope(
-                _RecordingGate(built.gate, checks), _RecordingTools([built.tool], tool_sql)
+                _RecordingGate(built.gate, checks),
+                _RecordingTools([built.tool], tool_sql),
+                # Kiểm tra rò rỉ câu trả lời cuối bằng role tin cậy của run (chỉ ở chế độ postgres).
+                output_check=built.output_check,
             )
 
     # Đường postgres chỉ đi qua scope_factory (gate/tool theo run_id); không nhận runtime dựng sẵn.
