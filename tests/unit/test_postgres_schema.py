@@ -10,7 +10,10 @@ from sqlguard.security.policy import load_default_policy
 
 SECRET_DSN = "postgresql://sales_user:s3cret-pw@db.internal:5432/sales"
 
-# (table, column, data_type, udt_name, ordinal_position) as information_schema reports them.
+# Dữ liệu giả lập mô phỏng kết quả của information_schema.columns. Cố ý để lộn xộn thứ tự
+# và có cả bảng/cột mà role 'sales' KHÔNG được phép (customers.phone_number,
+# customers.identity_number, payments.bank_reference, secret_table) để kiểm tra việc lọc.
+# Mỗi dòng có dạng (table, column, data_type, udt_name, ordinal_position) như information_schema.
 ALL_ROWS = [
     ("orders", "status", "text", "text", 3),
     ("orders", "order_id", "integer", "int4", 1),
@@ -26,6 +29,10 @@ ALL_ROWS = [
 ]
 
 
+# --- Các lớp giả (fake) thay cho psycopg: giúp test chạy mà không cần PostgreSQL thật ---
+
+
+# Con trỏ giả: ghi lại mọi câu SQL + tham số đã chạy, và có thể giả lập lỗi khi truy vấn.
 class FakeCursor:
     def __init__(self, conn):
         self._conn = conn
@@ -45,6 +52,7 @@ class FakeCursor:
         return list(self._conn.rows)
 
 
+# Kết nối giả: lưu các câu lệnh đã thực thi, cờ read_only và việc có rollback hay không.
 class FakeConnection:
     def __init__(self, rows, error=None):
         self.rows = rows
@@ -60,6 +68,8 @@ class FakeConnection:
         self.rolled_back = True
 
 
+# Connector giả: ghi lại (dsn, connect_timeout) được truyền vào, và có thể giả lập lỗi
+# ngay khi kết nối (connect_error).
 class FakeConnector:
     def __init__(self, rows=ALL_ROWS, error=None, connect_error=None):
         self.conn = FakeConnection(rows, error)
@@ -78,16 +88,20 @@ class FakeConnector:
         return manager()
 
 
+# Tạo adapter cho role 'sales' với DSN giả; mật khẩu 's3cret-pw' dùng để kiểm tra rò rỉ.
 def adapter(connector, **kwargs):
     return PostgresSchemaAdapter({"sales": SECRET_DSN}, connector=connector, **kwargs)
 
 
+# Lỗi giả có thuộc tính sqlstate, mô phỏng lỗi của psycopg.
 class SqlStateError(Exception):
     def __init__(self, message, sqlstate):
         super().__init__(message)
         self.sqlstate = sqlstate
 
 
+# Chuyển metadata thành SchemaContext đúng kiểu; thứ tự bảng/cột cố định dù dòng đầu vào
+# bị đảo ngược.
 def test_converts_metadata_to_schema_context_with_deterministic_order():
     connector = FakeConnector()
     context = adapter(connector).load_sync("sales")
@@ -108,12 +122,13 @@ def test_converts_metadata_to_schema_context_with_deterministic_order():
     assert context.to_prompt_text() == adapter(connector).load_sync("sales").to_prompt_text()
 
 
+# Bảng/cột ngoài policy của role không được xuất hiện trong context lẫn prompt.
 def test_role_policy_filters_tables_and_columns():
     policy = load_default_policy()
     context = adapter(FakeConnector()).load_sync("sales")
     names = {table.name: {c.name for c in table.columns} for table in context.tables}
     assert "secret_table" not in names
-    assert "phone_number" not in names["customers"]  # sales may not read it
+    assert "phone_number" not in names["customers"]  # role sales không được đọc cột này
     assert "identity_number" not in names["customers"]
     assert "bank_reference" not in names["payments"]
     for table, columns in names.items():
@@ -123,14 +138,17 @@ def test_role_policy_filters_tables_and_columns():
         assert hidden not in prompt
 
 
+# Role khác (operations) thấy tập cột khác: có phone_number, nhưng không có bảng payments.
 def test_different_role_sees_its_own_columns():
     connector = FakeConnector()
     operations = PostgresSchemaAdapter({"operations": "postgresql://ops"}, connector=connector)
     names = {t.name: {c.name for c in t.columns} for t in operations.load_sync("operations").tables}
     assert "phone_number" in names["customers"]
-    assert "payments" not in names  # not granted to operations
+    assert "payments" not in names  # operations không được cấp bảng này
 
 
+# Kiểm tra: kết nối READ ONLY, có rollback, timeout đúng, và tên schema/bảng đi qua tham số
+# (không xuất hiện trong chuỗi SQL).
 def test_queries_are_parameterized_and_read_only():
     connector = FakeConnector()
     adapter(connector, connect_timeout_seconds=7, statement_timeout_seconds=2).load_sync("sales")
@@ -143,9 +161,11 @@ def test_queries_are_parameterized_and_read_only():
     assert "%s" in sql and "information_schema.columns" in sql
     assert params[0] == "public"
     assert params[1] == sorted(load_default_policy().allowed_tables("sales"))
-    assert "orders" not in sql and "public" not in sql  # identifiers travel as parameters
+    assert "orders" not in sql and "public" not in sql  # tên định danh đi qua tham số
 
 
+# Chọn bảng tường minh: bảng bị cấm, chuỗi tấn công SQL, danh sách rỗng hay chuỗi đơn đều
+# bị từ chối bằng lỗi an toàn (không nêu chi tiết).
 def test_explicit_table_selection_is_validated():
     connector = FakeConnector()
     context = adapter(connector).load_sync("sales", ["orders"])
@@ -158,12 +178,14 @@ def test_explicit_table_selection_is_validated():
         assert "DROP" not in str(info.value)
 
 
+# Kiểu USER-DEFINED (enum) được thay bằng tên kiểu thật từ udt_name.
 def test_user_defined_types_use_udt_name():
     rows = [("orders", "status", "USER-DEFINED", "order_status", 1)]
     context = adapter(FakeConnector(rows=rows)).load_sync("sales")
     assert context.tables[0].columns[0].data_type == "order_status"
 
 
+# Schema trống/không tồn tại, hoặc mọi dòng đều bị policy lọc hết -> lỗi schema_empty.
 @pytest.mark.parametrize(
     "rows",
     [[], [("secret_table", "x", "text", "text", 1)], [("customers", "phone_number", "t", "t", 1)]],
@@ -174,12 +196,15 @@ def test_empty_or_missing_schema_is_a_safe_error(rows):
     assert info.value.category == "schema_empty"
 
 
+# Dòng metadata thiếu cột (sai cấu trúc) -> lỗi schema_invalid_metadata, không crash.
 def test_malformed_metadata_is_a_safe_error():
     with pytest.raises(SchemaAdapterError) as info:
         adapter(FakeConnector(rows=[("orders", "status", "text", "text")])).load_sync("sales")
     assert info.value.category == "schema_invalid_metadata"
 
 
+# Mỗi loại lỗi (timeout, thiếu quyền, mất kết nối, lỗi khác) ở cả bước kết nối và bước
+# truy vấn đều phải ánh xạ sang đúng nhóm lỗi an toàn.
 @pytest.mark.parametrize(
     ("error", "category", "retryable"),
     [
@@ -208,11 +233,14 @@ def test_failures_map_to_safe_categories(error, category, retryable, phase):
         adapter(connector).load_sync("sales")
     assert info.value.category == category
     assert info.value.retryable is retryable
+    # Lỗi trả ra không được chứa mật khẩu, DSN hay tên bảng từ thông điệp gốc, và không
+    # được giữ exception gốc (__cause__) để tránh lộ thông tin.
     text = repr(info.value) + str(info.value)
     assert "s3cret-pw" not in text and SECRET_DSN not in text and "orders" not in text
     assert info.value.__cause__ is None and info.value.__suppress_context__
 
 
+# Lỗi OperationalError (nhận diện theo tên lớp) được coi là database không khả dụng.
 def test_operational_error_by_class_name_is_unavailable():
     class OperationalError(Exception):
         pass
@@ -224,6 +252,7 @@ def test_operational_error_by_class_name_is_unavailable():
     assert info.value.category == "schema_unavailable"
 
 
+# Cấu hình sai: role lạ, role chưa có DSN, DSN rỗng, timeout không hợp lệ, schema rỗng.
 def test_invalid_configuration():
     with pytest.raises(SchemaAdapterError) as info:
         adapter(FakeConnector()).load_sync("nobody")
@@ -245,6 +274,7 @@ def test_invalid_configuration():
         assert info.value.category == "schema_invalid_config"
 
 
+# from_env đọc DSN theo từng role từ biến môi trường; role không có biến thì báo chưa cấu hình.
 def test_from_env_reads_per_role_dsn_and_never_hardcodes():
     env = {"SQLGUARD_DB_DSN_SALES": SECRET_DSN}
     connector = FakeConnector()
@@ -256,6 +286,7 @@ def test_from_env_reads_per_role_dsn_and_never_hardcodes():
     assert info.value.category == "schema_role_unconfigured"
 
 
+# Bản async hoạt động như bản sync; thiếu psycopg thì báo schema_driver_missing.
 def test_async_load_and_missing_driver(monkeypatch):
     context = asyncio.run(adapter(FakeConnector()).load("sales"))
     assert context.tables
@@ -275,6 +306,7 @@ def test_async_load_and_missing_driver(monkeypatch):
     assert info.value.category == "schema_driver_missing"
 
 
+# SchemaContext từ adapter dùng được trong prompt của OllamaPlanner và không lộ cột bị cấm.
 def test_context_is_accepted_by_the_planner_prompt():
     context = adapter(FakeConnector()).load_sync("sales")
     planner = OllamaPlanner(model="m", schema_context=context)
@@ -283,6 +315,8 @@ def test_context_is_accepted_by_the_planner_prompt():
     assert "phone_number" not in prompt and "identity_number" not in prompt
 
 
+# Hồi quy: tên viết hoa/thường khác chuẩn ("ORDERS", "Status") là đối tượng khác trong
+# PostgreSQL, không được thừa hưởng quyền của 'orders'/'status'.
 def test_quoted_mixed_case_catalog_names_do_not_inherit_permissions():
     rows = [
         ("ORDERS", "order_id", "integer", "int4", 1),
