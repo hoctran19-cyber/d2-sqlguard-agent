@@ -25,3 +25,5 @@ dist/
 *.log
 evaluation/datasets/private/
 evaluation/reports/generated/
+# Database BIRD Mini-Dev cục bộ (file lớn, tải riêng; không commit)
+data/bird/
