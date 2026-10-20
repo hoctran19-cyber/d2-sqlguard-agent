@@ -73,7 +73,7 @@ Optional settings: `SQLGUARD_RUN_TIMEOUT_SECONDS` (demo run budget, default `60`
 
 Performance note: `ollama ps` shows whether the model runs on GPU or `100% CPU`. On CPU-only machines `qwen3:8b` can take minutes per request; raise `SQLGUARD_OLLAMA_TIMEOUT_SECONDS`, and note the controller's own 60-second run budget (`ExecutionBudget`) will end the run with `run_timeout` first, so also set `SQLGUARD_RUN_TIMEOUT_SECONDS` (e.g. `600`) for the demo, or use a smaller model (`SQLGUARD_OLLAMA_MODEL`).
 
-Limitations: the planner `context` is currently memory notes, not a database schema, so the model is not given tables/columns until schema retrieval exists; `MockQueryTool` still does not query a real database (no PostgreSQL/MCP yet); there is no LLM-driven SQL repair. Cancelling a run does not abort an in-flight HTTP request; it ends at the timeout.
+Limitations: the planner `context` is currently memory notes, not a database schema, so the model is not given tables/columns until schema retrieval exists; `MockQueryTool` still does not query a real database (no PostgreSQL/MCP yet); SQL repair is bounded and opt-in per planner: when the gate (or the secure tool's independent gate) denies SQL with `repairable=True` and the planner implements `repair_plan` (`OllamaPlanner` does, `DemoPlanner` does not), the planner receives the previous SQL plus a safe denial summary and may propose one corrected query per attempt. Every corrected query goes through the gate again, and repairs consume the existing planner-call, SQL-attempt, tool-call and run-timeout budgets; non-repairable denials stay terminal. Cancelling a run does not abort an in-flight HTTP request; it ends at the timeout.
 
 ### Query source: mock (default) vs. real PostgreSQL
 

@@ -14,11 +14,13 @@ from sqlguard.agent.models import (
     ExecutionBudget,
     RunStatus,
 )
-from sqlguard.agent.planning import Planner
+from sqlguard.agent.planning import Plan, Planner, RepairFeedback
 from sqlguard.mcp.tools import ToolError, ToolRegistry
 from sqlguard.memory.store import MemoryStore
 from sqlguard.observability.events import Event, EventSink
-from sqlguard.security.gate import SecurityGate
+from sqlguard.security.gate import SecurityDecision, SecurityGate
+from sqlguard.security.prompting import render_denial
+from sqlguard.security.service import SecurityToolError
 
 
 @dataclass(frozen=True)
@@ -158,30 +160,10 @@ class AgentController:
         self._ensure_before_deadline(deadline)
         if state.llm_call_count >= self._budget.max_llm_calls:
             raise _BudgetExceeded("planner_call_budget_exhausted")
-        self._emit(state, "llm_call_started")
-        state.llm_call_count += 1
-        planner_started = perf_counter()
-        try:
-            plan = await self._planner.create_plan(state.request.question, context)
-            sql = getattr(plan, "sql", None)
-            summary = getattr(plan, "summary", None)
-            if not isinstance(sql, str) or not isinstance(summary, str):
-                raise TypeError
-        except Exception:
-            self._emit(
-                state,
-                "llm_call_completed",
-                status="failed",
-                error_category="planner_error",
-                duration_ms=(perf_counter() - planner_started) * 1000,
-            )
-            raise _PlannerFailure from None
-        self._emit(state, "plan_created")
-        self._emit(
-            state,
-            "llm_call_completed",
-            status="completed",
-            duration_ms=(perf_counter() - planner_started) * 1000,
+        # Lần gọi planner đầu tiên: dùng chung helper với các lần repair để cùng một cách đếm
+        # ngân sách, phát event và xử lý lỗi (planner lỗi luôn thành _PlannerFailure).
+        sql = await self._call_planner(
+            state, lambda: self._planner.create_plan(state.request.question, context)
         )
 
         while True:
@@ -216,7 +198,14 @@ class AgentController:
                 error_category=None if allowed else "security_rejection",
             )
             if not allowed:
-                raise _SecurityRejected
+                # Bị gate từ chối: chỉ khi denial "repairable" và planner hỗ trợ mới được sửa.
+                # None nghĩa là không sửa -> giữ nguyên hành vi cũ (REFUSED, không gọi tool).
+                repaired = await self._try_repair(state, deadline, context, sql, decision)
+                if repaired is None:
+                    raise _SecurityRejected
+                # SQL sửa quay lại đầu vòng lặp để qua gate lần nữa; không bao giờ chạy thẳng.
+                sql = repaired
+                continue
 
             state.current_step = "tool_execution"
             if state.tool_call_count >= self._budget.max_tool_calls:
@@ -225,6 +214,9 @@ class AgentController:
             self._emit(state, "tool_call_started")
             state.tool_call_count += 1
             tool_started = perf_counter()
+            # Chỉ được gán khi gate ở ranh giới tool (SecureSqlTool) từ chối; mặc định là None
+            # để các lỗi tool khác (timeout, db_*, canary_leak...) không đi vào đường repair.
+            tool_denial: SecurityDecision | None = None
             try:
                 timeout = min(
                     self._budget.query_timeout_seconds,
@@ -246,6 +238,8 @@ class AgentController:
             except ToolError as error:
                 category = error.category
                 retryable = error.retryable
+                # Gate ở ranh giới tool từ chối: vẫn phải qua kiểm tra repairable và budget.
+                tool_denial = error.decision if isinstance(error, SecurityToolError) else None
             except Exception:
                 category = "tool_exception"
                 retryable = False
@@ -272,6 +266,13 @@ class AgentController:
                 error_category=category,
                 duration_ms=(perf_counter() - tool_started) * 1000,
             )
+            # Gate của tool từ chối nhưng gate của controller đã cho qua (gate yếu hơn): vẫn phải
+            # qua cùng kiểm tra repairable + ngân sách, không được lách bằng đường retry thường.
+            if tool_denial is not None:
+                repaired = await self._try_repair(state, deadline, context, sql, tool_denial)
+                if repaired is not None:
+                    sql = repaired
+                    continue
             if not retryable:
                 raise ToolError(category, category=category) from None
             if state.retry_count >= self._budget.max_retries:
@@ -283,6 +284,99 @@ class AgentController:
             state.retry_count += 1
             self._append_memory(state, "retry", str(state.retry_count))
             self._emit(state, "retry_started", status="retrying", error_category=category)
+
+    async def _call_planner(self, state: AgentState, make_call: Callable[[], Any]) -> str:
+        """Gọi planner một lần, tính vào ngân sách planner và phát event; trả về SQL đề xuất.
+
+        ``make_call`` trả về coroutine của ``create_plan`` hoặc ``repair_plan``. Mọi lỗi (ngoại
+        lệ, plan sai kiểu) đều đổi thành ``_PlannerFailure`` và không giữ lại thông điệp gốc, nên
+        chi tiết lỗi nội bộ không lọt vào event hay state.
+        """
+        self._emit(state, "llm_call_started")
+        state.llm_call_count += 1
+        planner_started = perf_counter()
+        try:
+            plan: Plan = await make_call()
+            sql = getattr(plan, "sql", None)
+            summary = getattr(plan, "summary", None)
+            if not isinstance(sql, str) or not isinstance(summary, str):
+                raise TypeError
+        except Exception:
+            self._emit(
+                state,
+                "llm_call_completed",
+                status="failed",
+                error_category="planner_error",
+                duration_ms=(perf_counter() - planner_started) * 1000,
+            )
+            raise _PlannerFailure from None
+        self._emit(state, "plan_created")
+        self._emit(
+            state,
+            "llm_call_completed",
+            status="completed",
+            duration_ms=(perf_counter() - planner_started) * 1000,
+        )
+        return sql
+
+    async def _try_repair(
+        self,
+        state: AgentState,
+        deadline: float,
+        context: tuple[str, ...],
+        previous_sql: str,
+        decision: SecurityDecision,
+    ) -> str | None:
+        """Xin planner SQL sửa cho một denial CÓ THỂ sửa; trả về SQL mới hoặc None nếu không sửa.
+
+        None nghĩa là denial không được phép sửa (không repairable, hoặc planner không hỗ trợ):
+        caller giữ nguyên hành vi kết thúc cũ. SQL mới luôn quay lại vòng lặp để qua gate lần nữa.
+        Hết ngân sách thì raise ``_BudgetExceeded``; mọi lời gọi tính vào bộ đếm hiện có.
+        """
+        repair = getattr(self._planner, "repair_plan", None)
+        # Điều kiện bắt buộc để sửa: bị từ chối, repairable đúng bằng True và planner có
+        # repair_plan. Gate tự viết có thể thiếu trường repairable: coi như không được sửa.
+        if (
+            getattr(decision, "allowed", True)
+            or getattr(decision, "repairable", False) is not True
+            or not callable(repair)
+        ):
+            return None
+        # Phản hồi gửi planner chỉ gồm SQL cũ, mã vi phạm và hướng dẫn do gate sinh ra
+        # (render_denial); không có lỗi database thô hay thông điệp ngoại lệ.
+        try:
+            feedback = RepairFeedback(
+                previous_sql=previous_sql,
+                violation_codes=tuple(decision.violations),
+                guidance=render_denial(decision),
+            )
+        except Exception:
+            return None
+        sql_limit = (
+            self._budget.max_tool_calls
+            if self._budget.max_sql_attempts is None
+            else self._budget.max_sql_attempts
+        )
+        # Kiểm tra mọi ngân sách TRƯỚC khi gọi planner để vòng repair luôn có giới hạn trên.
+        self._ensure_before_deadline(deadline)
+        if state.llm_call_count >= self._budget.max_llm_calls:
+            raise _BudgetExceeded("planner_call_budget_exhausted")
+        if state.sql_attempt_count >= sql_limit:
+            raise _BudgetExceeded("sql_attempt_budget_exhausted")
+        if state.tool_call_count >= self._budget.max_tool_calls:
+            raise _BudgetExceeded("tool_call_budget_exhausted")
+        state.current_step = "repair"
+        # Event repair chỉ mang metadata (trạng thái, nhóm lỗi), không chứa SQL hay câu hỏi.
+        self._emit(state, "repair_started", status="repairing", error_category="security_rejection")
+        try:
+            sql = await self._call_planner(
+                state, lambda: repair(state.request.question, context, feedback)
+            )
+        except _PlannerFailure:
+            self._emit(state, "repair_completed", status="failed", error_category="planner_error")
+            raise
+        self._emit(state, "repair_completed", status="completed")
+        return sql
 
     def _emit(self, state: AgentState, event_type: str, **details: Any) -> None:
         try:
