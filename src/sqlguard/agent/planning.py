@@ -68,10 +68,10 @@ class OllamaPlanner:
     The controller's ``context`` is a tuple of memory strings (e.g. retry markers), not a
     database schema. Optional ``schema_context`` is explicit metadata supplied by the caller;
     this planner does not connect to a database or retrieve schema itself. All schema and
-    context entries are passed to the model as untrusted data. Failures raise ``PlannerError`` (no fallback to
-    ``DemoPlanner``). The blocking HTTP call runs in a worker thread with a finite socket
-    timeout; cancelling the awaiting task does not abort an in-flight request, which ends
-    at the latest when the timeout expires.
+    context entries are passed to the model as untrusted data. Failures raise ``PlannerError``
+    (no fallback to ``DemoPlanner``). The blocking HTTP call runs in a worker thread with a
+    finite socket timeout; cancelling the awaiting task does not abort an in-flight request,
+    which ends at the latest when the timeout expires.
     """
 
     def __init__(
