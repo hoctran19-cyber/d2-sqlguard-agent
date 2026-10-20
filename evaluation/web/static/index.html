@@ -77,7 +77,11 @@
 </head>
 <body>
 <header>
-  <h1>SQLGuard — Evaluation Console</h1>
+  <div class="row" style="justify-content:space-between">
+    <h1>SQLGuard — Evaluation Console</h1>
+    <!-- Chỉ hiện khi console được gắn trong web app chính (có /api/me và /api/logout). -->
+    <button class="button secondary hidden" id="logout-btn">Đăng xuất <span id="me-name"></span></button>
+  </div>
   <p>Chạy harness đánh giá qua backend localhost thay cho CLI.
     <span class="badge inconclusive" id="mode-badge">fixture_only</span></p>
 </header>
@@ -107,7 +111,7 @@
       </div>
       <input type="file" id="file-input" accept=".json,application/json" class="hidden">
       <p class="row" style="margin-top:12px">
-        <a class="button secondary" href="/api/schema/sample-manifest">Tải manifest mẫu (5 tasks)</a>
+        <a class="button secondary" href="api/schema/sample-manifest">Tải manifest mẫu (5 tasks)</a>
         <span class="muted" id="file-info">Chưa có file.</span>
       </p>
       <div class="error-box hidden" id="upload-error"></div>
@@ -184,7 +188,7 @@ async function api(path, options = {}) {
 
 async function loadSchema() {
   try {
-    const schema = await api("/api/schema");
+    const schema = await api("api/schema");
     $("sample-task").textContent = JSON.stringify(schema.sample_task, null, 2);
     $("envelope").textContent = JSON.stringify(schema.envelope, null, 2);
     $("mode-note").textContent = "Chế độ " + schema.mode_note + " Giới hạn: tối đa "
@@ -214,7 +218,7 @@ async function handleFile(file) {
     return;
   }
   try {
-    const result = await api("/api/manifest/validate", {
+    const result = await api("api/manifest/validate", {
       method: "POST", headers: { "Content-Type": "application/json" }, body: text,
     });
     manifest = result.document;
@@ -249,7 +253,7 @@ async function runExperiment() {
   setRunning(true);
   $("waiting-text").textContent = "Đang gửi yêu cầu…";
   try {
-    const started = await api("/api/experiments", {
+    const started = await api("api/experiments", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         manifest,
@@ -260,7 +264,7 @@ async function runExperiment() {
     let experiment;
     do {
       await new Promise((resolve) => setTimeout(resolve, POLL_MS));
-      experiment = await api(`/api/experiments/${started.id}`);
+      experiment = await api(`api/experiments/${started.id}`);
       $("waiting-text").textContent = `Đang chạy ${experiment.done}/${experiment.total} task-runs…`;
       $("progress").max = experiment.total;
       $("progress").value = experiment.done;
@@ -334,6 +338,17 @@ $("file-input").addEventListener("change", (e) => {
 });
 $("run-btn").addEventListener("click", runExperiment);
 loadSchema();
+
+// Khi chạy trong web app chính: hiện tên user và nút đăng xuất; chạy riêng thì giữ ẩn.
+fetch("/api/me").then((r) => (r.ok ? r.json() : null)).then((me) => {
+  if (!me) return;
+  $("me-name").textContent = "(" + me.username + ")";
+  show($("logout-btn"), true);
+}).catch(() => {});
+$("logout-btn").addEventListener("click", async () => {
+  await fetch("/api/logout", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+  window.location.href = "/login";
+});
 </script>
 </body>
 </html>
