@@ -15,6 +15,7 @@ import secrets
 from pathlib import Path
 
 import pytest
+from evaluation.bird_pilot import PilotInputError, verify_database
 
 from sqlguard.security.gate import PolicySQLGate, SecurityContext
 from sqlguard.security.policy import load_default_policy
@@ -87,6 +88,37 @@ def test_column_privileges_match_policy_exactly(database):
                         "SELECT has_table_privilege(%s, %s, %s)", (login, table, privilege)
                     ).fetchone()
                     assert not granted, (role, table, privilege)
+
+
+def test_bird_pilot_preflight_confirms_finance_role_and_exact_policy_grants(database):
+    database_name = conninfo.conninfo_to_dict(database["admin"])["dbname"]
+    revision = "b" * 40
+    with pytest.raises(PilotInputError, match="not marked for this exact BIRD"):
+        verify_database(
+            database["finance"],
+            "finance",
+            POLICY,
+            database_name,
+            "financial",
+            revision,
+        )
+    with psycopg.connect(database["admin"], autocommit=True) as admin:
+        admin.execute(
+            "CREATE TABLE public.sqlguard_bird_pilot_metadata (marker boolean PRIMARY KEY)"
+        )
+        admin.execute(
+            "COMMENT ON TABLE public.sqlguard_bird_pilot_metadata IS "
+            "'sqlguard-bird-pilot:v1; database_id=financial; revision=" + revision + "'"
+        )
+
+    verify_database(
+        database["finance"],
+        "finance",
+        POLICY,
+        database_name,
+        "financial",
+        revision,
+    )
 
 
 @pytest.mark.parametrize(
