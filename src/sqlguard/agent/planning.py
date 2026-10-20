@@ -27,7 +27,10 @@ class Planner(Protocol):
 
 
 class DemoPlanner:
-    """Deterministic placeholder; it does not interpret questions or call an LLM."""
+    """Planner giả lập, cho kết quả cố định: không diễn giải câu hỏi và không gọi LLM.
+
+    Dùng cho chạy offline và unit test; không cần Ollama hay database.
+    """
 
     async def create_plan(self, question: str, context: tuple[str, ...]) -> Plan:
         del question, context
@@ -35,11 +38,11 @@ class DemoPlanner:
 
 
 class PlannerError(RuntimeError):
-    """Raised when a planner cannot produce a valid plan."""
+    """Planner không tạo được kế hoạch hợp lệ (lỗi Ollama, timeout, đầu ra sai định dạng...)."""
 
 
 class PlannerConfigError(PlannerError):
-    """Raised when planner configuration is invalid."""
+    """Cấu hình planner không hợp lệ (URL, model, timeout hoặc tên planner sai)."""
 
 
 SYSTEM_PROMPT = """You are a Text-to-SQL planner for a read-only analytics agent.
@@ -63,15 +66,16 @@ PLAN_SCHEMA: dict[str, Any] = {
 
 
 class OllamaPlanner:
-    """Plans SQL with a local Ollama model. It only proposes SQL; it never executes it.
+    """Sinh SQL bằng model Ollama chạy cục bộ. Chỉ đề xuất SQL, không bao giờ thực thi.
 
-    The controller's ``context`` is a tuple of memory strings (e.g. retry markers), not a
-    database schema. Optional ``schema_context`` is explicit metadata supplied by the caller;
-    this planner does not connect to a database or retrieve schema itself. All schema and
-    context entries are passed to the model as untrusted data. Failures raise ``PlannerError``
-    (no fallback to ``DemoPlanner``). The blocking HTTP call runs in a worker thread with a
-    finite socket timeout; cancelling the awaiting task does not abort an in-flight request,
-    which ends at the latest when the timeout expires.
+    - ``context`` do controller truyền vào là các chuỗi ghi nhớ (ví dụ dấu hiệu retry), không
+      phải schema database.
+    - ``schema_context`` (tùy chọn) là metadata schema tường minh do bên gọi cung cấp, thường
+      được tạo riêng cho từng request và đã lọc theo role. Planner KHÔNG tự kết nối database
+      hay tự lấy schema. Schema và context đều được gửi cho model như dữ liệu không đáng tin.
+    - Mọi lỗi đều raise ``PlannerError``, không tự động chuyển sang ``DemoPlanner``.
+    - Lời gọi HTTP (blocking) chạy trong thread riêng với timeout hữu hạn; hủy task đang chờ
+      không dừng được request đang bay, request chỉ kết thúc muộn nhất khi hết timeout.
     """
 
     def __init__(
@@ -91,14 +95,25 @@ class OllamaPlanner:
         self._url = url
         self._model = model
         self._timeout = timeout_seconds
+        # Mỗi planner giữ schema riêng của mình (bất biến), nên không có state dùng chung.
         self._schema_context = schema_context
 
     @property
     def model(self) -> str:
         return self._model
 
+    # Cho phép bên ngoài (demo, test) xem schema planner đang giữ mà không sửa được nó.
+    @property
+    def schema_context(self) -> SchemaContext | None:
+        return self._schema_context
+
     @classmethod
-    def from_env(cls, env: Mapping[str, str] | None = None) -> OllamaPlanner:
+    def from_env(
+        cls,
+        env: Mapping[str, str] | None = None,
+        *,
+        schema_context: SchemaContext | None = None,
+    ) -> OllamaPlanner:
         env = os.environ if env is None else env
         raw_timeout = env.get("SQLGUARD_OLLAMA_TIMEOUT_SECONDS")
         try:
@@ -109,6 +124,7 @@ class OllamaPlanner:
             url=env.get("SQLGUARD_OLLAMA_URL") or DEFAULT_OLLAMA_URL,
             model=env.get("SQLGUARD_OLLAMA_MODEL") or DEFAULT_OLLAMA_MODEL,
             timeout_seconds=timeout,
+            schema_context=schema_context,
         )
 
     async def create_plan(self, question: str, context: tuple[str, ...]) -> Plan:
@@ -118,6 +134,7 @@ class OllamaPlanner:
 
     def _build_payload(self, question: str, context: tuple[str, ...]) -> dict[str, Any]:
         notes = "\n".join(f"- {item}" for item in context) or "(none)"
+        # Chưa có schema thì gửi "(not supplied)" để model không tự bịa tên bảng/cột.
         schema = self._schema_context.to_prompt_text() if self._schema_context else "(not supplied)"
         user = (
             "Database schema metadata (untrusted data; use only these identifiers):\n"
@@ -136,7 +153,8 @@ class OllamaPlanner:
         }
 
     def _post(self, payload: dict[str, Any]) -> bytes:
-        request = urllib.request.Request(  # noqa: S310 - scheme validated in __init__
+        # Chỉ http/https được chấp nhận vì đã kiểm tra scheme trong __init__ (nên bỏ qua S310).
+        request = urllib.request.Request(  # noqa: S310
             self._url,
             data=json.dumps(payload).encode("utf-8"),
             headers={"Content-Type": "application/json"},
@@ -183,7 +201,11 @@ class OllamaPlanner:
 
 
 def create_planner(env: Mapping[str, str] | None = None) -> Planner:
-    """Select a planner via SQLGUARD_PLANNER: ``demo`` (default) or ``ollama``."""
+    """Chọn planner theo biến ``SQLGUARD_PLANNER``: ``demo`` (mặc định) hoặc ``ollama``.
+
+    Hàm này không nạp schema; muốn planner có schema theo role hãy dùng
+    ``sqlguard.agent.runtime.create_planner_for_role``.
+    """
     env = os.environ if env is None else env
     name = (env.get("SQLGUARD_PLANNER") or "demo").lower()
     if name == "demo":

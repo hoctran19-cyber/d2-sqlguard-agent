@@ -9,7 +9,9 @@ from typing import Any
 
 from sqlguard.agent.controller import AgentController
 from sqlguard.agent.models import AgentRequest, ExecutionBudget
-from sqlguard.agent.planning import OllamaPlanner, Planner, PlannerConfigError, create_planner
+from sqlguard.agent.planning import OllamaPlanner, Planner, PlannerConfigError
+from sqlguard.agent.postgres_schema import SchemaAdapterError
+from sqlguard.agent.runtime import create_planner_for_role
 from sqlguard.mcp.tools import InProcessToolRegistry, MockQueryTool, Tool
 from sqlguard.memory.store import InMemoryMemory
 from sqlguard.observability.events import InMemoryEventSink
@@ -33,12 +35,16 @@ class DemoReport:
     status: str
     failure_reason: str | None
     final_answer: str | None
+    schema_tables: int | None = None
     gate_checks: list[GateCheck] = field(default_factory=list)
     tool_sql: list[str] = field(default_factory=list)
 
 
 class _RecordingGate:
-    """Delegates to the real gate and records the exact SQL it was asked to check."""
+    """Bọc security gate thật: gọi gate để quyết định và ghi lại đúng SQL gate đã kiểm tra.
+
+    Kết quả của gate được trả nguyên vẹn; lớp này không thay đổi hay nới lỏng quyết định nào.
+    """
 
     def __init__(self, gate: SecurityGate, checks: list[GateCheck]) -> None:
         self._gate = gate
@@ -51,7 +57,10 @@ class _RecordingGate:
 
 
 class _RecordingTools(InProcessToolRegistry):
-    """Records the exact SQL that reaches the tool."""
+    """Bọc tool registry: ghi lại đúng SQL thật sự tới tool.
+
+    SQL bị gate từ chối không bao giờ tới đây nên sẽ không xuất hiện trong danh sách.
+    """
 
     def __init__(self, tools: list[Tool], calls: list[str]) -> None:
         super().__init__(tools)
@@ -65,7 +74,7 @@ class _RecordingTools(InProcessToolRegistry):
 
 
 def budget_from_env(env: Mapping[str, str] | None = None) -> ExecutionBudget:
-    """Build the demo budget; SQLGUARD_RUN_TIMEOUT_SECONDS overrides the 60s run limit."""
+    """Tạo budget cho demo; ``SQLGUARD_RUN_TIMEOUT_SECONDS`` ghi đè giới hạn mặc định 60 giây."""
     env = os.environ if env is None else env
     raw = env.get("SQLGUARD_RUN_TIMEOUT_SECONDS")
     if not raw:
@@ -76,10 +85,17 @@ def budget_from_env(env: Mapping[str, str] | None = None) -> ExecutionBudget:
         raise ValueError("SQLGUARD_RUN_TIMEOUT_SECONDS must be a positive number") from None
 
 
+# Trả về (tên planner, tên model) để hiển thị; model chỉ có với Ollama.
 def _planner_label(planner: Planner) -> tuple[str, str | None]:
     if isinstance(planner, OllamaPlanner):
         return "ollama", planner.model
     return "demo", None
+
+
+# Đếm số bảng trong schema planner đang giữ; chỉ in số lượng, không in metadata nhạy cảm.
+def _schema_table_count(planner: Planner) -> int | None:
+    schema = planner.schema_context if isinstance(planner, OllamaPlanner) else None
+    return len(schema.tables) if schema else None
 
 
 async def run_demo_report(
@@ -89,10 +105,13 @@ async def run_demo_report(
     tool: MockQueryTool | None = None,
     budget: ExecutionBudget | None = None,
 ) -> DemoReport:
-    planner = planner or create_planner()
+    # SQLGUARD_ROLE do người vận hành đặt trong môi trường chạy, KHÔNG lấy từ câu hỏi hay LLM.
+    # Role chỉ được dùng khi bật SQLGUARD_SCHEMA_SOURCE=postgres để nạp schema theo role.
+    planner = planner or await create_planner_for_role(os.environ.get("SQLGUARD_ROLE"))
     name, model = _planner_label(planner)
     checks: list[GateCheck] = []
     tool_sql: list[str] = []
+    # Controller dùng gate thật và tool mock; hai lớp bọc chỉ để ghi lại SQL phục vụ báo cáo.
     controller = AgentController(
         planner=planner,
         tools=_RecordingTools([tool or MockQueryTool()], tool_sql),
@@ -110,6 +129,7 @@ async def run_demo_report(
         status=state.status.value,
         failure_reason=state.failure_reason,
         final_answer=state.final_answer,
+        schema_tables=_schema_table_count(planner),
         gate_checks=checks,
         tool_sql=tool_sql,
     )
@@ -119,6 +139,8 @@ def format_report(report: DemoReport) -> str:
     lines = [f"planner: {report.planner}"]
     if report.model:
         lines.append(f"model: {report.model}")
+    if report.schema_tables is not None:
+        lines.append(f"schema: loaded from postgres ({report.schema_tables} tables)")
     lines.append("tool: MockQueryTool (mock; no database is queried)")
     if not report.gate_checks:
         lines.append("proposed_sql: (none; the planner produced no SQL for the gate)")
@@ -148,6 +170,9 @@ def main() -> int:
         report = asyncio.run(run_demo_report())
     except (PlannerConfigError, ValueError) as error:
         print(f"configuration_error: {error}", file=sys.stderr)
+        return 2
+    except SchemaAdapterError as error:
+        print(f"schema_error: {error.category}", file=sys.stderr)
         return 2
     print(format_report(report))
     return 0 if report.succeeded else 1
