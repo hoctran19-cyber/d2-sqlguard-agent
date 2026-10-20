@@ -65,10 +65,13 @@ class RecordingGate:
     def __init__(self, inner):
         self.inner = inner
         self.checked: list[str] = []
+        self.decisions = []
 
     def check(self, sql):
         self.checked.append(sql)
-        return self.inner.check(sql)
+        decision = self.inner.check(sql)
+        self.decisions.append(decision)
+        return decision
 
 
 def strict_stack(role="sales", executor=None, audit=None, run_id="run-1"):
@@ -183,6 +186,24 @@ def test_every_repaired_sql_is_checked_before_execution():
     assert recording.checked == [REPAIRABLE_SQL, "SELECT other_bad FROM orders", GOOD_SQL]
     assert len(executor.calls) == 1
     assert result.state.sql_attempt_count == 3
+
+
+def test_repaired_sql_passes_gate_again_before_execution():
+    gate, tool, executor = strict_stack()
+    recording = RecordingGate(gate)
+    planner = ScriptedRepairPlanner(REPAIRABLE_SQL, [GOOD_SQL])
+    result = run(controller(planner, recording, tool))
+
+    assert result.succeeded
+    assert recording.checked == [REPAIRABLE_SQL, GOOD_SQL]
+    assert [decision.repairable for decision in recording.decisions] == [True, False]
+    assert [decision.allowed for decision in recording.decisions] == [False, True]
+    assert len(planner.feedback) == 1
+    assert planner.feedback[0].previous_sql == REPAIRABLE_SQL
+    assert result.state.sql_attempt_count == 2 and result.state.llm_call_count == 2
+    assert len(executor.calls) == 1
+    assert executor.calls[0] == recording.decisions[1].normalized_sql
+    assert REPAIRABLE_SQL not in executor.calls[0]
 
 
 def test_repair_to_forbidden_sql_is_refused_without_execution():
