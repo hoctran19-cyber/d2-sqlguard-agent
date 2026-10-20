@@ -60,6 +60,15 @@ This provisional workspace isolates richer experiment contracts while A/B settle
 runtime. Once stable, consolidate shared scoring/orchestration instead of maintaining two
 production harnesses. Invocation currently requires the repository checkout/root.
 
+## Real benchmark intake is separate
+
+The local BIRD Mini-Dev intake/audit workflow is documented in
+[`datasets/bird/README.md`](datasets/bird/README.md) and runs with
+`python -m evaluation.bird_audit`. It requires a user-supplied local dataset file, pinned
+revision, and acquisition date; it never downloads or vendors upstream data. Its audit and
+pending candidate report are not execution-accuracy results and must not be mixed with this
+five-case `fixture_only` benchmark.
+
 ## Provisional business
 
 - `customer`: identity, name, region, phone, synthetic protected ID, note.
