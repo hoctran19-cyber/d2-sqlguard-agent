@@ -46,6 +46,24 @@ sqlguard-demo
 
 Equivalent invocation: `python -m sqlguard.demo`. The demo uses a deterministic planner and local mock tool; it does not execute SQL against a database.
 
+### Optional: local LLM planner (Ollama + Qwen3)
+
+The default planner is the deterministic `DemoPlanner` (offline, used by all tests). `OllamaPlanner` calls a local Ollama server; no hosted provider or API key is used.
+
+```bash
+brew install ollama            # or download the app from https://ollama.com
+ollama serve                   # skip if the Ollama app is already running
+ollama pull qwen3:8b
+curl http://localhost:11434/api/tags   # check the local API lists qwen3:8b
+SQLGUARD_PLANNER=ollama python -m sqlguard.demo
+```
+
+Optional settings: `SQLGUARD_OLLAMA_URL` (default `http://localhost:11434/api/chat`), `SQLGUARD_OLLAMA_MODEL` (default `qwen3:8b`), `SQLGUARD_OLLAMA_TIMEOUT_SECONDS` (default `60`). The planner uses non-streaming structured JSON output (`sql`, `summary`) and fails the run with `planner_error` on any Ollama or output-validation error; it never falls back to `DemoPlanner`. Generated SQL is only a proposal: it still goes through the security gate before any tool call.
+
+Performance note: `ollama ps` shows whether the model runs on GPU or `100% CPU`. On CPU-only machines `qwen3:8b` can take minutes per request; raise `SQLGUARD_OLLAMA_TIMEOUT_SECONDS`, and note the controller's own 60-second run budget (`ExecutionBudget`) will end the run with `run_timeout` first, so the demo may need a larger budget or a smaller model (`SQLGUARD_OLLAMA_MODEL`).
+
+Limitations: the planner `context` is currently memory notes, not a database schema, so the model is not given tables/columns until schema retrieval exists; `MockQueryTool` still does not query a real database (no PostgreSQL/MCP yet); there is no LLM-driven SQL repair. Cancelling a run does not abort an in-flight HTTP request; it ends at the timeout.
+
 ## Tests, lint, and evaluation
 
 ```bash

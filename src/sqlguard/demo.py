@@ -4,7 +4,7 @@ import asyncio
 
 from sqlguard.agent.controller import AgentController
 from sqlguard.agent.models import AgentRequest
-from sqlguard.agent.planning import DemoPlanner
+from sqlguard.agent.planning import create_planner
 from sqlguard.mcp.tools import InProcessToolRegistry, MockQueryTool
 from sqlguard.memory.store import InMemoryMemory
 from sqlguard.observability.events import InMemoryEventSink
@@ -13,7 +13,7 @@ from sqlguard.security.gate import ReadOnlySQLGate
 
 async def run_demo() -> str:
     controller = AgentController(
-        planner=DemoPlanner(),
+        planner=create_planner(),
         tools=InProcessToolRegistry([MockQueryTool()]),
         security_gate=ReadOnlySQLGate(),
         memory=InMemoryMemory(),
