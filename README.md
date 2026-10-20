@@ -46,6 +46,22 @@ sqlguard-demo
 
 Equivalent invocation: `python -m sqlguard.demo`. The demo uses a deterministic planner and local mock tool; it does not execute SQL against a database.
 
+## Run the web app
+
+```bash
+python -m pip install -e ".[dev,web]"
+# Point to BIRD Mini-Dev financial.sqlite (or place it at data/bird/financial.sqlite, git-ignored)
+export SQLGUARD_FINANCIAL_DB=/path/to/minidev/MINIDEV/dev_databases/financial/financial.sqlite
+python -m sqlguard.web               # http://127.0.0.1:8000
+```
+
+Demo accounts (local only): `admin` / `123456` opens `/home` (Query + Database), `eval` / `123456`
+opens `/evaluation/` (the evaluation console). The database is opened read-only and every SQL,
+including agent-generated SQL, passes `ReadOnlySQLGate` with the financial table allowlist.
+The Query page runs the real `AgentController`, but **its planner is a no-LLM demo** that only
+maps a few sample questions to SQL (`src/sqlguard/web/demo_planner.py`); replace it in
+`build_planner()` once the LLM planner exists. Sessions are in memory and reset on restart.
+
 ## Tests, lint, and evaluation
 
 ```bash

@@ -1,0 +1,155 @@
+{
+  "schema_version": "1.0",
+  "dataset": "BIRD Mini-Dev",
+  "dialect": "postgresql",
+  "db_id": "financial",
+  "recorded_date": "2026-10-20",
+  "locked_date": "2026-10-20",
+  "timezone": "Asia/Ho_Chi_Minh",
+  "e01": {
+    "status": "completed_for_local_snapshot",
+    "completed_date": "2026-10-20",
+    "scope": "Lock the existing local PostgreSQL source files and extract the 32 Financial records.",
+    "limitations": "Original download provenance and license remain unverified; this is not completion of all upstream provenance checks in the original E01 plan."
+  },
+  "provenance": {
+    "downloaded_at": null,
+    "download_url": null,
+    "upstream_revision": null,
+    "license": null,
+    "status": "unverified",
+    "note": "2026-10-20 marks local registration and locking requested by the user, not the original download or upstream release date. Original archive was not identified; checksums cover extracted local files."
+  },
+  "source_files": [
+    {
+      "path": "MINIDEV/mini_dev_postgresql.json",
+      "size_bytes": 283525,
+      "sha256": "3569beae23b80cb647024f56ee5e10ff51858322175f7634890d865add47e2a2"
+    },
+    {
+      "path": "MINIDEV/mini_dev_postgresql_gold.sql",
+      "size_bytes": 109574,
+      "sha256": "8cb1bedb9f6c6723d209b3036a00009470416f6d698c5cabda61dc60e9783eeb"
+    },
+    {
+      "path": "MINIDEV_postgresql/BIRD_dev.sql",
+      "size_bytes": 1001882533,
+      "sha256": "31b1da211849d24a57c9af7636da46a5b82fc8a3ca1542bb3ebd8775e9a31cec"
+    },
+    {
+      "path": "MINIDEV/dev_databases/financial/database_description/account.csv",
+      "size_bytes": 480,
+      "sha256": "98f9b72619c30593fadc013efc668d081193f34f2bda1353214c48c8013f03b3"
+    },
+    {
+      "path": "MINIDEV/dev_databases/financial/database_description/card.csv",
+      "size_bytes": 415,
+      "sha256": "1dd79bf48c7696a5e6c3fc4835c9994b129f58307ad75c2f874f9cd1078fe300"
+    },
+    {
+      "path": "MINIDEV/dev_databases/financial/database_description/client.csv",
+      "size_bytes": 252,
+      "sha256": "d1ef6f74b4730737517307c2f3b219496af264d83fe3e34f435c078b368dd800"
+    },
+    {
+      "path": "MINIDEV/dev_databases/financial/database_description/disp.csv",
+      "size_bytes": 423,
+      "sha256": "3b7ade14650a78e7122fdf4f423c4dae241e923d73039c65e5e85b7ac7919ffe"
+    },
+    {
+      "path": "MINIDEV/dev_databases/financial/database_description/district.csv",
+      "size_bytes": 1095,
+      "sha256": "6da804294fe9e7f9f8285759b842e39e0c5c8cb10390a93d5e292c2cb28fdc48"
+    },
+    {
+      "path": "MINIDEV/dev_databases/financial/database_description/loan.csv",
+      "size_bytes": 630,
+      "sha256": "e6f4c7393d3973c9647913206ec4da2b9480bca4a8fb1ed45f4d42c433112756"
+    },
+    {
+      "path": "MINIDEV/dev_databases/financial/database_description/order.csv",
+      "size_bytes": 602,
+      "sha256": "d01db89f3121b96a8c5876108d835ad0ab8d8bd5e132d9d823d384ae12706476"
+    },
+    {
+      "path": "MINIDEV/dev_databases/financial/database_description/trans.csv",
+      "size_bytes": 1155,
+      "sha256": "59efafabbb4347853f29ebfc14fdd18633f724a669e7e26cb7b2ecd628d6c4a2"
+    }
+  ],
+  "selection": {
+    "source_file": "MINIDEV/mini_dev_postgresql.json",
+    "source_record_count": 500,
+    "filter": {
+      "db_id": "financial"
+    },
+    "record_count": 32,
+    "unique_question_id_count": 32,
+    "question_ids": [
+      89,
+      92,
+      93,
+      94,
+      95,
+      98,
+      99,
+      100,
+      112,
+      115,
+      116,
+      117,
+      118,
+      125,
+      128,
+      136,
+      137,
+      138,
+      129,
+      145,
+      149,
+      152,
+      159,
+      168,
+      169,
+      173,
+      186,
+      189,
+      192,
+      194,
+      119,
+      120
+    ],
+    "preserve_source_order": true,
+    "preserve_all_record_fields": true
+  },
+  "derived_file": {
+    "path": "financial-postgresql-gold-sql.json",
+    "size_bytes": 19754,
+    "sha256": "6dffd1fd01ec2820b97e6b28d556659057540f2f339e06cc61336f979f2bc6b4",
+    "purpose": "Evaluator-only Financial PostgreSQL source questions, evidence and Gold SQL. Not a runtime input payload.",
+    "transform": "Filter source JSON array by exact db_id == financial; preserve every record field/value and source order; format UTF-8 JSON with indent=2."
+  },
+  "verification": {
+    "count_and_unique_ids": "passed",
+    "all_gold_sql_nonempty": "passed",
+    "derived_records_equal_source_selection": "passed",
+    "postgresql_import": "not_run",
+    "gold_sql_execution": "not_run",
+    "business_semantics_review": "not_done"
+  },
+  "reproduction": {
+    "steps": [
+      "Use the exact local source files listed in source_files; verify their SHA-256 hashes.",
+      "Load MINIDEV/mini_dev_postgresql.json as a JSON array.",
+      "Select every record with db_id exactly equal to financial, preserving order and all fields.",
+      "Verify count=32 and unique question_id count=32.",
+      "Write UTF-8 JSON with ensure_ascii=false, indent=2 and one trailing newline; compare derived_file.sha256."
+    ],
+    "upstream_redownload": "Not verified; retain the locked original files. Do not edit them in place."
+  },
+  "handling": {
+    "source_files_modified": false,
+    "gold_access": "Evaluator only; do not send SQL/gold records to the evaluated Agent.",
+    "todoist_updated": false
+  }
+}

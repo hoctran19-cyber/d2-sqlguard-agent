@@ -38,3 +38,4 @@ package-dir = {"" = "src"}
 
 [tool.setuptools.package-data]
 "sqlguard.security" = ["policies/*.json"]
+"sqlguard.web" = ["static/*.html", "static/css/*.css", "static/js/*.js", "static/js/*/*.js"]
