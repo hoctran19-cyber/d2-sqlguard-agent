@@ -11,7 +11,12 @@ from sqlguard.agent.controller import AgentController
 from sqlguard.agent.models import AgentRequest, ExecutionBudget
 from sqlguard.agent.planning import OllamaPlanner, Planner, PlannerConfigError
 from sqlguard.agent.postgres_schema import SchemaAdapterError
-from sqlguard.agent.runtime import create_planner_for_role
+from sqlguard.agent.runtime import (
+    QueryRuntime,
+    QueryRuntimeError,
+    build_query_runtime,
+    create_planner_for_role,
+)
 from sqlguard.mcp.tools import InProcessToolRegistry, MockQueryTool, Tool
 from sqlguard.memory.store import InMemoryMemory
 from sqlguard.observability.events import InMemoryEventSink
@@ -36,6 +41,7 @@ class DemoReport:
     failure_reason: str | None
     final_answer: str | None
     schema_tables: int | None = None
+    query_source: str = "mock"
     gate_checks: list[GateCheck] = field(default_factory=list)
     tool_sql: list[str] = field(default_factory=list)
 
@@ -104,18 +110,32 @@ async def run_demo_report(
     gate: SecurityGate | None = None,
     tool: MockQueryTool | None = None,
     budget: ExecutionBudget | None = None,
+    query_runtime: QueryRuntime | None = None,
 ) -> DemoReport:
     # SQLGUARD_ROLE do người vận hành đặt trong môi trường chạy, KHÔNG lấy từ câu hỏi hay LLM.
-    # Role chỉ được dùng khi bật SQLGUARD_SCHEMA_SOURCE=postgres để nạp schema theo role.
-    planner = planner or await create_planner_for_role(os.environ.get("SQLGUARD_ROLE"))
+    # Cùng một role này được dùng cho schema, gate, SecureSqlTool và executor của lần chạy.
+    role = os.environ.get("SQLGUARD_ROLE")
+    # Dựng cấu hình truy vấn TRƯỚC planner để lỗi cấu hình dừng sớm (chưa nạp schema/gọi LLM).
+    # Nếu bên gọi tiêm gate/tool riêng (test) thì giữ nguyên đường đi cũ.
+    if query_runtime is None and gate is None and tool is None:
+        query_runtime = build_query_runtime(role)
+    planner = planner or await create_planner_for_role(role)
     name, model = _planner_label(planner)
     checks: list[GateCheck] = []
     tool_sql: list[str] = []
     # Controller dùng gate thật và tool mock; hai lớp bọc chỉ để ghi lại SQL phục vụ báo cáo.
+    # Chế độ postgres: SecureSqlTool + PolicySQLGate thật; chế độ mock: MockQueryTool như cũ.
+    # Không bao giờ chuyển từ postgres sang mock khi có lỗi (lỗi đã được ném ở trên).
+    if query_runtime is not None:
+        query_tool: Tool = query_runtime.tool
+        query_gate: SecurityGate = query_runtime.gate
+    else:
+        query_tool = tool or MockQueryTool()
+        query_gate = gate or ReadOnlySQLGate()
     controller = AgentController(
         planner=planner,
-        tools=_RecordingTools([tool or MockQueryTool()], tool_sql),
-        security_gate=_RecordingGate(gate or ReadOnlySQLGate(), checks),
+        tools=_RecordingTools([query_tool], tool_sql),
+        security_gate=_RecordingGate(query_gate, checks),
         memory=InMemoryMemory(),
         events=InMemoryEventSink(),
         budget=budget or budget_from_env(),
@@ -130,6 +150,7 @@ async def run_demo_report(
         failure_reason=state.failure_reason,
         final_answer=state.final_answer,
         schema_tables=_schema_table_count(planner),
+        query_source="postgres" if query_runtime is not None else "mock",
         gate_checks=checks,
         tool_sql=tool_sql,
     )
@@ -141,7 +162,11 @@ def format_report(report: DemoReport) -> str:
         lines.append(f"model: {report.model}")
     if report.schema_tables is not None:
         lines.append(f"schema: loaded from postgres ({report.schema_tables} tables)")
-    lines.append("tool: MockQueryTool (mock; no database is queried)")
+    real = report.query_source == "postgres"
+    if real:
+        lines.append("tool: SecureSqlTool + PostgresExecutor (real PostgreSQL, read-only)")
+    else:
+        lines.append("tool: MockQueryTool (mock; no database is queried)")
     if not report.gate_checks:
         lines.append("proposed_sql: (none; the planner produced no SQL for the gate)")
     for number, check in enumerate(report.gate_checks, start=1):
@@ -149,9 +174,9 @@ def format_report(report: DemoReport) -> str:
         verdict = "allowed" if check.allowed else "rejected"
         lines.append(f"security_gate[{number}]: {verdict} ({check.reason})")
     for number, sql in enumerate(report.tool_sql, start=1):
-        lines.append(f"mock_tool_sql[{number}]: {sql}")
+        lines.append(f"{'tool_input_sql' if real else 'mock_tool_sql'}[{number}]: {sql}")
     if report.succeeded:
-        lines.append(f"mock_result: {report.final_answer}")
+        lines.append(f"{'result' if real else 'mock_result'}: {report.final_answer}")
     else:
         lines.append(f"status: {report.status}")
         lines.append(f"failure_reason: {report.failure_reason}")
@@ -170,6 +195,9 @@ def main() -> int:
         report = asyncio.run(run_demo_report())
     except (PlannerConfigError, ValueError) as error:
         print(f"configuration_error: {error}", file=sys.stderr)
+        return 2
+    except QueryRuntimeError as error:
+        print(f"query_config_error: {error.category}", file=sys.stderr)
         return 2
     except SchemaAdapterError as error:
         print(f"schema_error: {error.category}", file=sys.stderr)

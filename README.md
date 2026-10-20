@@ -75,6 +75,24 @@ Performance note: `ollama ps` shows whether the model runs on GPU or `100% CPU`.
 
 Limitations: the planner `context` is currently memory notes, not a database schema, so the model is not given tables/columns until schema retrieval exists; `MockQueryTool` still does not query a real database (no PostgreSQL/MCP yet); there is no LLM-driven SQL repair. Cancelling a run does not abort an in-flight HTTP request; it ends at the timeout.
 
+### Query source: mock (default) vs. real PostgreSQL
+
+`SQLGUARD_QUERY_SOURCE` selects what executes the planner's SQL; it is independent of `SQLGUARD_SCHEMA_SOURCE` (which only controls planner schema context).
+
+- `mock` (default, or unset): `MockQueryTool`; fully offline, no database.
+- `postgres` (explicit opt-in): the per-run `PolicySQLGate` pre-check, then `SecureSqlTool` (which re-checks the policy itself) and `PostgresExecutor`, which runs only the gate's normalized SQL in a read-only transaction with a statement timeout and bounded fetch. Results are sanitized, canary-checked, size-capped, and audited (hashes/counts only).
+
+```bash
+export SQLGUARD_QUERY_SOURCE=postgres
+export SQLGUARD_ROLE=sales                       # operator-configured trusted role, never from the prompt
+export SQLGUARD_DB_DSN_SALES='<postgres DSN for the sales role>'   # one DSN variable per role
+SQLGUARD_PLANNER=ollama SQLGUARD_SCHEMA_SOURCE=postgres python -m sqlguard.demo
+```
+
+Per-role DSN variables are `SQLGUARD_DB_DSN_<ROLE>` (`SALES`, `FINANCE`, `OPERATIONS`); only the selected role's DSN is used, and there is no fallback credential. Optional `SQLGUARD_AUDIT_PATH` writes audit records as JSONL (otherwise they stay in memory). An invalid or missing role, an unknown `SQLGUARD_QUERY_SOURCE`, a missing DSN or driver, or any later database failure fails the run with a safe category (for example `query_config_error: query_role_unconfigured`, exit code `2`) and never falls back to the mock. The fixed `DemoPlanner` SQL (`SELECT 1`) is rejected by the policy in this mode because it references no permitted table; use the Ollama planner with schema loading. The `psycopg` driver must be installed (`python -m pip install -e ".[postgres]"`).
+
+Focused tests (no database needed): `python -m pytest -q tests/unit/test_agent_runtime_query.py tests/security/test_controller_security.py`.
+
 ## Tests, lint, and evaluation
 
 ```bash
