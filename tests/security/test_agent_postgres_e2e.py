@@ -168,7 +168,14 @@ def test_unreachable_database_follows_retry_budget_without_mock_fallback(databas
 
 def test_events_and_audit_do_not_leak_credentials_rows_or_internal_errors(database):  # noqa: F811
     dsn = database["sales"]
-    secrets_to_hide = [conninfo.conninfo_to_dict(dsn)["password"], dsn, "completed"]
+    # Chỉ gồm dữ liệu nhạy cảm thật sự (mật khẩu, DSN, SQL gốc). Không đưa "completed" vào đây vì
+    # đó là trạng thái hợp lệ của event (status="completed", context_retrieval_completed...).
+    secrets_to_hide = [
+        conninfo.conninfo_to_dict(dsn)["password"],
+        dsn,
+        ORDERS_SQL,
+        "SELECT amount_vnd FROM payments",
+    ]
     audit = InMemoryAuditSink()
     events = InMemoryEventSink()
     ok = make_controller(
