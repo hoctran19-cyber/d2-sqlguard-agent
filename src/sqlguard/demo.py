@@ -44,6 +44,7 @@ class DemoReport:
     query_source: str = "mock"
     gate_checks: list[GateCheck] = field(default_factory=list)
     tool_sql: list[str] = field(default_factory=list)
+    schema_dialect: str | None = None
 
 
 class _RecordingGate:
@@ -104,6 +105,11 @@ def _schema_table_count(planner: Planner) -> int | None:
     return len(schema.tables) if schema else None
 
 
+def _schema_dialect(planner: Planner) -> str | None:
+    schema = planner.schema_context if isinstance(planner, OllamaPlanner) else None
+    return schema.dialect if schema else None
+
+
 async def run_demo_report(
     planner: Planner | None = None,
     *,
@@ -124,9 +130,8 @@ async def run_demo_report(
     checks: list[GateCheck] = []
     tool_sql: list[str] = []
     # Controller dùng gate thật và tool mock; hai lớp bọc chỉ để ghi lại SQL phục vụ báo cáo.
-    # Chế độ postgres: SecureSqlTool + PolicySQLGate thật; chế độ mock: MockQueryTool như cũ.
-    # Không bao giờ chuyển từ postgres sang mock khi có lỗi (lỗi đã được ném ở trên).
-    real = query_factory is not None
+    # Chế độ database dùng SecureSqlTool + PolicySQLGate; chế độ mock dùng MockQueryTool như cũ.
+    # Không bao giờ chuyển sang mock khi chế độ database gặp lỗi (lỗi đã được ném ở trên).
     scope_factory = None
     if query_factory is not None:
         # Gate/tool được dựng theo run_id của controller để audit khớp với run.
@@ -135,7 +140,7 @@ async def run_demo_report(
             return RunScope(
                 _RecordingGate(built.gate, checks),
                 _RecordingTools([built.tool], tool_sql),
-                # Kiểm tra rò rỉ câu trả lời cuối bằng role tin cậy của run (chỉ ở chế độ postgres).
+                # Kiểm tra rò rỉ câu trả lời cuối bằng role tin cậy của run.
                 output_check=built.output_check,
             )
 
@@ -161,9 +166,10 @@ async def run_demo_report(
         failure_reason=state.failure_reason,
         final_answer=state.final_answer,
         schema_tables=_schema_table_count(planner),
-        query_source="postgres" if real else "mock",
+        query_source=query_factory.source if query_factory is not None else "mock",
         gate_checks=checks,
         tool_sql=tool_sql,
+        schema_dialect=_schema_dialect(planner),
     )
 
 
@@ -172,10 +178,12 @@ def format_report(report: DemoReport) -> str:
     if report.model:
         lines.append(f"model: {report.model}")
     if report.schema_tables is not None:
-        lines.append(f"schema: loaded from postgres ({report.schema_tables} tables)")
-    real = report.query_source == "postgres"
-    if real:
+        lines.append(f"schema: loaded from {report.schema_dialect} ({report.schema_tables} tables)")
+    real = report.query_source != "mock"
+    if report.query_source == "postgres":
         lines.append("tool: SecureSqlTool + PostgresExecutor (real PostgreSQL, read-only)")
+    elif report.query_source == "sqlite":
+        lines.append("tool: SecureSqlTool + SQLiteExecutor (local SQLite, read-only)")
     else:
         lines.append("tool: MockQueryTool (mock; no database is queried)")
     if not report.gate_checks:

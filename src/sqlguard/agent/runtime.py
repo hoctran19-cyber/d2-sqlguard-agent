@@ -2,18 +2,19 @@
 
 Phần 1 - planner: tạo planner cho từng request, kèm ``SchemaContext`` đã lọc theo role tin cậy.
 
-Schema được nạp bằng ``PostgresSchemaAdapter`` (đã áp dụng ``RolePolicy``) rồi gắn vào một
-``OllamaPlanner`` MỚI cho mỗi lần gọi, nên không có state schema dùng chung giữa các role hay
-request. ``role`` phải do backend lấy từ phiên đã xác thực, không lấy từ câu hỏi hay LLM.
-Tính năng chỉ bật khi ``SQLGUARD_SCHEMA_SOURCE=postgres``; mặc định không mở kết nối DB nào.
+Schema được nạp bằng ``PostgresSchemaAdapter`` hoặc ``SQLiteSchemaAdapter`` (đều áp dụng
+``RolePolicy``) rồi gắn vào một ``OllamaPlanner`` MỚI cho mỗi lần gọi, nên không có state schema
+dùng chung giữa các role hay request. ``role`` phải do backend lấy từ phiên đã xác thực, không
+lấy từ câu hỏi hay LLM. Tính năng chỉ bật khi ``SQLGUARD_SCHEMA_SOURCE=postgres`` hoặc ``sqlite``;
+mặc định không mở kết nối DB nào.
 Mọi lỗi đều fail-closed bằng ``SchemaAdapterError`` (chỉ có nhóm lỗi, không lộ DSN/lỗi gốc).
 Schema chỉ giúp planner chọn đúng định danh; việc cấp quyền SQL vẫn do security gate đảm nhiệm.
 
 Phần 2 - truy vấn: ``build_query_runtime`` dựng bộ ba gate + ``SecureSqlTool`` +
-``PostgresExecutor`` cho MỘT lần chạy, cùng chung một ``SecurityContext`` tin cậy. Chỉ bật khi
-``SQLGUARD_QUERY_SOURCE=postgres`` (cấu hình tách biệt với ``SQLGUARD_SCHEMA_SOURCE``); mặc định
-là ``mock`` và không chạm database. Thiếu/ sai cấu hình thì fail-closed bằng ``QueryRuntimeError``,
-tuyệt đối không tự chuyển sang kết quả giả hay credential dự phòng.
+``PostgresExecutor`` hoặc ``SQLiteExecutor`` cho MỘT lần chạy, cùng chung một
+``SecurityContext`` tin cậy. ``SQLGUARD_QUERY_SOURCE`` (độc lập với nguồn schema) tường minh chọn
+``mock``, ``postgres`` hoặc ``sqlite``; mặc định là ``mock``. Cấu hình sai thì fail-closed bằng
+``QueryRuntimeError``, tuyệt đối không tự chuyển sang kết quả giả hay credential dự phòng.
 """
 
 from __future__ import annotations
@@ -28,11 +29,13 @@ from uuid import uuid4
 from sqlguard.agent.planning import OllamaPlanner, Planner, PlannerConfigError, create_planner
 from sqlguard.agent.postgres_schema import PostgresSchemaAdapter, SchemaAdapterError
 from sqlguard.agent.schema import SchemaContext
+from sqlguard.agent.sqlite_schema import SQLITE_PATH_ENV, SQLiteSchemaAdapter
 from sqlguard.security.audit import AuditSink, InMemoryAuditSink, JsonlAuditSink
 from sqlguard.security.gate import PolicySQLGate, SecurityContext
 from sqlguard.security.policy import RolePolicy, load_default_policy
 from sqlguard.security.postgres import DSN_ENV_PREFIX, PostgresExecutor
-from sqlguard.security.service import QueryExecutor, SecureSqlTool, find_leaks
+from sqlguard.security.service import ExecutorError, QueryExecutor, SecureSqlTool, find_leaks
+from sqlguard.security.sqlite import SQLiteExecutor
 
 SCHEMA_SOURCE_ENV = "SQLGUARD_SCHEMA_SOURCE"
 QUERY_SOURCE_ENV = "SQLGUARD_QUERY_SOURCE"
@@ -61,8 +64,8 @@ async def create_planner_for_role(
     env = os.environ if env is None else env
     # Nguồn schema mặc định là "none": không mở kết nối database nào (giữ nguyên chạy offline).
     source = (env.get(SCHEMA_SOURCE_ENV) or "none").lower()
-    if source not in {"none", "postgres"}:
-        raise PlannerConfigError("SQLGUARD_SCHEMA_SOURCE must be 'none' or 'postgres'")
+    if source not in {"none", "postgres", "sqlite"}:
+        raise PlannerConfigError("SQLGUARD_SCHEMA_SOURCE must be 'none', 'postgres', or 'sqlite'")
     # Tạo planner theo SQLGUARD_PLANNER trước để biết có cần schema hay không.
     planner = create_planner(env)
     # DemoPlanner không dùng schema nên không cần (và không được) mở kết nối database.
@@ -85,7 +88,12 @@ async def create_planner_for_role(
     if not policy.has_role(role):
         raise SchemaAdapterError("schema_unknown_role")
     # Adapter tự kiểm tra role có trong policy, lấy DSN theo role và lọc schema theo RolePolicy.
-    loader = schema_loader or PostgresSchemaAdapter.from_env(policy=policy, env=env)
+    if schema_loader is not None:
+        loader = schema_loader
+    elif source == "postgres":
+        loader = PostgresSchemaAdapter.from_env(policy=policy, env=env)
+    else:
+        loader = SQLiteSchemaAdapter.from_env(policy=policy, env=env)
     # Lỗi nạp schema (thiếu DSN, timeout, schema rỗng...) được ném thẳng ra, không fallback.
     schema = await loader.load(role)
     # Tạo planner MỚI gắn schema của đúng role này; không sửa planner nào đang dùng chung.
@@ -147,6 +155,7 @@ class QueryRuntimeFactory:
     policy: RolePolicy
     executor: QueryExecutor
     audit: AuditSink
+    source: str = "postgres"
 
     def for_run(self, run_id: str) -> QueryRuntime:
         # run_id là của AgentState, nên audit của gate/tool khớp với run của controller.
@@ -185,7 +194,7 @@ def build_query_runtime_factory(
     audit: AuditSink | None = None,
     policy: RolePolicy | None = None,
 ) -> QueryRuntimeFactory | None:
-    """Trả về ``None`` ở chế độ mock; ở chế độ postgres trả về factory dựng runtime theo từng run.
+    """Trả về ``None`` ở chế độ mock; postgres/sqlite tạo runtime riêng cho từng run.
 
     ``role`` phải là role tin cậy (cấu hình của người vận hành/phiên đã xác thực), không bao giờ
     lấy từ câu hỏi, đầu ra LLM hay tham số của tool. ``executor`` và ``audit`` chỉ để tiêm đối
@@ -194,7 +203,7 @@ def build_query_runtime_factory(
     env = os.environ if env is None else env
     # Mặc định "mock": giữ nguyên chạy offline, không mở kết nối database.
     source = (env.get(QUERY_SOURCE_ENV) or "mock").lower()
-    if source not in {"mock", "postgres"}:
+    if source not in {"mock", "postgres", "sqlite"}:
         raise QueryRuntimeError("query_invalid_config")
     if source == "mock":
         return None
@@ -204,7 +213,18 @@ def build_query_runtime_factory(
     policy = policy or load_default_policy()
     if not policy.has_role(role):
         raise QueryRuntimeError("query_unknown_role")
-    if executor is None:
+    if source == "sqlite":
+        path = env.get(SQLITE_PATH_ENV)
+        if not path or not path.strip():
+            raise QueryRuntimeError("query_sqlite_path_missing")
+        if not os.path.isfile(os.path.expanduser(path)):
+            raise QueryRuntimeError("query_sqlite_db_missing")
+        if executor is None:
+            try:
+                executor = SQLiteExecutor(path)
+            except (ExecutorError, OSError, ValueError):
+                raise QueryRuntimeError("query_sqlite_db_unavailable") from None
+    elif executor is None:
         # Mỗi role dùng credential riêng; thiếu DSN thì dừng, không có credential dự phòng.
         dsn = env.get(DSN_ENV_PREFIX + role.upper())
         if not dsn:
@@ -219,4 +239,10 @@ def build_query_runtime_factory(
             audit = JsonlAuditSink(path) if path else InMemoryAuditSink()
         except OSError:
             raise QueryRuntimeError("query_audit_unavailable") from None
-    return QueryRuntimeFactory(role=role, policy=policy, executor=executor, audit=audit)
+    return QueryRuntimeFactory(
+        role=role,
+        policy=policy,
+        executor=executor,
+        audit=audit,
+        source=source,
+    )
