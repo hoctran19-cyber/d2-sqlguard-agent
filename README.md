@@ -47,10 +47,15 @@ The SQL parser is pinned in `pyproject.toml`. Development dependencies provide p
 
 ```bash
 sqlguard-demo
-# demo_value=1
+# planner: demo
+# tool: MockQueryTool (mock; no database is queried)
+# proposed_sql[1]: SELECT 1 AS demo_value
+# security_gate[1]: allowed (Read-only SELECT accepted)
+# mock_tool_sql[1]: SELECT 1 AS demo_value
+# mock_result: demo_value=1
 ```
 
-Equivalent invocation: `python -m sqlguard.demo`. The demo uses a deterministic planner and local mock tool; it does not execute SQL against a database.
+Equivalent invocation: `python -m sqlguard.demo`. The demo prints the selected planner (and model for Ollama), the exact SQL the planner proposed, the security gate verdict, the SQL that reached the tool, and the result or failure status (exit code `1` on failure, `2` on invalid configuration). `mock_result` is the hardcoded `MockQueryTool` value, not a database result; SQL rejected by the gate is never passed to the tool.
 
 ### Optional: local LLM planner (Ollama + Qwen3)
 

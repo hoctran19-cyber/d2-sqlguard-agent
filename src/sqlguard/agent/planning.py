@@ -88,6 +88,10 @@ class OllamaPlanner:
         self._model = model
         self._timeout = timeout_seconds
 
+    @property
+    def model(self) -> str:
+        return self._model
+
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> OllamaPlanner:
         env = os.environ if env is None else env
