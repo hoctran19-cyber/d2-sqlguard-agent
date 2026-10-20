@@ -95,6 +95,31 @@ class QueryRuntime:
     tool: SecureSqlTool  # ranh giới thực thi, tự kiểm tra lại policy bằng gate riêng
 
 
+@dataclass(frozen=True)
+class QueryRuntimeFactory:
+    """Cấu hình truy vấn đã kiểm tra, dựng context/gate/tool MỚI cho từng run_id.
+
+    Chỉ giữ dữ liệu bất biến hoặc đối tượng không mang trạng thái theo request (policy, executor,
+    audit sink); ``SecurityContext`` và bộ đếm của gate được tạo lại trong ``for_run``.
+    """
+
+    role: str
+    policy: RolePolicy
+    executor: QueryExecutor
+    audit: AuditSink
+
+    def for_run(self, run_id: str) -> QueryRuntime:
+        # run_id là của AgentState, nên audit của gate/tool khớp với run của controller.
+        context = SecurityContext(role=self.role, user_id="cli", run_id=run_id, request_mode="nl")
+        return QueryRuntime(
+            context=context,
+            gate=PolicySQLGate(context, self.policy, audit=self.audit),
+            tool=SecureSqlTool(
+                PolicySQLGate(context, self.policy), self.executor, audit=self.audit
+            ),
+        )
+
+
 def build_query_runtime(
     role: str | None,
     env: Mapping[str, str] | None = None,
@@ -102,8 +127,22 @@ def build_query_runtime(
     executor: QueryExecutor | None = None,
     audit: AuditSink | None = None,
     policy: RolePolicy | None = None,
+    run_id: str | None = None,
 ) -> QueryRuntime | None:
-    """Trả về ``None`` ở chế độ mock; ở chế độ postgres trả về gate + SecureSqlTool của run này.
+    """Dựng runtime cho đúng một run (``run_id`` mặc định là UUID mới); ``None`` ở chế độ mock."""
+    factory = build_query_runtime_factory(role, env, executor=executor, audit=audit, policy=policy)
+    return None if factory is None else factory.for_run(run_id or str(uuid4()))
+
+
+def build_query_runtime_factory(
+    role: str | None,
+    env: Mapping[str, str] | None = None,
+    *,
+    executor: QueryExecutor | None = None,
+    audit: AuditSink | None = None,
+    policy: RolePolicy | None = None,
+) -> QueryRuntimeFactory | None:
+    """Trả về ``None`` ở chế độ mock; ở chế độ postgres trả về factory dựng runtime theo từng run.
 
     ``role`` phải là role tin cậy (cấu hình của người vận hành/phiên đã xác thực), không bao giờ
     lấy từ câu hỏi, đầu ra LLM hay tham số của tool. ``executor`` và ``audit`` chỉ để tiêm đối
@@ -137,9 +176,4 @@ def build_query_runtime(
             audit = JsonlAuditSink(path) if path else InMemoryAuditSink()
         except OSError:
             raise QueryRuntimeError("query_audit_unavailable") from None
-    context = SecurityContext(role=role, user_id="cli", run_id=str(uuid4()), request_mode="nl")
-    return QueryRuntime(
-        context=context,
-        gate=PolicySQLGate(context, policy, audit=audit),
-        tool=SecureSqlTool(PolicySQLGate(context, policy), executor, audit=audit),
-    )
+    return QueryRuntimeFactory(role=role, policy=policy, executor=executor, audit=audit)

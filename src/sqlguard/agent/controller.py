@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from time import perf_counter
 from typing import Any
@@ -19,6 +21,18 @@ from sqlguard.observability.events import Event, EventSink
 from sqlguard.security.gate import SecurityGate
 
 
+@dataclass(frozen=True)
+class RunScope:
+    """Gate và tool gắn riêng với MỘT lần chạy (cùng run_id), không dùng chung giữa các request."""
+
+    security_gate: SecurityGate
+    tools: ToolRegistry
+
+
+# Nhận run_id của AgentState và trả về gate/tool đã gắn với run_id đó.
+RunScopeFactory = Callable[[str], RunScope]
+
+
 class AgentController:
     def __init__(
         self,
@@ -28,6 +42,7 @@ class AgentController:
         memory: MemoryStore,
         events: EventSink,
         budget: ExecutionBudget | None = None,
+        run_scope_factory: RunScopeFactory | None = None,
     ) -> None:
         self._planner = planner
         self._tools = tools
@@ -35,6 +50,8 @@ class AgentController:
         self._memory = memory
         self._events = events
         self._budget = budget or ExecutionBudget()
+        # Nếu có factory, mỗi request tự dựng gate/tool riêng thay vì dùng gate/tool dùng chung.
+        self._run_scope_factory = run_scope_factory
 
     async def run(self, request: AgentRequest) -> AgentResult:
         state = AgentState(request=request)
@@ -42,10 +59,16 @@ class AgentController:
         deadline = asyncio.get_running_loop().time() + self._budget.run_timeout_seconds
         try:
             self._emit(state, "run_started")
+            # Kiểm tra câu hỏi trước để request rỗng không tạo gate/tool/kết nối nào.
             if not request.question.strip():
                 raise ValueError("Question must not be empty")
+            scope = (
+                self._run_scope_factory(state.run_id)
+                if self._run_scope_factory
+                else RunScope(self._security_gate, self._tools)
+            )
             await asyncio.wait_for(
-                self._execute(state, deadline), timeout=self._budget.run_timeout_seconds
+                self._execute(state, deadline, scope), timeout=self._budget.run_timeout_seconds
             )
         except TimeoutError:
             state.status = RunStatus.TIMED_OUT
@@ -115,7 +138,7 @@ class AgentController:
                     state.errors.append("memory_error")
         return AgentResult(state=state)
 
-    async def _execute(self, state: AgentState, deadline: float) -> None:
+    async def _execute(self, state: AgentState, deadline: float, scope: RunScope) -> None:
         self._ensure_before_deadline(deadline)
         state.current_step = "context_retrieval"
         self._emit(state, "context_retrieval_started")
@@ -174,7 +197,7 @@ class AgentController:
             self._emit(state, "security_check_started")
             state.sql_attempt_count += 1
             try:
-                decision = self._security_gate.check(sql)
+                decision = scope.security_gate.check(sql)
                 allowed = decision.allowed
                 if not isinstance(allowed, bool):
                     raise TypeError
@@ -208,7 +231,7 @@ class AgentController:
                     self._remaining_seconds(deadline),
                 )
                 output = await asyncio.wait_for(
-                    self._tools.call(
+                    scope.tools.call(
                         "query",
                         {"sql": sql},
                         timeout_seconds=timeout,

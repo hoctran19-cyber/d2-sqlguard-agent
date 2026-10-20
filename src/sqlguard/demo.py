@@ -7,14 +7,14 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
-from sqlguard.agent.controller import AgentController
+from sqlguard.agent.controller import AgentController, RunScope
 from sqlguard.agent.models import AgentRequest, ExecutionBudget
 from sqlguard.agent.planning import OllamaPlanner, Planner, PlannerConfigError
 from sqlguard.agent.postgres_schema import SchemaAdapterError
 from sqlguard.agent.runtime import (
-    QueryRuntime,
     QueryRuntimeError,
-    build_query_runtime,
+    QueryRuntimeFactory,
+    build_query_runtime_factory,
     create_planner_for_role,
 )
 from sqlguard.mcp.tools import InProcessToolRegistry, MockQueryTool, Tool
@@ -110,15 +110,15 @@ async def run_demo_report(
     gate: SecurityGate | None = None,
     tool: MockQueryTool | None = None,
     budget: ExecutionBudget | None = None,
-    query_runtime: QueryRuntime | None = None,
+    query_factory: QueryRuntimeFactory | None = None,
 ) -> DemoReport:
     # SQLGUARD_ROLE do người vận hành đặt trong môi trường chạy, KHÔNG lấy từ câu hỏi hay LLM.
     # Cùng một role này được dùng cho schema, gate, SecureSqlTool và executor của lần chạy.
     role = os.environ.get("SQLGUARD_ROLE")
     # Dựng cấu hình truy vấn TRƯỚC planner để lỗi cấu hình dừng sớm (chưa nạp schema/gọi LLM).
     # Nếu bên gọi tiêm gate/tool riêng (test) thì giữ nguyên đường đi cũ.
-    if query_runtime is None and gate is None and tool is None:
-        query_runtime = build_query_runtime(role)
+    if query_factory is None and gate is None and tool is None:
+        query_factory = build_query_runtime_factory(role)
     planner = planner or await create_planner_for_role(role)
     name, model = _planner_label(planner)
     checks: list[GateCheck] = []
@@ -126,13 +126,21 @@ async def run_demo_report(
     # Controller dùng gate thật và tool mock; hai lớp bọc chỉ để ghi lại SQL phục vụ báo cáo.
     # Chế độ postgres: SecureSqlTool + PolicySQLGate thật; chế độ mock: MockQueryTool như cũ.
     # Không bao giờ chuyển từ postgres sang mock khi có lỗi (lỗi đã được ném ở trên).
-    if query_runtime is not None:
-        query_tool: Tool = query_runtime.tool
-        query_gate: SecurityGate = query_runtime.gate
-    else:
-        query_tool = tool or MockQueryTool()
-        query_gate = gate or ReadOnlySQLGate()
+    real = query_factory is not None
+    scope_factory = None
+    if query_factory is not None:
+        # Gate/tool được dựng theo run_id của controller để audit khớp với run.
+        def scope_factory(run_id: str) -> RunScope:
+            built = query_factory.for_run(run_id)
+            return RunScope(
+                _RecordingGate(built.gate, checks), _RecordingTools([built.tool], tool_sql)
+            )
+
+    # Đường postgres chỉ đi qua scope_factory (gate/tool theo run_id); không nhận runtime dựng sẵn.
+    query_tool: Tool = tool or MockQueryTool()
+    query_gate: SecurityGate = gate or ReadOnlySQLGate()
     controller = AgentController(
+        run_scope_factory=scope_factory,
         planner=planner,
         tools=_RecordingTools([query_tool], tool_sql),
         security_gate=_RecordingGate(query_gate, checks),
@@ -150,7 +158,7 @@ async def run_demo_report(
         failure_reason=state.failure_reason,
         final_answer=state.final_answer,
         schema_tables=_schema_table_count(planner),
-        query_source="postgres" if query_runtime is not None else "mock",
+        query_source="postgres" if real else "mock",
         gate_checks=checks,
         tool_sql=tool_sql,
     )
