@@ -12,6 +12,8 @@ dependencies = ["sqlglot==26.16.4"]
 
 [project.optional-dependencies]
 dev = ["pytest==8.3.5", "ruff==0.11.0"]
+postgres = ["psycopg[binary]==3.3.6"]
+web = ["fastapi==0.115.12", "uvicorn==0.34.2", "httpx==0.28.1"]
 
 [project.scripts]
 sqlguard-demo = "sqlguard.demo:main"
@@ -21,6 +23,7 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = ["db: needs a disposable PostgreSQL server (SQLGUARD_TEST_PG_ADMIN_DSN)"]
 
 [tool.ruff]
 line-length = 100
@@ -32,3 +35,6 @@ select = ["E", "F", "I", "UP"]
 
 [tool.setuptools]
 package-dir = {"" = "src"}
+
+[tool.setuptools.package-data]
+"sqlguard.security" = ["policies/*.json"]
