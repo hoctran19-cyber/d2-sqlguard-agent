@@ -43,7 +43,7 @@ def make(role, env=OLLAMA_ENV, loader=None):
 
 # Lấy nội dung prompt gửi cho model để kiểm tra schema có/không xuất hiện.
 def prompt_of(planner):
-    return str(planner._build_payload("q", ()))
+    return planner._build_payload("q", ())["messages"][1]["content"]
 
 
 # Loader nhận đúng role tin cậy và planner nhận đúng schema đã nạp.
@@ -147,6 +147,27 @@ def test_offline_defaults_do_not_load_schema():
     demo_planner = make("sales", env={"SQLGUARD_SCHEMA_SOURCE": "postgres"}, loader=loader)
     assert isinstance(demo_planner, DemoPlanner)
     assert loader.roles == []
+
+
+def test_runtime_binds_trusted_role_policy_without_loading_schema():
+    planner = make(
+        " SALES ",
+        env={"SQLGUARD_PLANNER": "ollama", "SQLGUARD_SCHEMA_SOURCE": "none"},
+    )
+
+    assert isinstance(planner, OllamaPlanner)
+    payload = planner._build_payload("user-controlled question", ())
+    system = payload["messages"][0]["content"]
+    assert 'The user\'s role is "sales"' in system
+    assert "user-controlled question" not in system
+
+
+def test_ollama_without_runtime_role_keeps_legacy_construction():
+    planner = make(None, env={"SQLGUARD_PLANNER": "ollama"})
+
+    assert isinstance(planner, OllamaPlanner)
+    payload = planner._build_payload("q", ())
+    assert 'The user\'s role is "sales"' not in payload["messages"][0]["content"]
 
 
 # Giá trị SQLGUARD_SCHEMA_SOURCE ngoài "none"/"postgres" bị từ chối.

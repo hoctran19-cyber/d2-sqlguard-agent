@@ -46,7 +46,7 @@ from sqlguard.security.prompting import (build_system_prompt, render_denial,
 
 policy = load_default_policy()
 messages = [
-    {"role": "system", "content": build_system_prompt(policy, context.role, query=question,
+    {"role": "system", "content": build_system_prompt(policy, context.role,
                                                        output_format=YOUR_JSON_FORMAT)},
     {"role": "user", "content": render_user_question(question)},
 ]
@@ -57,6 +57,13 @@ messages.append({"role": "tool", "content": render_denial(decision)})
 ```
 
 Quy tắc:
+- `create_planner_for_role(role, ...)` gắn role đã xác thực và `RolePolicy` tin cậy vào system
+  prompt của `OllamaPlanner`; `role` không được suy ra từ câu hỏi, schema, context hay model.
+- Nếu caller dựng trực tiếp `OllamaPlanner` mà không truyền role/policy, planner giữ system
+  prompt tương thích cũ; mọi đầu vào vẫn được đóng trong untrusted blocks. Không có role nào
+  được suy diễn cho caller đó.
+- Schema policy trong system prompt là cấu hình tin cậy; `SchemaContext` runtime, câu hỏi,
+  memory/context, SQL cũ và repair feedback ở user message, mỗi loại có nonce delimiter riêng.
 - **Không** đưa role vào tham số tool; `SecureSqlTool` và `SchemaTool` từ chối mọi tham số ngoài `sql` / `query` (`invalid_tool_input`).
 - **Không** ghép nội dung tool/note vào system prompt; luôn qua `render_tool_result` (có nonce chống giả mạo thẻ đóng).
 - `PROMPT_VERSION` trong `prompting.py` nên được ghi cùng config của mỗi lần chạy evaluation.

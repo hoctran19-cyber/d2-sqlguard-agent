@@ -50,6 +50,7 @@ async def create_planner_for_role(
     env: Mapping[str, str] | None = None,
     *,
     schema_loader: SchemaLoader | None = None,
+    policy: RolePolicy | None = None,
 ) -> Planner:
     """Trả về planner mới cho một request.
 
@@ -65,17 +66,30 @@ async def create_planner_for_role(
     # Tạo planner theo SQLGUARD_PLANNER trước để biết có cần schema hay không.
     planner = create_planner(env)
     # DemoPlanner không dùng schema nên không cần (và không được) mở kết nối database.
-    if source == "none" or not isinstance(planner, OllamaPlanner):
+    if not isinstance(planner, OllamaPlanner):
         return planner
+    # Role/policy chỉ được lấy từ cấu hình runtime tin cậy; legacy callers vẫn có thể không có.
+    if source == "none":
+        if not role or not role.strip():
+            return planner
+        role = role.strip().casefold()
+        policy = policy or load_default_policy()
+        if not policy.has_role(role):
+            raise SchemaAdapterError("schema_unknown_role")
+        return OllamaPlanner.from_env(env, role=role, policy=policy)
     # Từ đây phải nạp schema: thiếu role thì từ chối, tuyệt đối không dùng schema không lọc.
     if not role or not role.strip():
         raise SchemaAdapterError("schema_role_missing")
+    role = role.strip().casefold()
+    policy = policy or load_default_policy()
+    if not policy.has_role(role):
+        raise SchemaAdapterError("schema_unknown_role")
     # Adapter tự kiểm tra role có trong policy, lấy DSN theo role và lọc schema theo RolePolicy.
-    loader = schema_loader or PostgresSchemaAdapter.from_env(env=env)
+    loader = schema_loader or PostgresSchemaAdapter.from_env(policy=policy, env=env)
     # Lỗi nạp schema (thiếu DSN, timeout, schema rỗng...) được ném thẳng ra, không fallback.
     schema = await loader.load(role)
     # Tạo planner MỚI gắn schema của đúng role này; không sửa planner nào đang dùng chung.
-    return OllamaPlanner.from_env(env, schema_context=schema)
+    return OllamaPlanner.from_env(env, schema_context=schema, policy=policy, role=role)
 
 
 class QueryRuntimeError(Exception):
