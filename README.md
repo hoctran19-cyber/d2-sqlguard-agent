@@ -64,9 +64,9 @@ curl http://localhost:11434/api/tags   # check the local API lists qwen3:8b
 SQLGUARD_PLANNER=ollama python -m sqlguard.demo
 ```
 
-Optional settings: `SQLGUARD_OLLAMA_URL` (default `http://localhost:11434/api/chat`), `SQLGUARD_OLLAMA_MODEL` (default `qwen3:8b`), `SQLGUARD_OLLAMA_TIMEOUT_SECONDS` (default `60`). The planner uses non-streaming structured JSON output (`sql`, `summary`) and fails the run with `planner_error` on any Ollama or output-validation error; it never falls back to `DemoPlanner`. Generated SQL is only a proposal: it still goes through the security gate before any tool call.
+Optional settings: `SQLGUARD_RUN_TIMEOUT_SECONDS` (demo run budget, default `60`), `SQLGUARD_OLLAMA_URL` (default `http://localhost:11434/api/chat`), `SQLGUARD_OLLAMA_MODEL` (default `qwen3:8b`), `SQLGUARD_OLLAMA_TIMEOUT_SECONDS` (default `60`). The planner uses non-streaming structured JSON output (`sql`, `summary`) and fails the run with `planner_error` on any Ollama or output-validation error; it never falls back to `DemoPlanner`. Generated SQL is only a proposal: it still goes through the security gate before any tool call.
 
-Performance note: `ollama ps` shows whether the model runs on GPU or `100% CPU`. On CPU-only machines `qwen3:8b` can take minutes per request; raise `SQLGUARD_OLLAMA_TIMEOUT_SECONDS`, and note the controller's own 60-second run budget (`ExecutionBudget`) will end the run with `run_timeout` first, so the demo may need a larger budget or a smaller model (`SQLGUARD_OLLAMA_MODEL`).
+Performance note: `ollama ps` shows whether the model runs on GPU or `100% CPU`. On CPU-only machines `qwen3:8b` can take minutes per request; raise `SQLGUARD_OLLAMA_TIMEOUT_SECONDS`, and note the controller's own 60-second run budget (`ExecutionBudget`) will end the run with `run_timeout` first, so also set `SQLGUARD_RUN_TIMEOUT_SECONDS` (e.g. `600`) for the demo, or use a smaller model (`SQLGUARD_OLLAMA_MODEL`).
 
 Limitations: the planner `context` is currently memory notes, not a database schema, so the model is not given tables/columns until schema retrieval exists; `MockQueryTool` still does not query a real database (no PostgreSQL/MCP yet); there is no LLM-driven SQL repair. Cancelling a run does not abort an in-flight HTTP request; it ends at the timeout.
 
