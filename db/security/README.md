@@ -7,6 +7,7 @@ Database-enforced least privilege for SQLGuard. It is independent of the AST gat
 | `00_reference_schema.sql` | Synthetic reference schema of policy `d2-synthetic-v1` (draft until D2-03 freezes the dataset) | migration owner |
 | `10_roles.sql` | Group roles with column-level `GRANT SELECT`, login roles with read-only/timeout/search_path settings, note-writer for the Attack Lab. Idempotent. | migration owner / superuser |
 | `20_reference_seed.sql` | Minimal rows with canaries in every forbidden column and the injection notes used by `evaluation/datasets/security/injection_cases_v1.json` (customers #2–3, orders #1–3); customer #1 keeps a clean note | migration owner |
+| `30_local_role_passwords.sh` | Local-only bootstrap of the three agent login passwords from environment variables; uses psql literal quoting | local PostgreSQL container |
 
 ## Roles
 
@@ -21,17 +22,84 @@ Nobody gets `identity_number`, `CREATE` on `public`, `TEMPORARY` on the database
 
 The grants must stay identical to `src/sqlguard/security/policies/d2_synthetic_v1.json`; the DB test compares every (role, table, column) privilege with the policy.
 
-## Setup
+## Local PostgreSQL 16 sandbox
+
+Prerequisites: Docker Engine or Docker Desktop with the Compose plugin. This sandbox loads the
+synthetic schema and seed rows above; it does not load BIRD data. It is intended for local
+development and disposable security tests, not for production.
+
+1. Copy `.env.example` to `.env`, then replace every `replace-with-...` password with a unique
+   local secret using URL-safe characters (letters, digits, `-`, `_`). Keep the file private
+   (`chmod 600 .env`); `.env` is ignored by Git. The three `SQLGUARD_DB_PASSWORD_*` values must
+   match the corresponding host DSNs. If you change `SQLGUARD_PG_PORT`, update the port in all
+   four DSNs too. Do not commit `.env`.
+2. Start PostgreSQL:
 
 ```bash
-psql "$ADMIN_DSN" -v ON_ERROR_STOP=1 -f db/security/00_reference_schema.sql
-psql "$ADMIN_DSN" -v ON_ERROR_STOP=1 -f db/security/10_roles.sql
-psql "$ADMIN_DSN" -v ON_ERROR_STOP=1 -f db/security/20_reference_seed.sql   # test/demo DB only
-# Passwords come from a secret store or local env, never from Git:
-psql "$ADMIN_DSN" -c "ALTER ROLE sqlguard_sales_app PASSWORD '$SALES_DB_PASSWORD'"
+docker compose --env-file .env -f compose.postgres-sandbox.yml up -d
 ```
 
-The backend reads one DSN per role from `SQLGUARD_DB_DSN_SALES`, `SQLGUARD_DB_DSN_FINANCE`, `SQLGUARD_DB_DSN_OPERATIONS` (`PostgresExecutor.from_env()`), and picks the DSN from the authenticated session's role.
+Compose binds the database only to `127.0.0.1` (port `SQLGUARD_PG_PORT`, default `54329`) and
+uses the named volume `sqlguard-pg16-data`. The official PostgreSQL image processes
+`/docker-entrypoint-initdb.d` files in name order, only when it initializes an empty data
+directory. The existing schema, roles and seed SQL therefore run before the local password
+bootstrap. Editing those files does not update an already initialized volume; use the reset
+procedure below when you intentionally need a fresh sandbox.
+
+3. Inspect service health and verify that the schema and seed tables initialized:
+
+```bash
+docker compose --env-file .env -f compose.postgres-sandbox.yml ps
+docker compose --env-file .env -f compose.postgres-sandbox.yml exec -T postgres \
+  psql -U sqlguard_admin -d sqlguard_local -c \
+  "SELECT current_database(), (SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public') AS public_tables, (SELECT count(*) FROM customers) AS customers, (SELECT count(*) FROM products) AS products, (SELECT count(*) FROM orders) AS orders, (SELECT count(*) FROM order_items) AS order_items, (SELECT count(*) FROM payments) AS payments"
+```
+
+4. Configure a host-side SQLGuard process with the role-specific DSNs in `.env`. The examples
+   point at the three `sqlguard_*_app` login roles and the local database. To export the
+   settings into a development shell without printing them, source your own shell-compatible
+   `.env`:
+
+```bash
+set -a
+. ./.env
+set +a
+```
+
+`PostgresExecutor.from_env()` reads `SQLGUARD_DB_DSN_SALES`,
+`SQLGUARD_DB_DSN_FINANCE`, and `SQLGUARD_DB_DSN_OPERATIONS`, then selects only the DSN matching
+the authenticated role. Do not configure the note-writer DSN as an agent query credential.
+
+The security integration tests can use the local admin connection (the test fixture creates
+and drops its own temporary databases):
+
+```bash
+python -m pytest -q -m db tests/security/test_db_grants.py tests/security/test_agent_postgres_e2e.py
+```
+
+Those tests reset the cluster-wide runtime-role passwords to temporary test values. To restore
+the local `.env` passwords before using SQLGuard again, rerun the password bootstrap explicitly:
+
+```bash
+docker compose --env-file .env -f compose.postgres-sandbox.yml exec -T postgres \
+  sh /docker-entrypoint-initdb.d/30_local_role_passwords.sh
+```
+
+Stop the service without deleting data:
+
+```bash
+docker compose --env-file .env -f compose.postgres-sandbox.yml down
+```
+
+Reset the sandbox only when you intend to permanently delete its local database data:
+
+```bash
+docker compose --env-file .env -f compose.postgres-sandbox.yml down -v
+```
+
+The `-v` option deletes the named volume and all sandbox data. Normal shutdown with `down`
+does not delete it. Do not run `docker compose config` in a shared terminal: it renders
+interpolated environment values, including passwords.
 
 ## Known residual risk
 
