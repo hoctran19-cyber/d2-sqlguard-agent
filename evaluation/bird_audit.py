@@ -24,6 +24,7 @@ _DIALECT_ALIASES = {
     "mysql": "mysql",
 }
 _METADATA_FILENAMES = {"dataset_info.json", "state.json", "metadata.json"}
+_COMMIT_SHA_PATTERN = re.compile(r"[0-9a-fA-F]{40}")
 _SQL_FEATURES = {
     "case": re.compile(r"\bCASE\b", re.IGNORECASE),
     "exists": re.compile(r"\bEXISTS\b", re.IGNORECASE),
@@ -55,8 +56,10 @@ def audit_dataset(
     Dataset content is read locally only. Candidate selection is a reproducible heuristic;
     every candidate remains pending human question/Gold SQL review and execution.
     """
-    if not revision.strip():
-        raise DatasetAuditError("Dataset revision is required; pass a pinned source revision.")
+    if not isinstance(revision, str) or _COMMIT_SHA_PATTERN.fullmatch(revision) is None:
+        raise DatasetAuditError(
+            "Dataset revision must be a full 40-character hexadecimal commit SHA."
+        )
     if not isinstance(acquired_on, date) or isinstance(acquired_on, datetime):
         raise DatasetAuditError(
             "Acquisition date is required; pass the date the local data was obtained."

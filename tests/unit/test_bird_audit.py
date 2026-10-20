@@ -220,10 +220,30 @@ def test_shortlist_is_deterministic_and_pending_with_gold_references(tmp_path):
     )
 
 
-def test_revision_and_acquisition_date_are_required(tmp_path):
+@pytest.mark.parametrize("revision", ["", "a" * 12, "g" * 40])
+def test_revision_must_be_a_full_hexadecimal_commit_sha(tmp_path, revision):
     source = write_dataset(tmp_path / "records.json", [record(1)])
-    with pytest.raises(DatasetAuditError, match="revision is required"):
-        audit_dataset(source, dialect="sqlite", revision="", acquired_on=ACQUIRED_ON)
+
+    with pytest.raises(DatasetAuditError, match="full 40-character hexadecimal commit SHA"):
+        audit_dataset(source, dialect="sqlite", revision=revision, acquired_on=ACQUIRED_ON)
+
+
+def test_valid_full_hexadecimal_commit_sha_is_preserved(tmp_path):
+    source = write_dataset(tmp_path / "records.json", [record(1)])
+    revision = "0123456789abcdef0123456789abcdef01234567"
+
+    report = audit_dataset(
+        source,
+        dialect="sqlite",
+        revision=revision,
+        acquired_on=ACQUIRED_ON,
+    )
+
+    assert report["source"]["revision"] == revision
+
+
+def test_acquisition_date_is_required(tmp_path):
+    source = write_dataset(tmp_path / "records.json", [record(1)])
     with pytest.raises(DatasetAuditError, match="Acquisition date is required"):
         audit_dataset(source, dialect="sqlite", revision=REVISION, acquired_on=None)
 
