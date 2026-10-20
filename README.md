@@ -30,10 +30,16 @@ The architecture and interfaces are described in [`docs/architecture/`](docs/arc
 - pip
 
 ```bash
-python -m venv .venv
+python3 -m venv .venv
 source .venv/bin/activate  # Windows: .venv\Scripts\activate
+which python               # must point to .../d2-sqlguard-agent/.venv/bin/python
 python -m pip install -e ".[dev]"
 ```
+
+macOS/Homebrew notes:
+
+- If `pip install` fails with `externally-managed-environment`, `python` is not the venv interpreter (e.g. conda `(base)` is active). Run `conda deactivate`, recreate the venv (`rm -rf .venv && python3 -m venv .venv`), activate it, and check `which python`. Do not use `--break-system-packages`.
+- If `pytest: command not found`, the `[dev]` extra is not installed. Run `python -m pip install -e ".[dev]"` and use `python -m pytest`.
 
 The SQL parser is pinned in `pyproject.toml`. Development dependencies provide pytest and Ruff.
 
@@ -67,15 +73,15 @@ Limitations: the planner `context` is currently memory notes, not a database sch
 ## Tests, lint, and evaluation
 
 ```bash
-pytest -q
-ruff check .
-ruff format --check .
+python -m pytest -q
+python -m ruff check .
+python -m ruff format --check .
 ```
 
 Run the offline sample evaluation case with:
 
 ```bash
-pytest -q tests/unit/test_evaluation.py
+python -m pytest -q tests/unit/test_evaluation.py
 ```
 
 Add approved benchmark inputs and expected behaviors under `evaluation/datasets/`, without private or sensitive data. The current evaluation code reports per-case status/latency only; it does not calculate accuracy or claim benchmark performance.
