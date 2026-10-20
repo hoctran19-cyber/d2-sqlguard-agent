@@ -186,3 +186,32 @@ def test_llm_select_reaches_tool_after_gate(http):
     )
     assert result.succeeded
     assert tool.calls == 1
+
+
+def test_schema_context_is_included_as_untrusted_data(http):
+    from sqlguard.agent.schema import SchemaColumn, SchemaContext, SchemaTable
+
+    http["result"] = FakeResponse(plan_body(sql="SELECT id FROM orders", summary="orders"))
+    schema = SchemaContext(
+        dialect="postgres",
+        tables=(
+            SchemaTable(
+                "orders",
+                (SchemaColumn("id", "integer"), SchemaColumn("total", "numeric")),
+            ),
+        ),
+    )
+    planner = OllamaPlanner(schema_context=schema)
+    asyncio.run(planner.create_plan("List order IDs", ()))
+    messages = json.loads(http["calls"][0][0].data)["messages"]
+    assert "Table: orders" in messages[1]["content"]
+    assert "id: integer" in messages[1]["content"]
+    assert "total: numeric" in messages[1]["content"]
+    assert "untrusted data" in messages[1]["content"].lower()
+
+
+def test_schema_context_is_optional_and_defaults_to_not_supplied(http):
+    http["result"] = FakeResponse(plan_body(sql="SELECT 1", summary="one"))
+    asyncio.run(OllamaPlanner().create_plan("q", ()))
+    messages = json.loads(http["calls"][0][0].data)["messages"]
+    assert "(not supplied)" in messages[1]["content"]
