@@ -100,10 +100,10 @@ File: `src/sqlguard/memory/store.py`, `src/sqlguard/observability/events.py`.
 - Dùng dialect PostgreSQL và kiểm thử với SQL thực tế.
 - Chính sách deny-by-default; không dựa vào prompt để bảo vệ quyền.
 
-#### K3. Thiết lập PostgreSQL grants
-- Tạo roles/privileges theo policy.
-- Kiểm tra database từ chối truy cập trái phép độc lập với application gate.
-- Dùng tài khoản quyền tối thiểu cho Agent.
+#### K3. Lớp chặn độc lập ở database (SQLite)
+- Cập nhật 21/10: nhóm dùng SQLite + BIRD Financial, bỏ PostgreSQL; grants PostgreSQL không còn dùng.
+- Dùng `sqlite3` authorizer trong executor để chỉ cho đọc bảng/cột mà role được phép, chặn PRAGMA, ATTACH, ghi và hàm ngoài allowlist.
+- Kiểm tra executor từ chối truy cập trái phép kể cả khi tắt application gate.
 
 #### K4. Kiểm thử injection
 - Hai direct injection: D2-I01, D2-I02.
@@ -123,7 +123,7 @@ File: `src/sqlguard/memory/store.py`, `src/sqlguard/observability/events.py`.
 4. Bốn injection cases có kết quả, trace và kết luận.
 5. Threat Model v1 và remediation được bàn giao.
 
-**Lưu ý kỹ thuật:** source hiện có dùng SQLGlot với dialect `sqlite` trong gate, trong khi D2 yêu cầu PostgreSQL. Cần thống nhất và kiểm thử dialect trước khi dùng policy trong môi trường thực tế.
+**Lưu ý kỹ thuật (cập nhật 21/10):** `PolicySQLGate` hiện parse và normalize bằng dialect `postgres`, trong khi database đã chốt là SQLite (BIRD Financial). Cần chuyển gate sang dialect `sqlite` và viết lại policy cho schema Financial. Kế hoạch chi tiết: `docs/threat-model/SECURITY_WORKPLAN.md` §12.
 
 ---
 
