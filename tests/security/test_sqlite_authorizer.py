@@ -17,7 +17,7 @@ from sqlguard.security.audit import InMemoryAuditSink
 from sqlguard.security.gate import GateMode, PolicySQLGate, SecurityContext
 from sqlguard.security.policy import RolePolicy, load_default_policy
 from sqlguard.security.service import ExecutorError, SecureSqlTool
-from sqlguard.security.sqlite import SQLiteExecutor
+from sqlguard.security.sqlite import SQLiteExecutor, has_unchecked_join
 
 POLICY = load_default_policy()
 ROLES = tuple(sorted(POLICY.roles))
@@ -236,3 +236,88 @@ def test_gate_off_still_blocks_forbidden_reads_at_the_database(db_path, role):
     assert raised.value.category == "db_permission_denied"
     assert not raised.value.retryable
     assert audit.records[-1].error_category == "db_permission_denied"
+
+
+# SQLite does not call the authorizer for the columns a USING / NATURAL join compares, nor (with
+# COUNT(*)) for the table itself: without the keyword check each query below returns 1 for a correct
+# guess and 0 otherwise, for any role, even on a table outside the policy.
+@pytest.mark.parametrize("role", ROLES)
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT COUNT(*) FROM secret_table JOIN (SELECT 'CANARY-SECRET-0001' AS secret) "
+        "USING (secret)",
+        "SELECT COUNT(*) FROM secret_table NATURAL JOIN (SELECT 'CANARY-SECRET-0001' AS secret)",
+        "SELECT x.secret FROM secret_table JOIN (SELECT 'CANARY-SECRET-0001' AS secret) x "
+        "USING (secret)",
+        "SELECT COUNT(*) FROM secret_table LEFT JOIN (SELECT 'CANARY-SECRET-0001' AS secret) x "
+        "using(secret)",
+        "SELECT COUNT(*) FROM secret_table JOIN (SELECT 'K' AS secret) x/**/UsInG\t(secret)",
+        "SELECT COUNT(*) FROM secret_table JOIN (SELECT 'K' AS secret) x -- note\nUSING (secret)",
+        # SQLite block comments do not nest: USING sits outside both comments.
+        "SELECT COUNT(*) FROM secret_table JOIN (SELECT 'K' AS secret) x "
+        "/* /* */ USING (secret) /* */",
+        "SELECT COUNT(*), 'a''' FROM secret_table JOIN (SELECT 'K' AS secret) x USING (secret)",
+    ],
+)
+def test_using_and_natural_joins_are_denied_because_the_authorizer_cannot_see_them(
+    db_path, role, sql
+):
+    assert denied_category(db_path, role, sql) == "db_permission_denied"
+
+
+@pytest.mark.parametrize("role", ROLES)
+def test_using_join_cannot_probe_a_forbidden_column(db_path, role):
+    table, column = forbidden_columns(role)[0]
+    canary = next(
+        (c.value for c in POLICY.canaries if (c.table, c.column) == (table, column)),
+        f"{table}.{column}.1",
+    )
+    sql = (
+        f'SELECT COUNT(*) FROM "{table}" JOIN (SELECT \'{canary}\' AS "{column}") x '
+        f'USING ("{column}")'
+    )
+
+    assert denied_category(db_path, role, sql) == "db_permission_denied"
+
+
+@pytest.mark.parametrize("role", ROLES)
+def test_gate_off_still_blocks_a_using_join_probe(db_path, role):
+    audit = InMemoryAuditSink()
+    gate = PolicySQLGate(SecurityContext(role=role), POLICY, mode=GateMode.OFF)
+    tool = SecureSqlTool(gate, SQLiteExecutor(db_path, POLICY), audit=audit)
+    sql = (
+        "SELECT COUNT(*) FROM secret_table JOIN (SELECT 'CANARY-SECRET-0001' AS secret) "
+        "USING (secret)"
+    )
+
+    with pytest.raises(ToolError) as raised:
+        asyncio.run(tool.call({"sql": sql}, timeout_seconds=3))
+
+    assert raised.value.category == "db_permission_denied"
+    assert not raised.value.retryable
+    assert audit.records[-1].error_category == "db_permission_denied"
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT 'using natural' AS note",
+        "SELECT 'it''s using' AS note",
+        'SELECT "using", "a""natural" FROM t',
+        "SELECT `using`, [natural] FROM t",
+        "SELECT 1 -- using\n",
+        "SELECT 1 /* natural join ... using (x) */",
+        "SELECT using_count, natural_key, x_using FROM t",
+    ],
+)
+def test_keywords_inside_literals_identifiers_and_comments_are_not_flagged(sql):
+    assert not has_unchecked_join(sql)
+
+
+def test_allowed_query_mentioning_using_in_a_literal_still_runs(db_path):
+    table = readable_table("sales")
+    column = sorted(POLICY.allowed_columns("sales", table))[0]
+    sql = f'SELECT COUNT(*) FROM "{table}" WHERE "{column}" <> \'using natural join\''
+
+    assert execute(db_path, "sales", sql).rows == ((2,),)

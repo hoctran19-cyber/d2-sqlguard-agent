@@ -7,6 +7,10 @@ read in ``main``, and SQLite functions mapped from the policy allowlist; every o
 (PRAGMA, ATTACH, writes, DDL, temp objects, recursive CTEs, ``sqlite_master``) is denied. The file
 is also opened ``mode=ro`` with ``PRAGMA query_only``. Denials use ``SQLITE_DENY``, never
 ``SQLITE_IGNORE``, which would silently turn a forbidden column into ``NULL``.
+
+SQLite never calls the authorizer for the columns a ``JOIN ... USING`` or ``NATURAL JOIN`` compares
+(nor, with ``COUNT(*)``, for the table itself), so such a join could test any column value, even
+of a table outside the policy. The gate already rejects both; the executor refuses them as well.
 """
 
 from __future__ import annotations
@@ -45,8 +49,61 @@ _SQLITE_FUNCTIONS: dict[str, tuple[str, ...]] = {
 # Functions SQLite runs for syntax the gate treats as structural: LIKE, ILIKE (LOWER .. LIKE
 # LOWER ..), IIF (exp.If) and CAST to DATE/TIMESTAMP (DATE(), DATETIME()).
 _STRUCTURAL_FUNCTIONS = frozenset({"like", "lower", "iif", "date", "datetime"})
+# Join keywords whose compared columns the authorizer never sees (see the module docstring).
+_UNCHECKED_JOIN_KEYWORDS = frozenset({"NATURAL", "USING"})
 
 Authorizer = Callable[[int, str | None, str | None, str | None, str | None], int]
+
+
+def _is_id_char(char: str) -> bool:
+    # SQLite's IdChar(): ASCII letters, digits, "_", "$", and every non-ASCII character.
+    return (char.isascii() and (char.isalnum() or char in "_$")) or ord(char) >= 0x80
+
+
+def _skip_quoted(sql: str, start: int, quote: str) -> int:
+    """Index just past a quoted token opened before ``start``; a doubled quote is an escape."""
+    while True:
+        end = sql.find(quote, start)
+        if end < 0:
+            return len(sql)
+        if not sql.startswith(quote * 2, end):
+            return end + 1
+        start = end + 2
+
+
+def has_unchecked_join(sql: str) -> bool:
+    """True if ``NATURAL`` or ``USING`` appears as a keyword, following SQLite's own lexical rules.
+
+    String literals, identifiers quoted with double quotes, backticks or brackets, and comments
+    (``--`` to end of line, non-nested ``/* … */``) are skipped exactly as SQLite's tokenizer
+    skips them, so the keywords cannot be hidden from this scan while SQLite still parses them.
+    A bare word that merely looks like a keyword is refused too, which only errs on the side of
+    denying.
+    """
+    index, length = 0, len(sql)
+    while index < length:
+        char = sql[index]
+        if sql.startswith("--", index):
+            end = sql.find("\n", index)
+            index = length if end < 0 else end + 1
+        elif sql.startswith("/*", index):
+            end = sql.find("*/", index + 2)
+            index = length if end < 0 else end + 2
+        elif char in "'\"`":
+            index = _skip_quoted(sql, index + 1, char)
+        elif char == "[":
+            end = sql.find("]", index + 1)
+            index = length if end < 0 else end + 1
+        elif _is_id_char(char):
+            start = index
+            while index < length and _is_id_char(sql[index]):
+                index += 1
+            word = sql[start:index]
+            if word.isascii() and word.upper() in _UNCHECKED_JOIN_KEYWORDS:
+                return True
+        else:
+            index += 1
+    return False
 
 
 def build_authorizer(policy: RolePolicy, role: str) -> Authorizer:
@@ -95,6 +152,8 @@ class SQLiteExecutor:
     ) -> QueryResult:
         if not self._policy.has_role(role):
             raise ExecutorError("db_role_unconfigured")
+        if has_unchecked_join(sql):
+            raise ExecutorError("db_permission_denied")
         authorizer = build_authorizer(self._policy, role)
         return await asyncio.to_thread(self._run, sql, authorizer, timeout_seconds, max_rows)
 
