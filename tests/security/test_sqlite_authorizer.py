@@ -12,7 +12,12 @@ import sqlite3
 
 import pytest
 
-from sqlguard.mcp.tools import ToolError
+from sqlguard.agent.controller import AgentController
+from sqlguard.agent.models import AgentRequest, RunStatus
+from sqlguard.agent.planning import Plan
+from sqlguard.mcp.tools import InProcessToolRegistry, ToolError
+from sqlguard.memory.store import InMemoryMemory
+from sqlguard.observability.events import InMemoryEventSink
 from sqlguard.security.audit import InMemoryAuditSink
 from sqlguard.security.gate import GateMode, PolicySQLGate, SecurityContext
 from sqlguard.security.policy import RolePolicy, load_default_policy
@@ -321,3 +326,34 @@ def test_allowed_query_mentioning_using_in_a_literal_still_runs(db_path):
     sql = f'SELECT COUNT(*) FROM "{table}" WHERE "{column}" <> \'using natural join\''
 
     assert execute(db_path, "sales", sql).rows == ((2,),)
+
+
+class _FixedPlanner:
+    def __init__(self, sql):
+        self.sql = sql
+
+    async def create_plan(self, question, context):
+        return Plan(sql=self.sql, summary="fixed")
+
+
+@pytest.mark.parametrize("role", ROLES)
+def test_controller_refuses_when_only_the_database_blocks_a_forbidden_read(db_path, role):
+    table, column = forbidden_columns(role)[0]
+    context = SecurityContext(role=role, run_id="run-1")
+    audit = InMemoryAuditSink()
+    gate = PolicySQLGate(context, POLICY, mode=GateMode.OFF)
+    tool = SecureSqlTool(gate, SQLiteExecutor(db_path, POLICY), audit=audit)
+    controller = AgentController(
+        planner=_FixedPlanner(f'SELECT "{column}" FROM "{table}"'),
+        tools=InProcessToolRegistry([tool]),
+        security_gate=gate,
+        memory=InMemoryMemory(),
+        events=InMemoryEventSink(),
+    )
+
+    result = asyncio.run(controller.run(AgentRequest("question")))
+
+    assert result.state.status is RunStatus.REFUSED
+    assert result.state.failure_reason == "db_permission_denied"
+    assert result.state.final_answer is None
+    assert audit.records[-1].error_category == "db_permission_denied"

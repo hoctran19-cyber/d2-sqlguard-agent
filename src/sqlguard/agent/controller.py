@@ -37,6 +37,10 @@ class RunScope:
 # Lỗi DB duy nhất được cho planner sửa (một lần/run); lỗi quyền, timeout, read-only, canary
 # và lỗi DB khác luôn kết thúc, không bao giờ chạy lại cùng SQL.
 _DB_REPAIRABLE = frozenset({"db_schema_error", "db_syntax_error"})
+# Database tự từ chối vì quyền (authorizer SQLite/grants) dù gate đã cho qua: đó là một lần chặn
+# bảo mật nên run kết thúc REFUSED như khi gate từ chối, không retry/repair; failure_reason giữ
+# nguyên category để phân biệt lớp nào đã chặn.
+_DB_REFUSED = frozenset({"db_permission_denied"})
 _DB_REPAIR_GUIDANCE = (
     "The database rejected the previous query because of a schema or syntax problem. "
     "Propose one corrected SELECT using only tables and columns from the supplied schema notes."
@@ -91,9 +95,9 @@ class AgentController:
             state.status = RunStatus.BUDGET_EXHAUSTED
             state.failure_reason = str(error)
             state.errors.append(state.failure_reason)
-        except _SecurityRejected:
+        except _SecurityRejected as error:
             state.status = RunStatus.REFUSED
-            state.failure_reason = "security_rejection"
+            state.failure_reason = error.reason
             state.errors.append(state.failure_reason)
         except _EventSinkFailure:
             state.status = RunStatus.FAILED
@@ -296,6 +300,8 @@ class AgentController:
                 if repaired is not None:
                     sql = repaired
                     continue
+            if category in _DB_REFUSED:
+                raise _SecurityRejected(category)
             if not retryable:
                 raise ToolError(category, category=category) from None
             if state.retry_count >= self._budget.max_retries:
@@ -519,7 +525,11 @@ class _BudgetExceeded(Exception):
 
 
 class _SecurityRejected(Exception):
-    pass
+    """Từ chối bảo mật kết thúc run là REFUSED; ``reason`` được ghi vào ``failure_reason``."""
+
+    def __init__(self, reason: str = "security_rejection") -> None:
+        super().__init__(reason)
+        self.reason = reason
 
 
 class _SecurityGateFailure(Exception):
