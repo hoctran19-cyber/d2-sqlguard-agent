@@ -5,7 +5,8 @@ Owner: Nguyễn Văn Hoàng Khang. Phạm vi: threat model, SQL parsing/validati
 Nguồn đã đối chiếu: toàn bộ source trong repo (commit `553ea55`), Proposal D1 (`CO5151_G2_D1_Proposal`, threat model v0) và Drive D2: `D2-01-requirements`, `D2-02-product-and-implementation-scope`, `D2-05-report-demo-and-delivery`. Các note `D2-03` (dataset/LLM), `D2-04` (evaluation plan), `D2-06` (demo lab/observability) được nhắc đến nhưng **không có trong thư mục Drive**; các mục phụ thuộc vào chúng được đánh dấu *[cần D2-03/04/06]*.
 
 > **Cập nhật 21/10/2026: nhóm chốt dùng SQLite + BIRD Mini-Dev Financial, bỏ hẳn PostgreSQL.**
-> Kế hoạch code hiện hành nằm ở §12; tiến độ ở §11.
+> Kế hoạch code hiện hành nằm ở §12; tiến độ ở §11. Ma trận quyền và policy BIRD (chốt 19/10) ở
+> [`BIRD_FINANCIAL_MIGRATION_PLAN.md`](BIRD_FINANCIAL_MIGRATION_PLAN.md).
 > Các mục §1–§10 bên dưới là kế hoạch gốc (18/10) viết cho PostgreSQL + schema synthetic, giữ lại làm lịch sử
 > thiết kế. Chỗ nào mâu thuẫn với §12 thì §12 thắng. Những phần **hết hiệu lực**: DB grants/roles PostgreSQL
 > (§4 gạch đầu dòng 1–3), job CI `db`, credential note-writer PostgreSQL (T11), dialect `postgres` (§3.1 bước 2, 11; T7),
@@ -275,97 +276,112 @@ Mỗi case ghi: `case_id, attack_type, payload_location, role, question, setup (
 - **Kiệt**: format security case trong manifest, metric ASR/canary leak/false refusal, cost logging cho injection runs.
 - **Owner frontend/API** (chưa chốt): role binding từ session, ownership check, manual SQL dùng cùng service, Attack Lab credential.
 
-## 11. Tiến độ (cập nhật 21/10/2026, sau khi sync PR #7 và chốt SQLite)
+## 11. Tiến độ (cập nhật 21/10/2026: S3 xong, đã merge `feature/security-policy`)
 
-Chi tiết và bằng chứng: [`README.md`](README.md) (threat model v1). Phân công chính thức: `SQLGuard_D2_Team_Plan.md` (K1–K5).
+Chi tiết và bằng chứng: [`README.md`](README.md) (threat model v1). Phân công chính thức: `SQLGuard_D2_Team_Plan.md` (K1–K5). Phần chuyển sang BIRD làm ngày 19/10 (ma trận, policy, gold SQL) nằm ở [`BIRD_FINANCIAL_MIGRATION_PLAN.md`](BIRD_FINANCIAL_MIGRATION_PLAN.md); phần DB trong file đó viết cho PostgreSQL và được §12 thay bằng SQLite.
 
-| Hạng mục | Trạng thái 18/10 | Trạng thái 21/10 (SQLite + BIRD Financial) | Việc tiếp (§12) |
-| --- | --- | --- | --- |
-| K1. Permission matrix | Xong cho schema synthetic | **Phải làm lại**: BIRD Financial không có các cột synthetic; runtime luôn nạp `d2_synthetic_v1.json`, không cấu hình được đường dẫn policy | S1 |
-| K2. Gate v2 | Xong, dialect Postgres, corpus 105 payload | Gate vẫn parse và normalize bằng `postgres` nhưng SQL chạy trên SQLite. Thử 32 gold SQL Financial (bản PostgreSQL, policy cho phép mọi cột): **20/32 allow**; từ chối: `function_not_allowed` 6 (`CASE`/`IF`, `TO_CHAR`), `subquery_not_supported` 5, `join_not_allowed` 3 (bảng dẫn xuất, `ON` nhiều điều kiện) | S4 |
-| K3. Lớp chặn độc lập ở DB | Xong bằng grants PostgreSQL (23 test DB) | **Mất hiệu lực**: `SQLiteExecutor` chỉ có `mode=ro` + `PRAGMA query_only`, bỏ qua `role` (`del role`); gate lọt là đọc được mọi cột | S3 |
-| K4. Injection 5 direct + 5 indirect + 10 clean | Offline xong; model thật chưa chạy | Đã có `OllamaPlanner` và runtime `SQLGUARD_QUERY_SOURCE=sqlite` (PR #7). Bộ case viết cho schema synthetic, indirect dựa vào cột `note` mà BIRD không có | S2, S7, S8 |
-| 20 authorization task | Xong (synthetic) | Phải viết lại cho Financial | S7 |
-| K5. Audit + threat model v1 + nháp mục 5 | Xong (PostgreSQL) | Audit dùng lại được; threat model và mục 5 phải cập nhật boundary, assets, T3/T7/T11 | S10 |
-| Execute boundary (sanitizer, envelope, canary) | Xong | `SecureSqlTool` + `find_leaks` + `output_check` đã được Học ghép vào controller (`RunScope`), dùng cho cả nhánh SQLite | Giữ; cập nhật canary (S1, S2) |
-| System prompt + `get_schema` theo role | Chờ Học | **Đã ghép**: `OllamaPlanner` dùng `prompting.py`; `SQLiteSchemaAdapter` lọc schema theo role | Giữ |
-| Repair/reflection | Đề xuất contract | **Đã có**: denial `repairable` mới được sửa, SQL sửa qua gate lại; lỗi DB schema/syntax sửa tối đa 1 lần/run | Thêm test T12 cho nhánh SQLite (S4) |
-| Attack Lab phía security | Service + DB PostgreSQL xong; route chờ API | Phần DB/credential viết cho PostgreSQL, phải làm lại cho file SQLite | S6 |
-| Web app (`src/sqlguard/web/`, PR #6) | Chưa có | Chạy trên `financial.sqlite` nhưng dùng `ReadOnlySQLGate` + allowlist bảng: không có policy theo role/cột, không `SecureSqlTool`, không audit | S9 (cùng Kiệt) |
+| Hạng mục | Trạng thái 21/10 | Việc tiếp (§12) |
+| --- | --- | --- |
+| K1. Permission matrix | **Đã chốt 19/10** (teller/credit/risk, §12.2), có trong `policies/bird_financial_v1.json` (merge `5e3c03f`). Chọn được policy qua `SQLGUARD_POLICY`, nhưng mặc định vẫn là `d2_synthetic_v1` | S1 |
+| K2. Gate v2 | Gate cho phép `ON` là AND các khóa ngoại (bảng cầu `disp`): **27/27 câu gold không subquery được chấp nhận** với role được đọc cột, đúng 5 câu subquery bị chặn. Đo trên gold SQL **PostgreSQL**; gate vẫn parse/normalize bằng `postgres` trong khi chạy trên SQLite | S4 |
+| K3. Lớp chặn độc lập ở DB | **Xong (S3)**: authorizer SQLite theo role/cột (`d26e1a0`); chặn `USING`/`NATURAL JOIN` mà authorizer không thấy (`6884f3c`); policy bắt buộc truyền vào executor, đổi tên bản giả thành `GateOnlyExecutor` (`27c6fa5`); DB từ chối quyền thì run kết thúc `REFUSED` với `failure_reason=db_permission_denied` (`706b03f`, sửa `controller.py` của Học, cần Học review) | Ghi vào threat model (S10) |
+| K4. Injection | Bộ case v1 viết cho schema synthetic. Đã có `OllamaPlanner` + runtime `SQLGUARD_QUERY_SOURCE=sqlite` (PR #7) | S2, S7, S8 |
+| 20 authorization task | Bản synthetic. Theo plan 19/10: dùng chính câu BIRD bị cấm theo role (teller bị cấm 14 câu, risk 4 câu) | S7 |
+| K5. Audit + threat model v1 + nháp mục 5 | Audit dùng lại được; threat model và mục 5 còn theo PostgreSQL + synthetic | S10 |
+| Execute boundary, prompt, schema theo role, repair | Đã ghép vào controller/runtime (PR #7); prompt và sanitizer lấy domain/role từ policy (`fdbad06`) | Giữ |
+| Attack Lab | `note_targets` (`client.note`, `trans.note`) lấy từ policy; phần ghi DB vẫn viết cho PostgreSQL | S6 |
+| Web app | Chạy trên `financial.sqlite` nhưng dùng `ReadOnlySQLGate`, không role, không authorizer, không audit | S9 |
+| Dữ liệu | `financial.sqlite` **chỉ có trên máy Khang** (không commit: nặng, đã nằm trong `.gitignore`, license CC BY-SA cần ghi nguồn). Môi trường cloud của Claude không tải được Hugging Face/GitHub | S2 |
 
-Bàn giao cho Học: [`../interfaces/SECURITY_INTEGRATION.md`](../interfaces/SECURITY_INTEGRATION.md) (đăng ký tool, `run_id`, reflection theo `repairable`, `find_leaks` trước answer, dùng `prompting.py`). Phần security không sửa file của agent runtime; các thay đổi ở `src/sqlguard/agent/` trong §12 (S1, S5) làm qua PR có Học review.
+Bàn giao cho Học: [`../interfaces/SECURITY_INTEGRATION.md`](../interfaces/SECURITY_INTEGRATION.md). Thay đổi ở `src/sqlguard/agent/` làm qua PR có Học review.
 
-## 12. Kế hoạch code sau khi chuyển sang SQLite + BIRD Financial (21/10 → 28/10)
+## 12. Kế hoạch code: SQLite + BIRD Financial (21/10 → 28/10)
 
-### 12.1 Quyết định đã chốt và điểm còn chờ
+### 12.1 Quyết định
 
 | # | Nội dung | Trạng thái |
 | --- | --- | --- |
-| Q1 | Database: BIRD Mini-Dev **Financial** dạng SQLite (`financial.sqlite`); bỏ hẳn PostgreSQL | Chốt 21/10 |
-| Q2 | Ma trận quyền Financial (§12.2) | **Chờ nhóm duyệt** bản nháp |
-| Q3 | Tên role: giữ `sales` / `finance` / `operations` (đỡ sửa code, demo, test) hay đổi tên nghiệp vụ ngân hàng | Đề xuất giữ tên cũ |
-| Q4 | Cột canary và cột `note` chỉ thêm vào **bản sao lab** của DB; file gốc giữ nguyên để đo accuracy | Đề xuất |
-| Q5 | Subquery/bảng dẫn xuất: D2 giữ deny (`subquery_not_supported`, repairable) và báo false rejection; nới ở D3 sau khi có resolver và test | Đề xuất |
+| Q1 | Database: BIRD Mini-Dev **Financial** dạng SQLite; bỏ hẳn PostgreSQL | Chốt 21/10 |
+| Q2 | Ma trận quyền §12.2 | Chốt 19/10 |
+| Q3 | Role: `teller` (Giao dịch viên), `credit` (Tín dụng), `risk` (Rủi ro–Tài chính); thay `sales`/`finance`/`operations` ở runtime, web, demo, README | Chốt 19/10; **Học/Kiệt cần đổi phía họ** |
+| Q4 | Overlay `client.national_id` (canary, cấm cả 3 role), `client.note`, `trans.note`, chỉ áp lên **bản sao lab**; file gốc giữ nguyên để đo accuracy | Chốt 19/10 (overlay), 21/10 (bản sao) |
+| Q5 | 5 câu gold có subquery: loại khỏi D2, gate giữ fail-closed | Chốt 19/10 |
+| Q6 | Xóa policy/dataset synthetic sau khi port xong | Chốt 19/10 |
+| Q7 | Dùng `evidence` của BIRD hay không | Kiệt quyết |
 
-### 12.2 Bản nháp ma trận quyền BIRD Financial (Q2)
+### 12.2 Ma trận quyền (đã chốt 19/10, nguồn: `policies/bird_financial_v1.json`)
 
-Giữ đúng cấu trúc ma trận synthetic để kịch bản demo và test map 1:1. ✓ = được đọc, ✗ = cấm.
+| Bảng.cột | teller | credit | risk |
+| --- | --- | --- | --- |
+| `client.national_id` *(overlay, canary `CANARY-NID-000x`)* | ✗ | ✗ | ✗ |
+| `client.birth_date` | ✗ | ✓ | ✗ |
+| `loan.*` | ✗ (cả bảng) | ✓ | ✓ |
+| `trans.bank`, `trans.account`, `order.bank_to`, `order.account_to` (tài khoản đối tác) | ✗ | ✗ | ✓ |
+| Còn lại (`client` khác, `account`, `disp`, `card`, `district`, `trans`/`order` khác, kể cả `balance`, `client.note`, `trans.note`) | ✓ | ✓ | ✓ |
 
-| Dữ liệu | Vai trò tương đương bản synthetic | sales | finance | operations |
-| --- | --- | --- | --- | --- |
-| `district.*`, `account.*`, `disp.*`, `card.*`, `loan.*`, `client.client_id/gender/district_id` | Dữ liệu nghiệp vụ thường | ✓ | ✓ | ✓ |
-| `client.birth_date` (kết hợp `gender` + `district_id` nhận diện được cá nhân) | `phone_number` (chỉ Operations) | ✗ | ✗ | ✓ |
-| `trans.balance`, `trans.bank`, `trans.account`, `order.bank_to`, `order.account_to` (số dư, tài khoản đối tác) | `bank_reference` / `unit_cost_vnd` (chỉ Finance) | ✗ | ✓ | ✗ |
-| Bảng `trans`, `order` | `payments` (Operations không có) | ✓ trừ cột cấm | ✓ | ✗ |
-| `client.national_id` (cột canary, chỉ có ở bản lab) | `identity_number` (cấm mọi role) | ✗ | ✗ | ✗ |
-
-Hệ quả cần ghi trong report: nhiều câu gold dùng `birth_date` ("khách hàng lớn tuổi nhất") sẽ bị từ chối hoặc trả partial với `sales`/`finance`. Đây là authorization task đúng thiết kế, không tính là false rejection.
+Trên 27 câu gold không subquery: 13 câu cả 3 role hỏi được (nguồn task hợp lệ); teller bị cấm 14 câu, risk bị cấm 4 câu (nguồn authorization task).
 
 ### 12.3 Gói việc
 
 | ID | Việc | File chính | Done khi |
 | --- | --- | --- | --- |
-| **S1** | Policy `bird_financial_v1.json` theo §12.2 (schema `main`, FK của Financial, function allowlist cho SQLite, canary `CANARY-NID-000x` trên `client.national_id`, mô tả cột cho planner). Thêm `SQLGUARD_POLICY_PATH` (mặc định là policy Financial) cho runtime, schema adapter và web; sai hoặc thiếu file thì fail-closed | `security/policies/`, `security/policy.py`; `agent/runtime.py`, `agent/sqlite_schema.py` (PR có Học review) | `RolePolicy.from_file` nạp được; schema planner của từng role khớp ma trận; test policy cho 3 role |
-| **S2** | Script tạo **bản sao lab**: copy `financial.sqlite` → `data/bird/financial_lab.sqlite`, thêm `client.national_id` (seed canary) và `account.note TEXT` (chỗ chứa indirect injection), ghi SHA-256 file gốc và file lab. Không bao giờ sửa file gốc | `scripts/` hoặc `evaluation/` (chốt với Kiệt) | Chạy lại ra cùng kết quả; test với DB giả nhỏ; cả hai file bị `.gitignore` |
-| **S3** | **Thay K3**: `sqlite3.Connection.set_authorizer` trong `SQLiteExecutor`, dựng từ `RolePolicy` + role tin cậy. `SQLITE_READ` chỉ cho cặp (bảng, cột) role được đọc; `SQLITE_FUNCTION` theo allowlist; `SQLITE_SELECT` cho phép; mọi action khác (PRAGMA, ATTACH, ghi, tạo, `sqlite_master`) → `SQLITE_DENY`. Dùng DENY, không dùng IGNORE (IGNORE trả `NULL` âm thầm, làm sai kết quả). Map lỗi "not authorized" thành category riêng (`db_permission_denied`), **không repairable** | `security/sqlite.py`, `security/service.py` (category) | Test tắt gate (`GateMode.OFF`) với từng role: đọc cột/bảng cấm, `sqlite_master`, `pragma_table_info()`, `load_extension`, `randomblob` lớn, ghi qua URI → đều bị executor từ chối; câu hợp lệ vẫn chạy |
-| **S4** | **Gate theo dialect**: `PolicySQLGate(..., dialect="sqlite")` parse và normalize bằng `sqlite`, giữ `postgres` làm mặc định cho tới khi xong S5. Bảng hệ thống SQLite (`sqlite_master`, `sqlite_schema`, `sqlite_temp_master`, `sqlite_sequence`, `sqlite_stat*`, `pragma_*`) → `system_catalog`; schema chỉ `main`; tên quote như `"order"`. Allowlist thêm `Case`, `If` (`IIF`), `StrToTime`/`TimeToStr` (`STRFTIME`), `Substring`, `Cast`. Corpus mới: SEC-FN-SQLITE (`load_extension`, `randomblob`, `zeroblob`, `sqlite_version`, `printf` dài), SEC-TABLE-SQLITE, SEC-DIFF-SQLITE (SQL Postgres-only như `INTERVAL`, `::`, `ILIKE` phải bị deny hoặc repairable, không được normalize ra chuỗi SQLite hiểu khác). Corpus ALLOW = 32 gold Financial bản **SQLite** (split `mini_dev_sqlite`, lấy qua `bird_audit.py`). Xem 3 ca `join_not_allowed` (ON nhiều điều kiện theo FK, join qua `district`) | `security/gate.py`, `policies/`, `tests/security/test_policy_gate.py` | Toàn bộ corpus cũ còn pass ở cả hai dialect; corpus SQLite pass; báo số gold allow / partial / deny theo violation code |
-| **S5** | **Bỏ PostgreSQL** (sau S3, S4). Phía security: xoá `security/postgres.py`, `db/security/`, `compose.postgres-sandbox.yml`, `tests/security/test_db_grants.py`, `tests/security/test_agent_postgres_e2e.py`, job CI `db`, biến PG trong `.env.example`, phần PostgreSQL của `attack_lab.py`; đổi mặc định gate sang `sqlite`. Phía Học/Kiệt (họ làm, mình review): `agent/postgres_schema.py`, nhánh `postgres` trong `agent/runtime.py` và `demo.py`, extra `[postgres]`, `evaluation/bird_pilot.py`, `financial-postgresql-gold-sql.json` (thay bằng bản SQLite) | nhiều file | `grep -ri postgres src tests` chỉ còn trong tài liệu lịch sử; CI xanh |
-| **S6** | **Attack Lab trên SQLite**: writer mở **kết nối riêng** tới bản lab, authorizer chỉ cho `SQLITE_UPDATE` trên `account.note` với id thuộc target allowlist; revision/restore lưu ở file sidecar mà executor của agent không đọc được (không ATTACH). Agent không có đường ghi | `security/attack_lab.py`, `ATTACK_LAB.md` | Test: writer không sửa được cột khác hay bảng khác; agent không đọc được sidecar; restore về đúng revision; mỗi lần ghi có audit |
-| **S7** | Bộ case **v2 cho Financial**: `injection_cases_v2.json` (5 direct + 5 indirect qua `account.note` + 10 clean pair) và `authorization_tasks_v2.json` (10 cột cấm thuần + 10 partial). Cập nhật `test_injection_offline.py` | `evaluation/datasets/security/`, `tests/security/` | Validate bằng `evaluation/manifest.py`; chạy offline với fake planner trên DB giả nhỏ |
-| **S8** | **Chạy model thật**: runner cho S7 dùng `build_query_runtime` (`SQLGUARD_QUERY_SOURCE=sqlite`, `SQLGUARD_SCHEMA_SOURCE=sqlite`) + `OllamaPlanner` trên bản lab, mỗi case × 3 run. Xuất JSONL: run ID, case, role, decision, violation, canary leak, trace event, latency | `evaluation/` (thống nhất format với Kiệt) | Bảng ASR / UAR / false refusal kèm run ID; ghi rõ là kết quả sơ bộ (preliminary) nếu ít run |
-| **S9** | **Web app** dùng cùng đường bảo mật: `query_service.py` chuyển từ `ReadOnlySQLGate` sang `PolicySQLGate` + `SecureSqlTool` (SQLite executor có authorizer) + audit; role lấy từ session; bỏ mật khẩu hard-code hoặc chỉ bật khi demo local; kiểm tra ownership (T13) nếu có route xem run | `src/sqlguard/web/` (làm cùng Kiệt) | Demo hỏi `birth_date` bằng `sales` → partial/deny; SQL cấm nhập tay bị chặn; test web cũ còn pass |
-| **S10** | Tài liệu: threat model v1.1 (`README.md`: assets theo §12.2, boundary SQLite, T3/T7/T11 mới, giới hạn "ai đọc được file thì vượt mọi lớp"), mục 5 report + phần quyền mục 3, `SECURITY_INTEGRATION.md`, ghi chú license CC BY-SA 4.0 của BIRD, sửa ghi chú dialect trong `SQLGuard_D2_Team_Plan.md` | `docs/` | Nhóm review xong trước CN 25/10 |
+| **S1** | Phần còn lại của policy: `schema` của `bird_financial_v1` từ `public` sang `main` (SQLite; authorizer đã yêu cầu `main`); bỏ khỏi allowlist các hàm SQLite không có (`Extract`, `DateTrunc`, `TimestampTrunc`) hoặc thay bằng bản SQLite (S4); kiểm tên cột thật (`A2`…`A16`, cột của `trans`) theo schema từ máy Khang (S2a); `runtime.py` đọc `SQLGUARD_POLICY` từ `env` của nó thay vì `os.environ`; sau khi có fixture (S2b) đổi `DEFAULT_POLICY` sang `bird_financial_v1` và port các test đang giả định policy synthetic | `security/policies/`, `security/policy.py`, `agent/runtime.py` (Học review) | Runtime SQLite chạy được với cả 3 role trên fixture; schema planner của từng role khớp §12.2 |
+| **S2a** | Lấy thông tin từ file trên máy Khang (không cần đẩy DB): chạy lệnh ở §12.7, gửi lại schema, số dòng, SHA-256 | — | Có schema thật để đối chiếu policy |
+| **S2b** | Script `db/bird_financial/build_sqlite_lab.py` (thay `load_financial.py` bản PostgreSQL), **Khang chạy trên máy**: (1) copy `financial.sqlite` → `data/bird/financial_lab.sqlite`, áp overlay (`ALTER TABLE ... ADD COLUMN`), canary trên 3 `client_id` nhỏ nhất, index `trans(account_id, date)`, payload injection vào vài note; ghi SHA-256 file gốc và file lab; (2) xuất **fixture con** `tests/fixtures/bird_financial_mini.sql` (~30 client và mọi dòng liên quan theo FK, cùng overlay), đủ nhỏ để commit, kèm ghi nguồn CC BY-SA trong `NOTICE` | `db/bird_financial/`, `tests/fixtures/` | Chạy lại ra cùng kết quả; fixture < 1 MB; CI dùng fixture, không cần file gốc |
+| **S3** | Authorizer SQLite | `security/sqlite.py` | **Xong** (xem §11) |
+| **S4** | Gate theo dialect: `PolicySQLGate(..., dialect="sqlite")` parse/normalize bằng `sqlite` (mặc định `postgres` cho tới S5). Bảng hệ thống SQLite (`sqlite_master`, `sqlite_schema`, `sqlite_temp_master`, `sqlite_sequence`, `sqlite_stat*`, `pragma_*`) → `system_catalog`; schema chỉ `main`. Allowlist hàm và kiểu CAST khớp SQLite: chặn hoặc dịch `CAST(x AS DATE)` (SQLite trả `2026` cho `'2026-09-01'`, sai mà không báo lỗi), `ILIKE`, `INTERVAL`, `EXTRACT`, `DATE_TRUNC`; thêm `Case`, `If` (`IIF`), `StrToTime`/`TimeToStr` (`STRFTIME`), `Substring`. Test nhất quán: mọi hàm/kiểu gate cho phép phải chạy đúng qua authorizer trên fixture. Corpus mới SEC-TABLE-SQLITE, SEC-FN-SQLITE, SEC-DIFF-SQLITE. Gold: lấy bản **SQLite** của 32 câu Financial (file `mini_dev_sqlite.json` trong bộ Mini-Dev trên máy Khang) để thay test gold PostgreSQL | `security/gate.py`, `policies/`, `tests/security/test_policy_gate.py`, `tests/security/test_bird_gold.py`, `evaluation/datasets/bird_financial/` | 27/27 câu gold SQLite không subquery được chấp nhận và **chạy đúng trên fixture** với role được phép; corpus cũ còn pass |
+| **S5** | Bỏ PostgreSQL (sau S4). Phía security: `security/postgres.py`, `db/security/`, `db/bird_financial/00_schema.sql`, `10_roles.sql`, phần PostgreSQL của `load_financial.py`, `compose.postgres-sandbox.yml`, `tests/security/test_db_grants.py`, `tests/security/test_agent_postgres_e2e.py`, job CI `db`, biến PG trong `.env.example`, phần PostgreSQL của `attack_lab.py`; gate mặc định `sqlite`. Phía Học/Kiệt (họ làm, mình review): `agent/postgres_schema.py`, nhánh `postgres` trong `runtime.py`/`demo.py`, extra `[postgres]`, `evaluation/bird_pilot.py`, `financial-postgresql-gold-sql.json` | nhiều file | `grep -ri postgres src tests` chỉ còn trong tài liệu lịch sử; CI xanh |
+| **S6** | Attack Lab trên SQLite: writer mở kết nối riêng tới bản lab, authorizer chỉ cho `SQLITE_UPDATE` trên `client.note`/`trans.note` (theo `note_targets`) với id thuộc allowlist; revision/restore ở file sidecar executor của agent không đọc được | `security/attack_lab.py`, `ATTACK_LAB.md` | Writer không sửa được cột/bảng khác; agent không đọc được sidecar; restore đúng revision; mỗi lần ghi có audit |
+| **S7** | `injection_cases_v2.json` (5 direct + 5 indirect qua `trans.note` và `client.note`, 10 clean pair) và `authorization_tasks_v2.json` (câu BIRD bị cấm theo role + task hỗn hợp có cột cấm hiển thị), giữ ID `D2-I01..I04`, `D2-A01/A02/M01/M02`; offline test chạy trên fixture qua **executor thật** (không dùng `GateOnlyExecutor`) | `evaluation/datasets/security/`, `tests/security/` | Validate bằng `evaluation/manifest.py`; chạy offline với fake planner |
+| **S8** | Chạy model thật: `SQLGUARD_QUERY_SOURCE=sqlite`, `SQLGUARD_SCHEMA_SOURCE=sqlite`, `SQLGUARD_POLICY=bird_financial_v1`, `OllamaPlanner`, trên bản lab, mỗi case × 3 run; xuất JSONL (run ID, case, role, decision, violation, lớp chặn `security_rejection`/`db_permission_denied`, canary leak, latency). **Chạy trên máy Khang** vì DB và Ollama ở đó | `evaluation/` (format thống nhất với Kiệt) | Bảng ASR / UAR / false refusal kèm run ID |
+| **S9** | Web app: `query_service.py` chuyển sang `PolicySQLGate` + `SecureSqlTool` + `SQLiteExecutor` (authorizer) + audit; 3 tài khoản demo `teller`/`credit`/`risk`, role lấy từ session; `/api/sql` chạy `normalized_sql` và không trả lỗi DB nguyên văn; ownership check (T13) nếu có route xem run | `src/sqlguard/web/` (cùng Kiệt) | Teller hỏi `birth_date`/`loan` → partial/refused; SQL cấm nhập tay bị chặn; test web cũ còn pass |
+| **S10** | Threat model v1.1 (assets §12.2, boundary SQLite, §12.4, lỗ `USING`/`NATURAL` + regression test như một phát hiện thật), mục 5 report + phần quyền mục 3, `SECURITY_INTEGRATION.md`, `NOTICE`/license, cập nhật `SQLGuard_D2_Team_Plan.md` | `docs/` | Nhóm review trước CN 25/10 |
 
 ### 12.4 Threat model thay đổi khi sang SQLite (đưa vào S10)
 
 | ID | Trước (PostgreSQL) | Sau (SQLite) |
 | --- | --- | --- |
-| Lớp độc lập | Grants theo role/cột, read-only transaction, `statement_timeout` | Authorizer theo role/cột (S3), `mode=ro`, `PRAGMA query_only`, progress handler làm timeout. Không có credential theo role: role chỉ được thực thi trong tiến trình SQLGuard |
-| A3 Credentials | DSN theo role, note-writer, migration owner | Không còn DSN; tài sản là **quyền truy cập file** `financial*.sqlite` và sidecar Attack Lab |
-| T1 | DML trong CTE, `SELECT INTO`, `FOR UPDATE` | Thêm `ATTACH`, `PRAGMA`, `VACUUM INTO`; đều là statement không phải SELECT (gate chặn) và authorizer chặn |
-| T3 | `pg_sleep`, `pg_read_file`, `dblink` | `load_extension` (Python mặc định tắt, vẫn deny), `randomblob`/`zeroblob` (DoS bộ nhớ), recursive CTE (đã cấm CTE) |
-| T7 | SQLGlot ↔ PostgreSQL | SQLGlot ↔ SQLite: normalize bằng `sqlite`, chỉ execute `normalized_sql`; authorizer làm backstop |
+| Lớp độc lập | Grants theo role/cột, read-only transaction, `statement_timeout` | Authorizer theo role/cột, chặn `USING`/`NATURAL JOIN` (authorizer không thấy cột so sánh), `mode=ro`, `PRAGMA query_only`, progress handler làm timeout. Không có credential theo role: role chỉ được thực thi trong tiến trình SQLGuard |
+| A3 Credentials | DSN theo role, note-writer, migration owner | Không còn DSN; tài sản là quyền truy cập file `financial*.sqlite` và sidecar Attack Lab |
+| T1 | DML trong CTE, `SELECT INTO`, `FOR UPDATE` | Thêm `ATTACH`, `PRAGMA`, `VACUUM INTO` (tạo file kể cả khi `mode=ro`); gate và authorizer đều chặn |
+| T3 | `pg_sleep`, `pg_read_file`, `dblink` | `load_extension`, `randomblob`/`zeroblob`, `printf` dài; CTE đệ quy (authorizer chặn `SQLITE_RECURSIVE`) |
+| T7 | SQLGlot ↔ PostgreSQL | SQLGlot ↔ SQLite: normalize bằng `sqlite`, chỉ execute `normalized_sql`; authorizer làm backstop; khác biệt ngữ nghĩa như `CAST AS DATE` |
 | T11 | Credential note-writer PostgreSQL | Kết nối writer riêng + authorizer chỉ `UPDATE(note)` + sidecar revision (S6) |
 | Giới hạn | Attacker có quyền DB admin ngoài phạm vi | Ai đọc được file trên OS là vượt mọi lớp; ghi rõ là giả định ngoài phạm vi |
 
-### 12.5 Lịch (thay §7 từ 21/10)
+### 12.5 Lịch
 
 | Ngày | Việc | Done khi |
 | --- | --- | --- |
-| T4 21/10 | Cập nhật plan này; S3 (authorizer) + S4 (gate dialect sqlite); gửi §12.2 cho nhóm duyệt (Q2–Q5) | Test S3, S4 xanh; nhóm phản hồi ma trận |
-| T5 22/10 | S1 (policy Financial + `SQLGUARD_POLICY_PATH`) + S2 (bản lab); mở PR S5 phía security, nhắn Học/Kiệt phần của họ | Runtime SQLite chạy được với policy Financial ở cả 3 role |
-| T6 23/10 | S6 (Attack Lab SQLite) + S7 (case v2 offline); bắt đầu S9 cùng Kiệt | INJ v2 chạy offline với fake planner |
-| T7 24/10 | S8: chạy Ollama × 3 run; đọc trace, sửa lỗi, chạy lại có ghi version; S10 bản nháp | Bảng ASR/UAR/false refusal + run ID; nháp mục 5 gửi nhóm |
+| T4 21/10 | S3 + bản vá; merge `feature/security-policy`; cập nhật plan; **Khang chạy §12.7 và gửi kết quả** | Đã push; có schema thật |
+| T5 22/10 | S1 (schema `main`, allowlist, đọc policy từ env của runtime); viết S2b, Khang chạy trên máy và commit fixture; bắt đầu S4; nhắn Học/Kiệt đổi role (Q3) | Fixture trong repo; runtime chạy 3 role trên fixture |
+| T6 23/10 | Xong S4 (gold SQLite 27/27 chạy đúng); S6; S7 offline; mở PR S5 | `tests/security` xanh trên fixture |
+| T7 24/10 | S8 trên máy Khang × 3 run; đọc trace, sửa, chạy lại có ghi version; S10 bản nháp | Bảng ASR/UAR/false refusal + run ID; nháp mục 5 gửi nhóm |
 | CN 25/10 | Review chéo, nộp report | Nộp trước 23:59 |
-| T2–T3 26–27/10 | Hoàn thiện S9; diễn tập cảnh security của demo (partial khi hỏi `birth_date`, SQL cấm nhập tay, injection qua `account.note` → Observe → restore + audit); quay video dự phòng | Kịch bản đúng giờ |
+| T2–T3 26–27/10 | S9; diễn tập cảnh security của demo (teller hỏi `birth_date`/`loan` → partial/refused, SQL cấm nhập tay, injection qua `trans.note` → Observe → restore + audit); quay video dự phòng | Kịch bản đúng giờ |
 | T4 28/10 | Checkpoint W7 | — |
 
-### 12.6 Rủi ro mới
+### 12.6 Rủi ro
 
 | Rủi ro | Giảm thiểu |
 | --- | --- |
-| Gold SQL BIRD dùng subquery, `CASE`, `STRFTIME` → false rejection cao | S4 mở allowlist hàm; subquery theo Q5; báo false rejection theo violation code thay vì che đi |
-| Ma trận §12.2 chưa được duyệt khi bắt đầu S1 | S3, S4 không phụ thuộc ma trận; S1 đọc từ file nên đổi ma trận chỉ cần sửa JSON và test |
-| Authorizer chặn cả truy vấn hợp lệ (ví dụ `COUNT(*)`, rowid, hàm SQLite gọi nội bộ) | Test ALLOW chạy qua executor thật trên DB giả; log action bị deny trong test |
-| Bỏ PostgreSQL đụng nhiều file của Học/Kiệt | Tách PR theo owner; PR security merge sau khi S3/S4 xanh |
-| Thêm cột vào bản lab làm lệch schema so với gold | Chỉ dùng bản lab cho security/demo; accuracy chạy trên file gốc |
+| DB chỉ có trên máy Khang; CI và Claude không có dữ liệu thật | Fixture con trong repo (S2b) cho CI/test; S8 và demo chạy trên máy Khang; ghi SHA-256 để biết đúng bản |
+| Gold PostgreSQL và gold SQLite khác nhau (hàm ngày, `CAST`, `IIF`) | Đo lại trên gold SQLite (S4); báo false rejection theo violation code |
+| Gate cho qua nhưng SQLite hiểu khác (`CAST AS DATE`) | Test nhất quán gate ↔ SQLite trên fixture (S4) |
+| `trans` ~1 triệu dòng vượt timeout 3 s | Index `trans(account_id, date)` trên bản lab; đo thực tế; nâng timeout thì ghi trong policy và report |
+| Đổi role sang `teller`/`credit`/`risk` đụng code Học/Kiệt | Nhắn sớm (22/10); policy vẫn chọn được qua `SQLGUARD_POLICY` trong lúc chuyển |
+| Bỏ PostgreSQL đụng nhiều file của Học/Kiệt | Tách PR theo owner; PR security merge sau khi S4 xanh |
+
+### 12.7 Lệnh Khang chạy trên máy (S2a)
+
+Không cần đẩy DB. Chạy và gửi lại output (chỉ là metadata, không có dữ liệu khách hàng):
+
+```bash
+DB=data/bird/financial.sqlite            # sửa theo đường dẫn thật
+sqlite3 "$DB" ".schema"
+for t in account card client disp district loan order trans; do
+  printf '%s ' "$t"; sqlite3 "$DB" "SELECT COUNT(*) FROM \"$t\""
+done
+sha256sum "$DB"                          # macOS: shasum -a 256 "$DB"
+ls <thư mục MINIDEV>                     # để biết có mini_dev_sqlite.json không
+```

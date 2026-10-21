@@ -1,6 +1,8 @@
 # Plan: chuyển phần security sang BIRD Mini-Dev — Financial
 
-Trạng thái: **nhóm đã chốt mục 0 theo đề xuất (19/10); đang thực hiện, xem mục 9**. Owner: Khang. Ngày lập: 19/10/2026. Nhánh: `feature/security-policy` (PR chưa merge vào repo nhóm, nên làm tiếp trên nhánh này để nhóm review thẳng bản BIRD, không merge bản synthetic).
+Trạng thái: **nhóm đã chốt mục 0 theo đề xuất (19/10); đang thực hiện, xem mục 9**.
+
+> **Cập nhật 21/10:** nhóm chuyển sang SQLite và bỏ PostgreSQL. Ma trận, role, overlay và policy trong file này vẫn giữ nguyên; phần DB (loader PostgreSQL, `10_roles.sql`, grants, DSN theo role) được thay bằng kế hoạch SQLite ở [`SECURITY_WORKPLAN.md`](SECURITY_WORKPLAN.md) §12. Nhánh `feature/security-policy` đã được merge vào nhánh làm việc SQLite. Owner: Khang. Ngày lập: 19/10/2026. Nhánh: `feature/security-policy` (PR chưa merge vào repo nhóm, nên làm tiếp trên nhánh này để nhóm review thẳng bản BIRD, không merge bản synthetic).
 
 Nguồn đã kiểm: schema và 32 câu hỏi Financial lấy từ repo chính thức `github.com/bird-bench/mini_dev` (`finetuning/inference/mini_dev_prompt.jsonl`). Số dòng dữ liệu ở mục 2 là theo bộ PKDD'99 gốc, **phải kiểm lại khi nạp**.
 
