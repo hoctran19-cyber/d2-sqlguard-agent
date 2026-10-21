@@ -1,0 +1,27 @@
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: sqlguard_local
+      POSTGRES_USER: sqlguard_admin
+      POSTGRES_PASSWORD: ${SQLGUARD_PG_ADMIN_PASSWORD:?Set SQLGUARD_PG_ADMIN_PASSWORD in .env}
+      SQLGUARD_DB_PASSWORD_SALES: ${SQLGUARD_DB_PASSWORD_SALES:?Set SQLGUARD_DB_PASSWORD_SALES in .env}
+      SQLGUARD_DB_PASSWORD_FINANCE: ${SQLGUARD_DB_PASSWORD_FINANCE:?Set SQLGUARD_DB_PASSWORD_FINANCE in .env}
+      SQLGUARD_DB_PASSWORD_OPERATIONS: ${SQLGUARD_DB_PASSWORD_OPERATIONS:?Set SQLGUARD_DB_PASSWORD_OPERATIONS in .env}
+    ports:
+      - "127.0.0.1:${SQLGUARD_PG_PORT:-54329}:5432"
+    volumes:
+      - sqlguard-pg16-data:/var/lib/postgresql/data
+      - ./db/security/00_reference_schema.sql:/docker-entrypoint-initdb.d/00_reference_schema.sql:ro
+      - ./db/security/10_roles.sql:/docker-entrypoint-initdb.d/10_roles.sql:ro
+      - ./db/security/20_reference_seed.sql:/docker-entrypoint-initdb.d/20_reference_seed.sql:ro
+      - ./db/security/30_local_role_passwords.sh:/docker-entrypoint-initdb.d/30_local_role_passwords.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+
+volumes:
+  sqlguard-pg16-data:

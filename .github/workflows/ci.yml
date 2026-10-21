@@ -47,4 +47,4 @@ jobs:
           python-version: "3.12"
           cache: pip
       - run: python -m pip install -e ".[dev,postgres]"
-      - run: pytest -q -m db tests/security/test_db_grants.py
+      - run: pytest -q -m db tests/security/test_db_grants.py tests/security/test_agent_postgres_e2e.py

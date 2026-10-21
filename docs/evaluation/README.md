@@ -19,3 +19,11 @@ Agree on exact definitions before using them in reports:
 - breakdowns by query complexity, policy class, and failure category.
 
 For reproducibility, record code revision, dataset revision, model/provider settings, database snapshot, policy version, seed where applicable, and execution environment. Baselines and ablations belong in separate subdirectories once implemented.
+
+## BIRD Mini-Dev intake (not execution accuracy)
+
+The BIRD financial-data intake tool and source/version cautions are documented in
+[`../../evaluation/datasets/bird/README.md`](../../evaluation/datasets/bird/README.md).
+It audits local upstream metadata and produces pending candidate recommendations only. It
+does not execute Gold SQL or run the SQLGuard agent. Keep the BIRD audit separate from the
+five-case `fixture_only` sales bootstrap and from future execution-accuracy reports.

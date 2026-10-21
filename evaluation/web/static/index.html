@@ -1,0 +1,354 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SQLGuard Evaluation Console</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --panel: #ffffff; --text: #1d2330; --muted: #5d6677; --line: #dde1e8;
+    --accent: #2457d6; --accent-soft: #e7eefc; --ok: #1d7a46; --ok-soft: #e3f4ea;
+    --bad: #b42318; --bad-soft: #fde8e6; --warn: #8a5a00; --warn-soft: #fff3d6;
+    --code: #f1f3f6; --radius: 10px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #12151b; --panel: #1a1e26; --text: #e6e9ef; --muted: #9aa3b2; --line: #2c3240;
+      --accent: #7aa2ff; --accent-soft: #1e2a45; --ok: #5fd08f; --ok-soft: #173326;
+      --bad: #ff8a80; --bad-soft: #3a1d1b; --warn: #f2c35b; --warn-soft: #382c12; --code: #222733;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+    font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+  header { padding: 18px 24px; border-bottom: 1px solid var(--line); background: var(--panel); }
+  header h1 { margin: 0; font-size: 18px; }
+  header p { margin: 4px 0 0; color: var(--muted); }
+  main { max-width: 1200px; margin: 0 auto; padding: 20px 16px 60px; display: grid; gap: 16px; }
+  .grid { display: grid; gap: 16px; grid-template-columns: 1fr 1fr; }
+  @media (max-width: 860px) { .grid { grid-template-columns: 1fr; } }
+  section { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius);
+    padding: 16px; min-width: 0; }
+  h2 { margin: 0 0 10px; font-size: 15px; }
+  h2 .step { display: inline-block; width: 22px; height: 22px; border-radius: 50%; margin-right: 6px;
+    background: var(--accent-soft); color: var(--accent); text-align: center; font-size: 12px;
+    line-height: 22px; }
+  pre { margin: 0; background: var(--code); border-radius: 8px; padding: 10px; overflow: auto;
+    font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; max-height: 360px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--muted); font-weight: 600; white-space: nowrap; }
+  .table-wrap { overflow-x: auto; }
+  code { font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .muted { color: var(--muted); }
+  .badge { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 12px;
+    font-weight: 600; background: var(--code); color: var(--muted); white-space: nowrap; }
+  .badge.passed, .badge.completed { background: var(--ok-soft); color: var(--ok); }
+  .badge.failed, .badge.error { background: var(--bad-soft); color: var(--bad); }
+  .badge.inconclusive, .badge.running, .badge.queued { background: var(--warn-soft); color: var(--warn); }
+  .notice { background: var(--warn-soft); color: var(--warn); border-radius: 8px; padding: 8px 10px; }
+  .error-box { background: var(--bad-soft); color: var(--bad); border-radius: 8px; padding: 8px 10px;
+    white-space: pre-wrap; }
+  #dropzone { border: 2px dashed var(--line); border-radius: var(--radius); padding: 28px 16px;
+    text-align: center; cursor: pointer; transition: border-color .15s, background .15s; }
+  #dropzone:hover, #dropzone.over { border-color: var(--accent); background: var(--accent-soft); }
+  #dropzone strong { display: block; font-size: 15px; margin-bottom: 4px; }
+  .row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+  label { color: var(--muted); }
+  select { font: inherit; padding: 4px 6px; border-radius: 6px; border: 1px solid var(--line);
+    background: var(--panel); color: var(--text); }
+  button, .button { font: inherit; font-weight: 600; border: 0; border-radius: 8px; padding: 8px 16px;
+    background: var(--accent); color: #fff; cursor: pointer; text-decoration: none; }
+  .button.secondary { background: var(--accent-soft); color: var(--accent); }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  .spinner { width: 16px; height: 16px; border-radius: 50%; border: 2px solid var(--line);
+    border-top-color: var(--accent); animation: spin .8s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  progress { width: 220px; height: 8px; }
+  .cards { display: grid; gap: 10px; }
+  .card { border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; }
+  .card-head { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  .card-head .q { flex: 1 1 260px; color: var(--muted); }
+  .kv { display: flex; gap: 14px; flex-wrap: wrap; margin: 6px 0; color: var(--muted); font-size: 12px; }
+  .kv b { color: var(--text); font-weight: 600; }
+  details summary { cursor: pointer; color: var(--accent); margin-top: 6px; }
+  .hidden { display: none !important; }
+</style>
+</head>
+<body>
+<header>
+  <div class="row" style="justify-content:space-between">
+    <h1>SQLGuard — Evaluation Console</h1>
+    <!-- Chỉ hiện khi console được gắn trong web app chính (có /api/me và /api/logout). -->
+    <button class="button secondary hidden" id="logout-btn">Đăng xuất <span id="me-name"></span></button>
+  </div>
+  <p>Chạy harness đánh giá qua backend localhost thay cho CLI.
+    <span class="badge inconclusive" id="mode-badge">fixture_only</span></p>
+</header>
+<main>
+  <div class="notice" id="mode-note">Đang tải cấu hình…</div>
+
+  <div class="grid">
+    <section>
+      <h2><span class="step">1</span>Schema mẫu của một task</h2>
+      <pre id="sample-task">…</pre>
+      <details>
+        <summary>Mô tả các trường</summary>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Trường</th><th>Bắt buộc</th><th>Ý nghĩa</th></tr></thead>
+          <tbody id="field-rows"></tbody>
+        </table></div>
+        <p class="muted">File có thể là một mảng task trần, hoặc một manifest đầy đủ:</p>
+        <pre id="envelope"></pre>
+      </details>
+    </section>
+
+    <section>
+      <h2><span class="step">2</span>Nạp danh sách task (JSON)</h2>
+      <div id="dropzone" tabindex="0" role="button" aria-label="Chọn hoặc thả file JSON">
+        <strong>Thả file .json vào đây</strong>
+        <span class="muted">hoặc bấm để chọn file</span>
+      </div>
+      <input type="file" id="file-input" accept=".json,application/json" class="hidden">
+      <p class="row" style="margin-top:12px">
+        <a class="button secondary" href="api/schema/sample-manifest">Tải manifest mẫu (5 tasks)</a>
+        <span class="muted" id="file-info">Chưa có file.</span>
+      </p>
+      <div class="error-box hidden" id="upload-error"></div>
+    </section>
+  </div>
+
+  <section id="tasks-section" class="hidden">
+    <h2><span class="step">3</span>Danh sách task đã nạp <span class="muted" id="task-count"></span></h2>
+    <div class="table-wrap"><table>
+      <thead><tr><th>ID</th><th>Category</th><th>Role</th><th>Câu hỏi</th><th>Scenario</th>
+        <th>Expected</th></tr></thead>
+      <tbody id="task-rows"></tbody>
+    </table></div>
+  </section>
+
+  <section>
+    <h2><span class="step">4</span>Chạy thí nghiệm</h2>
+    <div class="row">
+      <label>Repetitions
+        <select id="repetitions"><option>1</option><option>2</option><option selected>3</option>
+          <option>4</option><option>5</option></select></label>
+      <label>Max SQL attempts
+        <select id="attempts"><option value="3" selected>3</option><option value="1">1</option></select></label>
+      <button id="run-btn" disabled>Run experiments</button>
+      <span class="row hidden" id="waiting"><span class="spinner"></span>
+        <span id="waiting-text">Đang chờ…</span><progress id="progress" value="0" max="1"></progress></span>
+    </div>
+    <div class="error-box hidden" id="run-error" style="margin-top:10px"></div>
+  </section>
+
+  <section id="results-section" class="hidden">
+    <h2><span class="step">5</span>Kết quả <span class="badge" id="exp-status"></span></h2>
+    <div class="kv" id="exp-meta"></div>
+    <div class="cards" id="result-cards"></div>
+  </section>
+</main>
+
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const POLL_MS = 1000;
+let manifest = null;
+let running = false;
+
+// Build DOM with textContent only: uploaded tasks and agent output are untrusted text.
+function el(tag, attrs = {}, ...children) {
+  const node = document.createElement(tag);
+  for (const [key, value] of Object.entries(attrs)) {
+    if (key === "class") node.className = value; else node.setAttribute(key, value);
+  }
+  for (const child of children) {
+    node.append(child instanceof Node ? child : document.createTextNode(String(child ?? "")));
+  }
+  return node;
+}
+
+function show(node, visible) { node.classList.toggle("hidden", !visible); }
+
+function showError(node, message) {
+  node.textContent = message || "";
+  show(node, Boolean(message));
+}
+
+async function api(path, options = {}) {
+  const response = await fetch(path, options);
+  let body = null;
+  try { body = await response.json(); } catch { /* non-JSON error page */ }
+  if (!response.ok) {
+    const detail = body && body.detail ? body.detail : `HTTP ${response.status}`;
+    throw new Error(typeof detail === "string" ? detail : JSON.stringify(detail));
+  }
+  return body;
+}
+
+async function loadSchema() {
+  try {
+    const schema = await api("api/schema");
+    $("sample-task").textContent = JSON.stringify(schema.sample_task, null, 2);
+    $("envelope").textContent = JSON.stringify(schema.envelope, null, 2);
+    $("mode-note").textContent = "Chế độ " + schema.mode_note + " Giới hạn: tối đa "
+      + schema.limits.max_tasks + " tasks/file, " + schema.limits.max_repetitions + " repetitions.";
+    const rows = $("field-rows");
+    rows.replaceChildren(...schema.fields.map((f) =>
+      el("tr", {}, el("td", {}, el("code", {}, f.name)), el("td", {}, f.required ? "Có" : "Không"),
+        el("td", {}, f.description))));
+  } catch (error) {
+    $("mode-note").textContent = "Không kết nối được backend: " + error.message;
+  }
+}
+
+async function handleFile(file) {
+  if (running) return;
+  manifest = null;
+  $("run-btn").disabled = true;
+  show($("tasks-section"), false);
+  showError($("upload-error"), "");
+  $("file-info").textContent = `${file.name} (${file.size.toLocaleString()} bytes)`;
+  let text;
+  try {
+    text = await file.text();
+    JSON.parse(text);
+  } catch (error) {
+    showError($("upload-error"), "File không phải JSON hợp lệ: " + error.message);
+    return;
+  }
+  try {
+    const result = await api("api/manifest/validate", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: text,
+    });
+    manifest = result.document;
+    renderTasks(result.tasks);
+    $("run-btn").disabled = false;
+  } catch (error) {
+    showError($("upload-error"), "Manifest không hợp lệ: " + error.message);
+  }
+}
+
+function renderTasks(tasks) {
+  $("task-count").textContent = `(${tasks.length})`;
+  $("task-rows").replaceChildren(...tasks.map((t) => el("tr", {},
+    el("td", {}, el("code", {}, t.id)), el("td", {}, t.category), el("td", {}, t.role),
+    el("td", {}, t.question), el("td", {}, el("code", {}, t.fixture_scenario)),
+    el("td", {}, `${t.expected_status} / ${t.expected_disposition}`))));
+  show($("tasks-section"), true);
+}
+
+function setRunning(isRunning) {
+  running = isRunning;
+  $("run-btn").disabled = isRunning || !manifest;
+  $("repetitions").disabled = isRunning;
+  $("attempts").disabled = isRunning;
+  show($("waiting"), isRunning);
+}
+
+async function runExperiment() {
+  if (!manifest || running) return;
+  showError($("run-error"), "");
+  show($("results-section"), false);
+  setRunning(true);
+  $("waiting-text").textContent = "Đang gửi yêu cầu…";
+  try {
+    const started = await api("api/experiments", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        manifest,
+        repetitions: Number($("repetitions").value),
+        max_sql_attempts: Number($("attempts").value),
+      }),
+    });
+    let experiment;
+    do {
+      await new Promise((resolve) => setTimeout(resolve, POLL_MS));
+      experiment = await api(`api/experiments/${started.id}`);
+      $("waiting-text").textContent = `Đang chạy ${experiment.done}/${experiment.total} task-runs…`;
+      $("progress").max = experiment.total;
+      $("progress").value = experiment.done;
+    } while (experiment.status === "queued" || experiment.status === "running");
+    renderResults(experiment);
+  } catch (error) {
+    showError($("run-error"), "Không chạy được thí nghiệm: " + error.message);
+  } finally {
+    setRunning(false);
+  }
+}
+
+function resultTable(actual) {
+  const columns = actual.columns || [];
+  const rows = actual.rows || [];
+  if (!columns.length) return el("p", { class: "muted" }, "Không có bảng kết quả.");
+  return el("div", { class: "table-wrap" }, el("table", {},
+    el("thead", {}, el("tr", {}, ...columns.map((c) => el("th", {}, c)))),
+    el("tbody", {}, ...rows.map((row) =>
+      el("tr", {}, ...row.map((cell) => el("td", {}, cell === null ? "NULL" : cell)))))));
+}
+
+function renderResults(experiment) {
+  $("exp-status").textContent = experiment.status;
+  $("exp-status").className = "badge " + experiment.status;
+  const counts = experiment.summary ? experiment.summary.counts : {};
+  const meta = [
+    ["Experiment", experiment.id], ["Task-runs", `${experiment.done}/${experiment.total}`],
+    ["Passed", counts.passed ?? "—"], ["Failed", counts.failed ?? "—"],
+    ["Inconclusive", counts.inconclusive ?? "—"], ["Error", counts.error ?? "—"],
+    ["Artifacts", experiment.output],
+  ];
+  $("exp-meta").replaceChildren(...meta.map(([k, v]) => el("span", {}, k + ": ", el("b", {}, v))));
+  const cards = experiment.records.map((record) => {
+    const actual = record.actual || {};
+    const reasons = [...(record.failure_reasons || []), ...(record.unknown_reasons || [])];
+    return el("div", { class: "card" },
+      el("div", { class: "card-head" },
+        el("code", {}, record.task_id), el("span", { class: "muted" }, `rep ${record.repetition}`),
+        el("span", { class: "badge " + record.verdict }, record.verdict),
+        el("span", { class: "q" }, (manifest.tasks.find((t) => t.id === record.task_id) || {}).question || "")),
+      el("div", { class: "kv" },
+        el("span", {}, "status: ", el("b", {}, actual.status ?? "—")),
+        el("span", {}, "disposition: ", el("b", {}, actual.disposition ?? "—")),
+        el("span", {}, "latency: ", el("b", {}, `${record.latency_ms.toFixed(1)} ms`)),
+        el("span", {}, "tool calls: ", el("b", {}, actual.tool_calls ?? "—")),
+        el("span", {}, "reasons: ", el("b", {}, reasons.length ? reasons.join(", ") : "—"))),
+      actual.notice ? el("p", { class: "muted" }, "Notice: " + actual.notice) : "",
+      resultTable(actual),
+      el("details", {}, el("summary", {}, "Response JSON đầy đủ"),
+        el("pre", {}, JSON.stringify(record, null, 2))));
+  });
+  if (experiment.error) cards.unshift(el("div", { class: "error-box" }, "Lỗi harness: " + experiment.error));
+  $("result-cards").replaceChildren(...cards);
+  show($("results-section"), true);
+}
+
+const dropzone = $("dropzone");
+dropzone.addEventListener("click", () => $("file-input").click());
+dropzone.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") $("file-input").click(); });
+dropzone.addEventListener("dragover", (e) => { e.preventDefault(); dropzone.classList.add("over"); });
+dropzone.addEventListener("dragleave", () => dropzone.classList.remove("over"));
+dropzone.addEventListener("drop", (e) => {
+  e.preventDefault();
+  dropzone.classList.remove("over");
+  if (e.dataTransfer.files.length) handleFile(e.dataTransfer.files[0]);
+});
+$("file-input").addEventListener("change", (e) => {
+  if (e.target.files.length) handleFile(e.target.files[0]);
+  e.target.value = "";
+});
+$("run-btn").addEventListener("click", runExperiment);
+loadSchema();
+
+// Khi chạy trong web app chính: hiện tên user và nút đăng xuất; chạy riêng thì giữ ẩn.
+fetch("/api/me").then((r) => (r.ok ? r.json() : null)).then((me) => {
+  if (!me) return;
+  $("me-name").textContent = "(" + me.username + ")";
+  show($("logout-btn"), true);
+}).catch(() => {});
+$("logout-btn").addEventListener("click", async () => {
+  await fetch("/api/logout", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+  window.location.href = "/login";
+});
+</script>
+</body>
+</html>

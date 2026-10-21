@@ -1,0 +1,251 @@
+"""Backend FastAPI của web app SQLGuard. Chạy bằng: python -m sqlguard.web
+
+Routes giao diện (UI.md):
+  /            -> chuyển tới /login (chưa đăng nhập) hoặc trang chủ của user
+  /login       -> form đăng nhập
+  /home        -> khung sidebar + Query/Database (tài khoản admin)
+  /evaluation/ -> console evaluation đã có (chỉ tài khoản eval)
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+from pathlib import Path
+
+from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
+
+from sqlguard.web.auth import SESSION_COOKIE, SESSION_TTL_SECONDS, SessionStore, User, authenticate
+from sqlguard.web.database import (
+    DatabaseUnavailable,
+    FinancialDatabase,
+    QueryError,
+    QueryTimeout,
+    resolve_db_path,
+)
+from sqlguard.web.demo_planner import PLANNER_NAME, SAMPLE_QUESTIONS
+from sqlguard.web.query_service import answer_question, build_gate, explain_denial
+
+STATIC_DIR = Path(__file__).parent / "static"
+MAX_BODY_BYTES = 64_000  # Câu hỏi/SQL đều ngắn; chặn body quá lớn.
+MAX_TEXT_LENGTH = 5_000
+
+
+def create_app(db_path: Path | None = None) -> FastAPI:
+    """Tạo app. Test truyền db_path riêng; khi chạy thật thì đọc từ biến môi trường."""
+    app = FastAPI(title="SQLGuard", docs_url="/api/docs", redoc_url=None)
+    sessions = SessionStore()
+    database = FinancialDatabase(db_path or resolve_db_path())
+
+    # ---------- Hàm tiện ích dùng chung ----------
+
+    def current_user(request: Request) -> User | None:
+        return sessions.get(request.cookies.get(SESSION_COOKIE))
+
+    def require_admin(request: Request) -> User:
+        """Dependency cho API dữ liệu: phải đăng nhập bằng tài khoản được xem dữ liệu."""
+        user = current_user(request)
+        if user is None:
+            raise HTTPException(401, "Chưa đăng nhập")
+        if user.role != "admin":
+            raise HTTPException(403, "Tài khoản này không được xem dữ liệu")
+        return user
+
+    async def read_json(request: Request) -> dict:
+        """Đọc body JSON có giới hạn kích thước; chỉ nhận object."""
+        # Chống CSRF đơn giản: chỉ nhận JSON (form của site khác không gửi được kiểu này
+        # mà không qua preflight) và nếu có Origin thì phải cùng host.
+        if request.headers.get("content-type", "").split(";")[0] != "application/json":
+            raise HTTPException(415, "Chỉ nhận application/json")
+        origin = request.headers.get("origin")
+        if origin and origin.split("://", 1)[-1] != request.headers.get("host"):
+            raise HTTPException(403, "Origin không hợp lệ")
+        body = await request.body()
+        if len(body) > MAX_BODY_BYTES:
+            raise HTTPException(413, "Body quá lớn")
+        try:
+            payload = json.loads(body)
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            raise HTTPException(400, "JSON không hợp lệ") from None
+        if not isinstance(payload, dict):
+            raise HTTPException(400, "Body phải là JSON object")
+        return payload
+
+    def text_field(payload: dict, name: str) -> str:
+        value = payload.get(name)
+        if not isinstance(value, str) or not value.strip():
+            raise HTTPException(422, f"Thiếu trường {name}")
+        if len(value) > MAX_TEXT_LENGTH:
+            raise HTTPException(422, f"{name} quá dài")
+        return value.strip()
+
+    def database_call(function, *args, **kwargs):
+        """Gọi database và đổi lỗi database thành mã HTTP dễ hiểu cho UI."""
+        try:
+            return function(*args, **kwargs)
+        except DatabaseUnavailable as error:
+            raise HTTPException(503, str(error)) from None
+
+    def spa() -> FileResponse:
+        # Mọi trang giao diện dùng chung một file HTML; JavaScript tự render theo URL.
+        return FileResponse(STATIC_DIR / "index.html", headers={"Cache-Control": "no-store"})
+
+    # ---------- Bảo vệ trang Evaluation (chỉ tài khoản eval) ----------
+
+    @app.middleware("http")
+    async def guard_evaluation(request: Request, call_next):
+        path = request.url.path
+        if path == "/evaluation" or path.startswith("/evaluation/"):
+            user = current_user(request)
+            is_api = path.startswith("/evaluation/api/")
+            if user is None:
+                if is_api:
+                    return JSONResponse({"detail": "Chưa đăng nhập"}, status_code=401)
+                return RedirectResponse("/login", status_code=303)
+            if user.role != "evaluator":
+                if is_api:
+                    return JSONResponse({"detail": "Không có quyền"}, status_code=403)
+                return RedirectResponse(user.home, status_code=303)
+            if path == "/evaluation":
+                # Cần dấu "/" cuối để các đường dẫn tương đối của console hoạt động.
+                return RedirectResponse("/evaluation/", status_code=307)
+        return await call_next(request)
+
+    @app.middleware("http")
+    async def revalidate_static(request: Request, call_next):
+        response = await call_next(request)
+        # File JS/CSS luôn được kiểm tra lại với server, tránh trình duyệt dùng bản cũ.
+        if request.url.path.startswith("/static/"):
+            response.headers["Cache-Control"] = "no-cache"
+        return response
+
+    # ---------- Routes giao diện ----------
+
+    @app.get("/", include_in_schema=False)
+    def root(request: Request):
+        user = current_user(request)
+        return RedirectResponse(user.home if user else "/login", status_code=303)
+
+    @app.get("/login", include_in_schema=False)
+    def login_page(request: Request):
+        user = current_user(request)
+        return RedirectResponse(user.home, status_code=303) if user else spa()
+
+    @app.get("/home", include_in_schema=False)
+    def home_page(request: Request):
+        user = current_user(request)
+        if user is None:
+            return RedirectResponse("/login", status_code=303)
+        if user.role != "admin":  # Tài khoản eval chỉ dùng trang Evaluation.
+            return RedirectResponse(user.home, status_code=303)
+        return spa()
+
+    app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+
+    # ---------- API đăng nhập ----------
+
+    @app.post("/api/login")
+    async def login(request: Request):
+        payload = await read_json(request)
+        user = authenticate(str(payload.get("username", "")), str(payload.get("password", "")))
+        if user is None:
+            raise HTTPException(401, "Sai tên đăng nhập hoặc mật khẩu")
+        response = JSONResponse({"username": user.username, "role": user.role, "home": user.home})
+        response.set_cookie(
+            SESSION_COOKIE,
+            sessions.create(user),
+            max_age=SESSION_TTL_SECONDS,
+            httponly=True,  # JavaScript không đọc được cookie.
+            samesite="strict",  # Không gửi cookie từ site khác.
+            path="/",
+        )
+        return response
+
+    @app.post("/api/logout")
+    async def logout(request: Request):
+        sessions.delete(request.cookies.get(SESSION_COOKIE))
+        response = JSONResponse({"ok": True})
+        response.delete_cookie(SESSION_COOKIE, path="/")
+        return response
+
+    @app.get("/api/me")
+    def me(request: Request):
+        user = current_user(request)
+        if user is None:
+            raise HTTPException(401, "Chưa đăng nhập")
+        return {"username": user.username, "role": user.role, "home": user.home}
+
+    # ---------- API dữ liệu (tài khoản admin) ----------
+
+    @app.get("/api/tables")
+    def tables(user: User = Depends(require_admin)):
+        return {"database": "financial", "tables": database_call(database.table_names)}
+
+    @app.get("/api/info")
+    def info(user: User = Depends(require_admin)):
+        """Popup Info: user được đọc những bảng/cột nào. Admin: toàn bộ dữ liệu."""
+        columns = database_call(database.table_columns)
+        return {
+            "username": user.username,
+            "role": user.role,
+            "access": "full",
+            "note": "Admin được đọc toàn bộ dữ liệu; role theo nghiệp vụ chưa được chốt.",
+            "tables": [
+                {"name": name, "columns": cols, "access": "full"} for name, cols in columns.items()
+            ],
+        }
+
+    @app.post("/api/sql")
+    async def run_sql(request: Request, user: User = Depends(require_admin)):
+        """Chạy SQL thủ công (trang Database / bảng kết quả), luôn qua Security Gate."""
+        payload = await read_json(request)
+        sql = text_field(payload, "sql")
+        page = payload.get("page", 1)
+        if type(page) is not int or page < 1:
+            raise HTTPException(422, "page phải là số nguyên >= 1")
+        decision = build_gate(database_call(database.table_names)).check(sql)
+        if not decision.allowed:
+            raise HTTPException(422, explain_denial(decision))
+        try:
+            result = await asyncio.to_thread(database_call, database.run_page, sql, page=page)
+        except QueryTimeout as error:
+            raise HTTPException(408, str(error)) from None
+        except QueryError as error:
+            raise HTTPException(400, f"Lỗi SQL: {error}") from None
+        return result.to_dict()
+
+    @app.get("/api/query/samples")
+    def query_samples(user: User = Depends(require_admin)):
+        """Câu hỏi mẫu mà planner demo hiểu được (khi có LLM thì danh sách này chỉ để gợi ý)."""
+        return {"planner": PLANNER_NAME, "questions": list(SAMPLE_QUESTIONS)}
+
+    @app.post("/api/query")
+    async def query(request: Request, user: User = Depends(require_admin)):
+        """Câu hỏi ngôn ngữ tự nhiên -> AgentController -> kết quả cho trang Query."""
+        question = text_field(await read_json(request), "question")
+        try:
+            return await answer_question(database, question)
+        except DatabaseUnavailable as error:
+            raise HTTPException(503, str(error)) from None
+
+    # ---------- Gắn console Evaluation đã có vào /evaluation/ ----------
+
+    try:
+        # Package evaluation nằm ở thư mục gốc repo: chỉ import được khi chạy từ repo.
+        from evaluation.web.app import app as evaluation_app
+    except ImportError:
+        evaluation_app = None
+    if evaluation_app is not None:
+        app.mount("/evaluation", evaluation_app)
+    else:
+
+        @app.get("/evaluation/", include_in_schema=False)
+        def evaluation_missing():
+            raise HTTPException(503, "Console evaluation chỉ có khi chạy từ thư mục gốc repo")
+
+    return app
+
+
+app = create_app()
