@@ -2,7 +2,7 @@
 
 import asyncio
 
-from tests.security.fakes import SQLiteExecutor
+from tests.security.fakes import GateOnlyExecutor
 
 from sqlguard.agent.controller import AgentController, RunScope
 from sqlguard.agent.models import AgentRequest, ExecutionBudget, RunStatus
@@ -37,7 +37,7 @@ class FixedPlanner:
 def run(sql, *, role="sales", controller_gate=None):
     context = SecurityContext(role=role, user_id=f"{role}-demo", run_id="run-1")
     audit = InMemoryAuditSink()
-    executor = SQLiteExecutor()
+    executor = GateOnlyExecutor()
     tool = SecureSqlTool(PolicySQLGate(context, POLICY), executor, audit=audit)
     gate = controller_gate or PolicySQLGate(context, POLICY, audit=audit)
     events = InMemoryEventSink()

@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 
 import pytest
-from tests.security.fakes import SQLiteExecutor
+from tests.security.fakes import GateOnlyExecutor
 
 from sqlguard.security.gate import PolicySQLGate, SecurityContext
 from sqlguard.security.policy import load_default_policy
@@ -18,7 +18,7 @@ POLICY = load_default_policy()
 
 
 def rows(sql):
-    executor = SQLiteExecutor()
+    executor = GateOnlyExecutor()
     result = asyncio.run(executor.execute(sql, role="", timeout_seconds=3, max_rows=100))
     return result.rows
 

@@ -22,7 +22,7 @@ from collections.abc import Callable
 from contextlib import closing
 from pathlib import Path
 
-from sqlguard.security.policy import RolePolicy, load_default_policy
+from sqlguard.security.policy import RolePolicy
 from sqlguard.security.service import ExecutorError, QueryResult
 
 # SQLite function names that SQLGlot's sqlite dialect emits for each function class the policy can
@@ -140,12 +140,13 @@ def build_authorizer(policy: RolePolicy, role: str) -> Authorizer:
 class SQLiteExecutor:
     """Execute one gate-normalized statement against an existing read-only SQLite file."""
 
-    def __init__(self, path: str | Path, policy: RolePolicy | None = None) -> None:
+    def __init__(self, path: str | Path, policy: RolePolicy) -> None:
+        # No default policy: the authorizer must use the exact policy the gate checks against.
         database = Path(path).expanduser()
         if not database.is_file():
             raise ExecutorError("db_unavailable")
         self._uri = f"{database.resolve().as_uri()}?mode=ro"
-        self._policy = policy or load_default_policy()
+        self._policy = policy
 
     async def execute(
         self, sql: str, *, role: str, timeout_seconds: float, max_rows: int

@@ -2,7 +2,7 @@ import asyncio
 import json
 
 import pytest
-from tests.security.fakes import SQLiteExecutor, StaticExecutor
+from tests.security.fakes import GateOnlyExecutor, StaticExecutor
 
 from sqlguard.mcp.tools import ToolError
 from sqlguard.security.audit import InMemoryAuditSink, JsonlAuditSink
@@ -20,7 +20,7 @@ POLICY = load_default_policy()
 
 def make_tool(role="sales", executor=None, audit=None, **context):
     gate = PolicySQLGate(SecurityContext(role=role, **context), POLICY)
-    return SecureSqlTool(gate, executor or SQLiteExecutor(), audit=audit)
+    return SecureSqlTool(gate, executor or GateOnlyExecutor(), audit=audit)
 
 
 def call(tool, arguments):
@@ -28,7 +28,7 @@ def call(tool, arguments):
 
 
 def test_allowed_query_executes_normalized_sql_and_returns_untrusted_envelope():
-    executor = SQLiteExecutor()
+    executor = GateOnlyExecutor()
     audit = InMemoryAuditSink()
     tool = make_tool(executor=executor, audit=audit, run_id="run-7", user_id="sales-demo")
 
@@ -56,7 +56,7 @@ def test_partial_answer_never_returns_forbidden_values():
 
 
 def test_denied_query_never_reaches_executor_and_is_audited():
-    executor = SQLiteExecutor()
+    executor = GateOnlyExecutor()
     audit = InMemoryAuditSink()
     tool = make_tool(executor=executor, audit=audit)
 
@@ -81,7 +81,7 @@ def test_denied_query_never_reaches_executor_and_is_audited():
     ],
 )
 def test_model_supplied_role_or_extra_arguments_are_rejected(arguments):
-    executor = SQLiteExecutor()
+    executor = GateOnlyExecutor()
     tool = make_tool(executor=executor)
 
     with pytest.raises(ToolError) as raised:

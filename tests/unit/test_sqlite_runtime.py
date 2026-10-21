@@ -12,6 +12,7 @@ from sqlguard.agent.runtime import (
 )
 from sqlguard.agent.sqlite_schema import SQLiteSchemaAdapter
 from sqlguard.mcp.tools import MockQueryTool
+from sqlguard.security.policy import load_default_policy
 from sqlguard.security.service import ExecutorError, QueryResult
 from sqlguard.security.sqlite import SQLiteExecutor
 
@@ -101,7 +102,7 @@ def test_denied_sql_never_reaches_sqlite_executor(sqlite_path):
 
 
 def test_sqlite_executor_is_read_only_and_bounds_fetches(sqlite_path):
-    executor = SQLiteExecutor(sqlite_path)
+    executor = SQLiteExecutor(sqlite_path, load_default_policy())
     rows = asyncio.run(
         executor.execute(
             "SELECT order_id FROM orders ORDER BY order_id",
