@@ -121,7 +121,8 @@ def test_sqlite_executor_is_read_only_and_bounds_fetches(sqlite_path):
                 max_rows=1,
             )
         )
-    assert caught.value.category == "db_read_only_violation"
+    # Authorizer chặn DELETE lúc prepare, trước cả mode=ro.
+    assert caught.value.category == "db_permission_denied"
 
 
 def test_sqlite_schema_is_filtered_by_role_policy(sqlite_path):
