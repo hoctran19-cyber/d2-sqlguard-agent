@@ -37,6 +37,45 @@ class RunScope:
 # Lỗi DB duy nhất được cho planner sửa (một lần/run); lỗi quyền, timeout, read-only, canary
 # và lỗi DB khác luôn kết thúc, không bao giờ chạy lại cùng SQL.
 _DB_REPAIRABLE = frozenset({"db_schema_error", "db_syntax_error"})
+_SAFE_ERROR_CATEGORIES = frozenset(
+    {
+        "audit_error",
+        "budget_exhausted",
+        "cancelled",
+        "canary_leak",
+        "db_error",
+        "db_permission_denied",
+        "db_read_only_violation",
+        "db_role_unconfigured",
+        "db_schema_error",
+        "db_syntax_error",
+        "db_timeout",
+        "db_unavailable",
+        "event_sink_error",
+        "internal_error",
+        "invalid_request",
+        "invalid_tool_input",
+        "invalid_tool_output",
+        "memory_error",
+        "mcp_invalid_result",
+        "mcp_tool_error",
+        "mcp_transport_error",
+        "output_check_error",
+        "planner_call_budget_exhausted",
+        "planner_error",
+        "run_timeout",
+        "security_gate_error",
+        "security_rejection",
+        "sql_attempt_budget_exhausted",
+        "sql_error",
+        "tool_call_budget_exhausted",
+        "tool_error",
+        "tool_exception",
+        "tool_timeout",
+        "unknown_role",
+        "unknown_tool",
+    }
+)
 _DB_REPAIR_GUIDANCE = (
     "The database rejected the previous query because of a schema or syntax problem. "
     "Propose one corrected SELECT using only tables and columns from the supplied schema notes."
@@ -72,6 +111,12 @@ class AgentController:
         deadline = asyncio.get_running_loop().time() + self._budget.run_timeout_seconds
         try:
             self._emit(state, "run_started")
+            schema_context = getattr(self._planner, "schema_context", None)
+            self._emit(
+                state,
+                "schema_context_ready",
+                status="available" if schema_context is not None else "not_configured",
+            )
             # Kiểm tra câu hỏi trước để request rỗng không tạo gate/tool/kết nối nào.
             if not request.question.strip():
                 raise ValueError("Question must not be empty")
@@ -155,6 +200,7 @@ class AgentController:
         self._ensure_before_deadline(deadline)
         state.current_step = "context_retrieval"
         self._emit(state, "context_retrieval_started")
+        retrieval_started = perf_counter()
         try:
             context = self._memory.get(state.run_id)
         except Exception:
@@ -163,9 +209,15 @@ class AgentController:
                 "context_retrieval_completed",
                 status="failed",
                 error_category="memory_error",
+                duration_ms=(perf_counter() - retrieval_started) * 1000,
             )
             raise _MemoryFailure from None
-        self._emit(state, "context_retrieval_completed", status="completed")
+        self._emit(
+            state,
+            "context_retrieval_completed",
+            status="completed",
+            duration_ms=(perf_counter() - retrieval_started) * 1000,
+        )
 
         state.current_step = "planning"
         self._ensure_before_deadline(deadline)
@@ -190,6 +242,7 @@ class AgentController:
             if state.sql_attempt_count >= sql_limit:
                 raise _BudgetExceeded("sql_attempt_budget_exhausted")
             self._emit(state, "security_check_started")
+            gate_started = perf_counter()
             state.sql_attempt_count += 1
             try:
                 decision = scope.security_gate.check(sql)
@@ -202,6 +255,7 @@ class AgentController:
                     "security_check_completed",
                     status="failed",
                     error_category="security_gate_error",
+                    duration_ms=(perf_counter() - gate_started) * 1000,
                 )
                 raise _SecurityGateFailure from None
             self._emit(
@@ -209,6 +263,7 @@ class AgentController:
                 "security_check_completed",
                 status="allowed" if allowed else "denied",
                 error_category=None if allowed else "security_rejection",
+                duration_ms=(perf_counter() - gate_started) * 1000,
             )
             if not allowed:
                 # Bị gate từ chối: chỉ khi denial "repairable" và planner hỗ trợ mới được sửa.
@@ -225,6 +280,7 @@ class AgentController:
                 raise _BudgetExceeded("tool_call_budget_exhausted")
             self._ensure_before_deadline(deadline)
             self._emit(state, "tool_call_started")
+            self._emit(state, "execute_started")
             state.tool_call_count += 1
             tool_started = perf_counter()
             # Chỉ được gán khi gate ở ranh giới tool (SecureSqlTool) từ chối; mặc định là None
@@ -245,11 +301,43 @@ class AgentController:
                 )
             except TimeoutError:
                 if asyncio.get_running_loop().time() >= deadline:
+                    duration_ms = (perf_counter() - tool_started) * 1000
+                    self._emit(
+                        state,
+                        "tool_call_completed",
+                        status="failed",
+                        error_category="run_timeout",
+                        duration_ms=duration_ms,
+                    )
+                    self._emit(
+                        state,
+                        "execute_completed",
+                        status="failed",
+                        error_category="run_timeout",
+                        duration_ms=duration_ms,
+                    )
                     raise TimeoutError
                 category = "tool_timeout"
                 retryable = True
+            except asyncio.CancelledError:
+                duration_ms = (perf_counter() - tool_started) * 1000
+                self._emit(
+                    state,
+                    "tool_call_completed",
+                    status="failed",
+                    error_category="cancelled",
+                    duration_ms=duration_ms,
+                )
+                self._emit(
+                    state,
+                    "execute_completed",
+                    status="failed",
+                    error_category="cancelled",
+                    duration_ms=duration_ms,
+                )
+                raise
             except ToolError as error:
-                category = error.category
+                category = _safe_error_category(error.category)
                 retryable = error.retryable
                 # Gate ở ranh giới tool từ chối: vẫn phải qua kiểm tra repairable và budget.
                 tool_denial = error.decision if isinstance(error, SecurityToolError) else None
@@ -263,14 +351,51 @@ class AgentController:
                     status="completed",
                     duration_ms=(perf_counter() - tool_started) * 1000,
                 )
+                self._emit(
+                    state,
+                    "execute_completed",
+                    status="completed",
+                    duration_ms=(perf_counter() - tool_started) * 1000,
+                )
+                answer_started = perf_counter()
+                self._emit(state, "observe_started")
                 try:
                     answer = _format_result(output)
                 except Exception:
+                    self._emit(
+                        state,
+                        "observe_completed",
+                        status="failed",
+                        error_category="invalid_tool_output",
+                        duration_ms=(perf_counter() - answer_started) * 1000,
+                    )
                     raise _InvalidToolOutput from None
                 # Kiểm tra rò rỉ TRƯỚC khi gán final_answer: bị chặn thì không trả gì về.
-                self._check_output(state, scope, answer)
+                try:
+                    self._check_output(state, scope, answer)
+                except ToolError as error:
+                    self._emit(
+                        state,
+                        "observe_completed",
+                        status="failed",
+                        error_category=_safe_error_category(error.category),
+                        duration_ms=(perf_counter() - answer_started) * 1000,
+                    )
+                    raise
+                self._emit(
+                    state,
+                    "observe_completed",
+                    status="completed",
+                    duration_ms=(perf_counter() - answer_started) * 1000,
+                )
                 state.final_answer = answer
                 state.status = RunStatus.SUCCEEDED
+                self._emit(
+                    state,
+                    "answer_completed",
+                    status="completed",
+                    duration_ms=(perf_counter() - answer_started) * 1000,
+                )
                 return
 
             state.errors.append(category)
@@ -278,6 +403,13 @@ class AgentController:
             self._emit(
                 state,
                 "tool_call_completed",
+                status="failed",
+                error_category=category,
+                duration_ms=(perf_counter() - tool_started) * 1000,
+            )
+            self._emit(
+                state,
+                "execute_completed",
                 status="failed",
                 error_category=category,
                 duration_ms=(perf_counter() - tool_started) * 1000,
@@ -342,6 +474,7 @@ class AgentController:
         chi tiết lỗi nội bộ không lọt vào event hay state.
         """
         self._emit(state, "llm_call_started")
+        self._emit(state, "sql_generation_started")
         state.llm_call_count += 1
         planner_started = perf_counter()
         try:
@@ -358,11 +491,41 @@ class AgentController:
                 error_category="planner_error",
                 duration_ms=(perf_counter() - planner_started) * 1000,
             )
+            self._emit(
+                state,
+                "sql_generation_completed",
+                status="failed",
+                error_category="planner_error",
+                duration_ms=(perf_counter() - planner_started) * 1000,
+            )
             raise _PlannerFailure from None
+        except asyncio.CancelledError:
+            duration_ms = (perf_counter() - planner_started) * 1000
+            self._emit(
+                state,
+                "llm_call_completed",
+                status="failed",
+                error_category="cancelled",
+                duration_ms=duration_ms,
+            )
+            self._emit(
+                state,
+                "sql_generation_completed",
+                status="failed",
+                error_category="cancelled",
+                duration_ms=duration_ms,
+            )
+            raise
         self._emit(state, "plan_created")
         self._emit(
             state,
             "llm_call_completed",
+            status="completed",
+            duration_ms=(perf_counter() - planner_started) * 1000,
+        )
+        self._emit(
+            state,
+            "sql_generation_completed",
             status="completed",
             duration_ms=(perf_counter() - planner_started) * 1000,
         )
@@ -457,19 +620,47 @@ class AgentController:
             raise _BudgetExceeded("tool_call_budget_exhausted")
         state.current_step = "repair"
         # Event repair chỉ mang metadata (trạng thái, nhóm lỗi), không chứa SQL hay câu hỏi.
-        self._emit(state, "repair_started", status="repairing", error_category=category)
+        repair_started = perf_counter()
+        self._emit(
+            state,
+            "repair_started",
+            status="repairing",
+            error_category=_safe_error_category(category),
+        )
         try:
             sql = await self._call_planner(
                 state, lambda: repair(state.request.question, context, feedback)
             )
         except _PlannerFailure:
-            self._emit(state, "repair_completed", status="failed", error_category="planner_error")
+            self._emit(
+                state,
+                "repair_completed",
+                status="failed",
+                error_category="planner_error",
+                duration_ms=(perf_counter() - repair_started) * 1000,
+            )
             raise
-        self._emit(state, "repair_completed", status="completed")
+        except asyncio.CancelledError:
+            self._emit(
+                state,
+                "repair_completed",
+                status="failed",
+                error_category="cancelled",
+                duration_ms=(perf_counter() - repair_started) * 1000,
+            )
+            raise
+        self._emit(
+            state,
+            "repair_completed",
+            status="completed",
+            duration_ms=(perf_counter() - repair_started) * 1000,
+        )
         return sql
 
     def _emit(self, state: AgentState, event_type: str, **details: Any) -> None:
         try:
+            if details.get("error_category") is not None:
+                details["error_category"] = _safe_error_category(details["error_category"])
             self._events.emit(Event(run_id=state.run_id, event_type=event_type, **details))
         except Exception:
             raise _EventSinkFailure from None
@@ -552,7 +743,13 @@ def _error_category(error: Exception) -> str:
     if isinstance(error, _InvalidToolOutput):
         return "invalid_tool_output"
     if isinstance(error, ToolError):
-        return error.category
+        return _safe_error_category(error.category)
     if isinstance(error, ValueError):
         return "invalid_request"
     return "internal_error"
+
+
+def _safe_error_category(category: object) -> str:
+    if isinstance(category, str) and category in _SAFE_ERROR_CATEGORIES:
+        return category
+    return "tool_error"

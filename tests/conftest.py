@@ -8,7 +8,14 @@ from sqlguard.security.gate import ReadOnlySQLGate
 
 
 def make_controller(
-    *, tool=None, planner=None, gate=None, memory=None, events=None, budget=None
+    *,
+    tool=None,
+    planner=None,
+    gate=None,
+    memory=None,
+    events=None,
+    budget=None,
+    run_scope_factory=None,
 ) -> AgentController:
     return AgentController(
         planner=planner or DemoPlanner(),
@@ -17,4 +24,5 @@ def make_controller(
         memory=memory or InMemoryMemory(),
         events=events or InMemoryEventSink(),
         budget=budget or ExecutionBudget(),
+        run_scope_factory=run_scope_factory,
     )

@@ -172,6 +172,13 @@ def test_overall_timeout_terminates_a_hung_planner():
     assert result.state.failure_reason == "run_timeout"
     assert result.state.current_step == "timed_out"
     assert_single_terminal_event(events.events, "run_timed_out", "timed_out", "run_timeout")
+    generation = [
+        event for event in events.events if event.event_type == "sql_generation_completed"
+    ]
+    assert len(generation) == 1
+    assert generation[0].status == "failed"
+    assert generation[0].error_category == "cancelled"
+    assert generation[0].duration_ms is not None
 
 
 def test_security_rejection_does_not_call_tool():
@@ -254,6 +261,84 @@ def test_memory_and_structured_events_cover_run_lifecycle():
             event for event in events.events if event.event_type == "tool_call_completed"
         ).duration_ms
         is not None
+    )
+
+
+def test_runtime_trace_covers_successful_agent_stages_with_metadata_only():
+    events = InMemoryEventSink()
+    question = "Question containing private customer information"
+    sql = "SELECT private_column FROM private_table"
+    result = asyncio.run(make_controller(events=events).run(AgentRequest(question)))
+
+    event_types = [event.event_type for event in events.events]
+    assert "schema_context_ready" in event_types
+    assert "context_retrieval_completed" in event_types
+    assert "sql_generation_completed" in event_types
+    assert "security_check_completed" in event_types
+    assert "execute_completed" in event_types
+    assert "observe_completed" in event_types
+    assert "answer_completed" in event_types
+
+    for event in events.events:
+        assert event.run_id == result.state.run_id
+        assert not hasattr(event, "question")
+        assert not hasattr(event, "sql")
+        if event.event_type.endswith("_completed"):
+            assert event.duration_ms is not None
+
+    dumped = repr(events.events)
+    assert question not in dumped
+    assert sql not in dumped
+
+
+def test_failed_trace_and_untrusted_tool_category_are_sanitized():
+    marker = "customer-secret-password"
+    events = InMemoryEventSink()
+    memory = InMemoryMemory()
+    tool = MockQueryTool(failure=ToolError("failure", category=marker, retryable=False))
+    result = asyncio.run(
+        make_controller(tool=tool, events=events, memory=memory).run(
+            AgentRequest("private question")
+        )
+    )
+
+    execution_events = [event for event in events.events if event.event_type == "execute_completed"]
+    assert len(execution_events) == 1
+    assert execution_events[0].status == "failed"
+    assert execution_events[0].error_category == "tool_error"
+    assert marker not in (
+        repr(events.events) + repr(result.state.errors) + repr(memory.get(result.state.run_id))
+    )
+    assert result.state.failure_reason == "tool_error"
+    assert not any(event.event_type == "answer_completed" for event in events.events)
+
+
+def test_run_scope_factory_tool_error_category_is_sanitized_everywhere():
+    marker = "customer-secret-password"
+    events = InMemoryEventSink()
+    memory = InMemoryMemory()
+
+    def failing_scope_factory(run_id):
+        raise ToolError("scope setup failed", category=marker)
+
+    result = asyncio.run(
+        make_controller(
+            events=events,
+            memory=memory,
+            run_scope_factory=failing_scope_factory,
+        ).run(AgentRequest("Question"))
+    )
+
+    assert result.state.failure_reason == "tool_error"
+    assert result.state.errors == ["tool_error"]
+    assert events.events[-1].event_type == "run_failed"
+    assert events.events[-1].error_category == "tool_error"
+    assert memory.get(result.state.run_id, "state") == ("failed",)
+    assert marker not in (
+        repr(result.state.failure_reason)
+        + repr(result.state.errors)
+        + repr(events.events)
+        + repr(memory.get(result.state.run_id))
     )
 
 
