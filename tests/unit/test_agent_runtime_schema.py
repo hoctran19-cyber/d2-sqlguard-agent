@@ -1,6 +1,7 @@
 import asyncio
 import io
 import json
+from dataclasses import replace
 
 import pytest
 from tests.unit.test_postgres_schema import ALL_ROWS, FakeConnector
@@ -11,6 +12,7 @@ from sqlguard.agent.planning import DemoPlanner, OllamaPlanner, PlannerConfigErr
 from sqlguard.agent.postgres_schema import PostgresSchemaAdapter, SchemaAdapterError
 from sqlguard.agent.runtime import create_planner_for_role
 from sqlguard.agent.schema import SchemaColumn, SchemaContext, SchemaTable
+from sqlguard.security.policy import load_default_policy
 
 # Cấu hình bật Ollama kèm nạp schema từ PostgreSQL (dùng cho hầu hết test).
 OLLAMA_ENV = {"SQLGUARD_PLANNER": "ollama", "SQLGUARD_SCHEMA_SOURCE": "postgres"}
@@ -37,8 +39,8 @@ class FakeLoader:
 
 
 # Gọi factory đồng bộ cho gọn.
-def make(role, env=OLLAMA_ENV, loader=None):
-    return asyncio.run(create_planner_for_role(role, env, schema_loader=loader))
+def make(role, env=OLLAMA_ENV, loader=None, policy=None):
+    return asyncio.run(create_planner_for_role(role, env, schema_loader=loader, policy=policy))
 
 
 # Lấy nội dung prompt gửi cho model để kiểm tra schema có/không xuất hiện.
@@ -179,6 +181,81 @@ def test_runtime_semantic_context_is_filtered_by_trusted_role():
     assert "order-item.unit-cost-finance" in finance_context
     assert "order-item.unit-cost-finance" not in operations_context
     assert "payment.successful-by-paid-date" not in operations_context
+
+
+@pytest.mark.parametrize("source", ["postgres", "sqlite"])
+def test_schema_loader_filters_semantics_by_every_required_runtime_column(source):
+    env = {"SQLGUARD_PLANNER": "ollama", "SQLGUARD_SCHEMA_SOURCE": source}
+    partial_schema = SchemaContext(
+        tables=(
+            SchemaTable(
+                "payments",
+                (SchemaColumn("amount_vnd", "numeric"), SchemaColumn("status", "text")),
+            ),
+        )
+    )
+    loader = FakeLoader({"sales": partial_schema})
+    partial_planner = make("sales", env=env, loader=loader)
+    partial_context = prompt_of(partial_planner)
+
+    assert "payment.amount-vnd" in partial_context
+    assert "payment.successful-by-paid-date" not in partial_context
+
+    complete_schema = SchemaContext(
+        tables=(
+            SchemaTable(
+                "payments",
+                (
+                    SchemaColumn("amount_vnd", "numeric"),
+                    SchemaColumn("status", "text"),
+                    SchemaColumn("paid_date", "date"),
+                ),
+            ),
+        )
+    )
+    complete_planner = make("sales", env=env, loader=FakeLoader({"sales": complete_schema}))
+    assert "payment.successful-by-paid-date" in prompt_of(complete_planner)
+
+
+@pytest.mark.parametrize("source", ["postgres", "sqlite"])
+def test_finance_only_definition_is_hidden_for_sales_and_operations_even_if_schema_has_it(
+    source,
+):
+    env = {"SQLGUARD_PLANNER": "ollama", "SQLGUARD_SCHEMA_SOURCE": source}
+    schema = SchemaContext(
+        tables=(SchemaTable("order_items", (SchemaColumn("unit_cost_vnd", "numeric"),)),)
+    )
+    sales = make("sales", env=env, loader=FakeLoader({"sales": schema}))
+    operations = make("operations", env=env, loader=FakeLoader({"operations": schema}))
+    finance = make("finance", env=env, loader=FakeLoader({"finance": schema}))
+
+    assert "order-item.unit-cost-finance" not in prompt_of(sales)
+    assert "order-item.unit-cost-finance" not in prompt_of(operations)
+    assert "order-item.unit-cost-finance" in prompt_of(finance)
+
+
+@pytest.mark.parametrize("source", ["none", "postgres", "sqlite"])
+def test_semantic_policy_mismatch_fails_closed_without_loading_schema(source):
+    incompatible_policy = replace(load_default_policy(), version="different-policy")
+    loader = FakeLoader({"sales": schema_with("orders")})
+    env = {"SQLGUARD_PLANNER": "ollama", "SQLGUARD_SCHEMA_SOURCE": source}
+
+    with pytest.raises(PlannerConfigError, match="Semantic memory is incompatible"):
+        make("sales", env=env, loader=loader, policy=incompatible_policy)
+    assert loader.roles == []
+
+
+def test_none_schema_source_keeps_legacy_missing_role_but_rejects_invalid_role():
+    loader = FakeLoader()
+    env = {"SQLGUARD_PLANNER": "ollama", "SQLGUARD_SCHEMA_SOURCE": "none"}
+    legacy_planner = make(None, env=env, loader=loader)
+    assert isinstance(legacy_planner, OllamaPlanner)
+    assert "Semantic reference notes" not in prompt_of(legacy_planner)
+
+    with pytest.raises(SchemaAdapterError) as info:
+        make("admin", env=env, loader=loader)
+    assert info.value.category == "schema_unknown_role"
+    assert loader.roles == []
 
 
 def test_ollama_without_runtime_role_keeps_legacy_construction():

@@ -154,14 +154,11 @@ class OllamaPlanner:
         self._role = role
         self._semantic_context = ""
         if policy is not None and role is not None:
-            catalog = semantic_memory
-            if catalog is None and policy.version == DEFAULT_SEMANTIC_MEMORY.policy_version:
-                catalog = DEFAULT_SEMANTIC_MEMORY
+            catalog = semantic_memory or DEFAULT_SEMANTIC_MEMORY
             if catalog is not None and not isinstance(catalog, SemanticMemory):
                 raise PlannerConfigError("Semantic memory configuration is invalid")
             try:
-                if catalog is not None:
-                    self._semantic_context = catalog.render_for_role(role, policy, schema_context)
+                self._semantic_context = catalog.render_for_role(role, policy, schema_context)
             except SemanticMemoryError:
                 raise PlannerConfigError(
                     "Semantic memory is incompatible with the role policy"
