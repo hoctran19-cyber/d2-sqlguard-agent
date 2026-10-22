@@ -12,6 +12,7 @@ from sqlguard.agent.runtime import (
 )
 from sqlguard.agent.sqlite_schema import SQLiteSchemaAdapter
 from sqlguard.mcp.tools import MockQueryTool
+from sqlguard.security.policy import load_default_policy
 from sqlguard.security.service import ExecutorError, QueryResult
 from sqlguard.security.sqlite import SQLiteExecutor
 
@@ -101,7 +102,7 @@ def test_denied_sql_never_reaches_sqlite_executor(sqlite_path):
 
 
 def test_sqlite_executor_is_read_only_and_bounds_fetches(sqlite_path):
-    executor = SQLiteExecutor(sqlite_path)
+    executor = SQLiteExecutor(sqlite_path, load_default_policy())
     rows = asyncio.run(
         executor.execute(
             "SELECT order_id FROM orders ORDER BY order_id",
@@ -121,7 +122,8 @@ def test_sqlite_executor_is_read_only_and_bounds_fetches(sqlite_path):
                 max_rows=1,
             )
         )
-    assert caught.value.category == "db_read_only_violation"
+    # Authorizer chặn DELETE lúc prepare, trước cả mode=ro.
+    assert caught.value.category == "db_permission_denied"
 
 
 def test_sqlite_schema_is_filtered_by_role_policy(sqlite_path):

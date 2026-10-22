@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 import sqlglot
-from tests.security.fakes import SQLiteExecutor
+from tests.security.fakes import GateOnlyExecutor
 
 from sqlguard.mcp.tools import ToolError
 from sqlguard.security.audit import InMemoryAuditSink
@@ -29,7 +29,7 @@ POLICY = load_default_policy()
 
 
 def run_case(case):
-    executor = SQLiteExecutor()
+    executor = GateOnlyExecutor()
     for target, text in case["setup"].get("notes", {}).items():
         table, row_id = target.split(".")
         executor.connection.execute(
@@ -108,7 +108,7 @@ def test_compromised_model_cannot_leak_or_write(case):
 def test_role_override_in_tool_arguments_is_rejected():
     case = next(c for c in DATASET["cases"] if c["case_id"] == "D2-I02")
     tool = SecureSqlTool(
-        PolicySQLGate(SecurityContext(role=case["role"]), POLICY), SQLiteExecutor()
+        PolicySQLGate(SecurityContext(role=case["role"]), POLICY), GateOnlyExecutor()
     )
     arguments = {"sql": case["simulated_model_sql"][0], **case["setup"]["tool_argument_override"]}
 

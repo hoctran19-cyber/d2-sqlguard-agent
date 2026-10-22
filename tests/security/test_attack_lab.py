@@ -3,7 +3,7 @@ import json
 
 import pytest
 
-from sqlguard.security.attack_lab import AttackLab, LabError
+from sqlguard.security.attack_lab import AttackLab, LabError, note_statements, parse_targets
 from sqlguard.security.audit import InMemoryAuditSink
 
 
@@ -21,10 +21,19 @@ class MemoryNoteWriter:
         self.notes[(table, row_id)] = (value + "!") if (self.corrupt and value) else value
 
 
+TARGETS = parse_targets("customers.1,customers.2,customers.3,orders.1,orders.2,orders.3")
+
+
 def make_lab(**kwargs):
     writer = MemoryNoteWriter()
     audit = InMemoryAuditSink()
-    lab = AttackLab(writer, enabled=kwargs.pop("enabled", True), audit=audit, **kwargs)
+    lab = AttackLab(
+        writer,
+        enabled=kwargs.pop("enabled", True),
+        targets=kwargs.pop("targets", TARGETS),
+        audit=audit,
+        **kwargs,
+    )
     return lab, writer, audit
 
 
@@ -141,3 +150,20 @@ def test_audit_record_is_json_with_hashes_only():
     record = json.loads(audit.records[0].to_json())
     assert record["phase"] == "attack_lab" and record["length"] == len(PAYLOAD)
     assert len(record["hash_after"]) == 64 and record["revision_after"] == 1
+
+
+def test_targets_must_be_policy_note_tables():
+    with pytest.raises(ValueError):
+        make_lab(targets=parse_targets("payments.1"))
+    with pytest.raises(ValueError):
+        parse_targets("customers.x")
+
+
+def test_note_statements_are_fixed_and_parameterized():
+    from sqlguard.security.policy import load_default_policy
+
+    statements = note_statements(load_default_policy())
+
+    for read_sql, update_sql in statements.values():
+        assert read_sql.count("%s") == 1 and update_sql.count("%s") == 2
+        assert "UPDATE" in update_sql and "SET note = %s" in update_sql

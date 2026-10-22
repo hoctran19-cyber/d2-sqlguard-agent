@@ -228,11 +228,16 @@ def test_full_pipeline_with_postgres(database):
 
 
 def test_attack_lab_save_and_restore_through_note_writer(database):
-    from sqlguard.security.attack_lab import AttackLab, PostgresNoteWriter
+    from sqlguard.security.attack_lab import AttackLab, PostgresNoteWriter, parse_targets
     from sqlguard.security.audit import InMemoryAuditSink
 
     audit = InMemoryAuditSink()
-    lab = AttackLab(PostgresNoteWriter(database["note_writer"]), enabled=True, audit=audit)
+    lab = AttackLab(
+        PostgresNoteWriter(database["note_writer"]),
+        enabled=True,
+        targets=parse_targets("customers.1"),
+        audit=audit,
+    )
     executor = PostgresExecutor({"sales": database["sales"]})
 
     def read_note_as_agent():

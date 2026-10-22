@@ -31,7 +31,11 @@ _INJECTION_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = tuple(
         ("sql_write", r"\b(drop|delete|truncate|alter|insert|update|grant)\b\s+\w+"),
         ("persona", r"\b(you are now|act as|developer mode|jailbreak)\b"),
         ("persona_vi", r"(bạn bây giờ là|đóng vai|chế độ nhà phát triển)"),
-        ("privilege_vi", r"(tôi là|với quyền)\s+(finance|admin|quản trị|kế toán)"),
+        (
+            "privilege_vi",
+            r"(tôi là|với quyền|thay mặt)\s+(bộ phận|phòng|role|nhóm|admin|quản trị|giám đốc"
+            r"|trưởng|kế toán|tín dụng|rủi ro|finance|risk|credit)",
+        ),
     )
 )
 _INVISIBLE_CATEGORIES = {"Cc", "Cf", "Cs", "Co", "Cn"}
