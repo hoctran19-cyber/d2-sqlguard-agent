@@ -133,9 +133,10 @@ def test_runtime_requires_real_ollama_and_postgres_configuration():
 
 
 def test_runtime_accepts_sqlite_and_rejects_mixed_backends(tmp_path):
-    import sqlite3
-
-    from sqlguard.agent.sqlite_schema import SQLITE_PATH_ENV
+    sqlite3 = __import__("sqlite3")
+    SQLITE_PATH_ENV = __import__(
+        "sqlguard.agent.sqlite_schema", fromlist=["SQLITE_PATH_ENV"]
+    ).SQLITE_PATH_ENV
     database = tmp_path / "financial.sqlite"
     with sqlite3.connect(database):
         pass
@@ -153,9 +154,10 @@ def test_runtime_accepts_sqlite_and_rejects_mixed_backends(tmp_path):
 
 
 def test_sqlite_database_marker_is_checked(tmp_path):
-    import sqlite3
-
-    from evaluation.bird_pilot import verify_sqlite_database
+    sqlite3 = __import__("sqlite3")
+    verify_sqlite_database = __import__(
+        "evaluation.bird_pilot", fromlist=["verify_sqlite_database"]
+    ).verify_sqlite_database
     database = tmp_path / "financial.sqlite"
     marker = f"sqlguard-bird-pilot:v1; database_id=financial; revision={REVISION}"
     with sqlite3.connect(database) as connection:
