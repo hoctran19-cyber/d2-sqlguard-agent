@@ -37,6 +37,8 @@ class RunScope:
 # Lỗi DB duy nhất được cho planner sửa (một lần/run); lỗi quyền, timeout, read-only, canary
 # và lỗi DB khác luôn kết thúc, không bao giờ chạy lại cùng SQL.
 _DB_REPAIRABLE = frozenset({"db_schema_error", "db_syntax_error"})
+# Chỉ các mã lỗi cố định, không chứa dữ liệu đầu vào, mới được phép đi vào event/state/memory.
+# Category do tool hoặc tích hợp bên ngoài cung cấp phải qua danh sách này trước khi ghi nhận.
 _SAFE_ERROR_CATEGORIES = frozenset(
     {
         "audit_error",
@@ -112,6 +114,7 @@ class AgentController:
         try:
             self._emit(state, "run_started")
             schema_context = getattr(self._planner, "schema_context", None)
+            # Chỉ ghi nhận schema có được cấu hình hay không; tuyệt đối không ghi nội dung schema.
             self._emit(
                 state,
                 "schema_context_ready",
@@ -200,6 +203,7 @@ class AgentController:
         self._ensure_before_deadline(deadline)
         state.current_step = "context_retrieval"
         self._emit(state, "context_retrieval_started")
+        # Dùng đồng hồ thời gian thực để đo riêng bước đọc memory, không phụ thuộc đồng hồ hệ thống.
         retrieval_started = perf_counter()
         try:
             context = self._memory.get(state.run_id)
@@ -242,6 +246,7 @@ class AgentController:
             if state.sql_attempt_count >= sql_limit:
                 raise _BudgetExceeded("sql_attempt_budget_exhausted")
             self._emit(state, "security_check_started")
+            # Event chỉ ghi trạng thái/kết quả và thời lượng; SQL không được đưa vào trace.
             gate_started = perf_counter()
             state.sql_attempt_count += 1
             try:
@@ -280,6 +285,7 @@ class AgentController:
                 raise _BudgetExceeded("tool_call_budget_exhausted")
             self._ensure_before_deadline(deadline)
             self._emit(state, "tool_call_started")
+            # Đo riêng bước thực thi để trace khi tool thành công, lỗi, timeout hoặc bị hủy.
             self._emit(state, "execute_started")
             state.tool_call_count += 1
             tool_started = perf_counter()
@@ -358,6 +364,7 @@ class AgentController:
                     duration_ms=(perf_counter() - tool_started) * 1000,
                 )
                 answer_started = perf_counter()
+                # Observe xử lý kết quả nhưng chỉ phát metadata, không phát nội dung kết quả.
                 self._emit(state, "observe_started")
                 try:
                     answer = _format_result(output)
@@ -390,6 +397,7 @@ class AgentController:
                 )
                 state.final_answer = answer
                 state.status = RunStatus.SUCCEEDED
+                # Chỉ đánh dấu Answer hoàn tất sau khi kết quả đã qua bước kiểm tra đầu ra.
                 self._emit(
                     state,
                     "answer_completed",
@@ -474,6 +482,7 @@ class AgentController:
         chi tiết lỗi nội bộ không lọt vào event hay state.
         """
         self._emit(state, "llm_call_started")
+        # Một lời gọi planner tạo hoặc sửa SQL; chỉ ghi trạng thái/thời lượng, không ghi SQL.
         self._emit(state, "sql_generation_started")
         state.llm_call_count += 1
         planner_started = perf_counter()
@@ -659,6 +668,7 @@ class AgentController:
 
     def _emit(self, state: AgentState, event_type: str, **details: Any) -> None:
         try:
+            # Chặn category tùy ý ở ranh giới sink để không rò dữ liệu dù caller truyền nhầm.
             if details.get("error_category") is not None:
                 details["error_category"] = _safe_error_category(details["error_category"])
             self._events.emit(Event(run_id=state.run_id, event_type=event_type, **details))
@@ -740,9 +750,11 @@ def _format_result(output: Any) -> str:
 
 
 def _error_category(error: Exception) -> str:
+    """Đổi ngoại lệ thành mã an toàn trước khi ghi vào trạng thái run."""
     if isinstance(error, _InvalidToolOutput):
         return "invalid_tool_output"
     if isinstance(error, ToolError):
+        # ToolError có thể đến từ tích hợp ngoài nên category không mặc nhiên được tin cậy.
         return _safe_error_category(error.category)
     if isinstance(error, ValueError):
         return "invalid_request"
@@ -750,6 +762,7 @@ def _error_category(error: Exception) -> str:
 
 
 def _safe_error_category(category: object) -> str:
+    """Giữ nguyên category đã biết; thay category lạ bằng mã chung không nhạy cảm."""
     if isinstance(category, str) and category in _SAFE_ERROR_CATEGORIES:
         return category
     return "tool_error"
