@@ -1,0 +1,528 @@
+{
+  "schema_version": "financial-sqlite-reference-0.1",
+  "suite_id": "financial-d2",
+  "certifies_postgresql": false,
+  "purpose": "Read-only SQLite cross-check of the selected questions. Not PostgreSQL expected rows.",
+  "generated_on": "2026-10-22",
+  "runtime": {
+    "python": "3.14.0",
+    "sqlite": "3.50.4"
+  },
+  "sqlite_gold_source": {
+    "path": "MINIDEV/mini_dev_sqlite.json",
+    "sha256": "def4b2b43a9b06955193418f24c9be170eb6d83763ab702311790e0cdda8c791",
+    "match": "question_id + db_id=financial; SQL used verbatim (no translation)"
+  },
+  "databases": {
+    "derived_sqlguard_v1": {
+      "path": "MINIDEV/dev_databases/financial/financial.sqlite",
+      "sha256": "ec45f11d8568fa4dcc2ce60594a37fd9db643d6b0fc01b4a61090faeea21eba0"
+    },
+    "original_backup": {
+      "path": "sqlguard-financial-v1/backup/financial.original.sqlite",
+      "sha256": "d15d89cdb068a202b6f2b99342af44dffc1d52545b39ceaf62efdc0ba570101e"
+    }
+  },
+  "results": {
+    "D2-L01": {
+      "question_id": 89,
+      "translated": false,
+      "sqlite_sql": "SELECT COUNT(T2.account_id) FROM district AS T1 INNER JOIN account AS T2 ON T1.district_id = T2.district_id WHERE T1.A3 = 'east Bohemia' AND T2.frequency = 'POPLATEK PO OBRATU'",
+      "sqlite_sql_sha256": "eb717166d2297b530c835152c5116987c1f14ab66bc209d1f8d85f36c794f9ab",
+      "columns": [
+        "COUNT(T2.account_id)"
+      ],
+      "rows": [
+        [
+          13
+        ]
+      ],
+      "row_count": 1,
+      "diagnostics": {}
+    },
+    "D2-L02": {
+      "question_id": 119,
+      "translated": false,
+      "sqlite_sql": "SELECT T1.account_id, T2.A2, T2.A3 FROM account AS T1 INNER JOIN district AS T2 ON T1.district_id = T2.district_id WHERE T1.frequency = 'POPLATEK PO OBRATU' AND STRFTIME('%Y', T1.date)= '1993'",
+      "sqlite_sql_sha256": "1dd3140df2d5a9c3ac9cd67f6b247c9f0d6f67bd160242871bec38bf57399ec0",
+      "columns": [
+        "account_id",
+        "A2",
+        "A3"
+      ],
+      "rows": [
+        [
+          66,
+          "Rychnov nad Kneznou",
+          "east Bohemia"
+        ],
+        [
+          273,
+          "Karlovy Vary",
+          "west Bohemia"
+        ],
+        [
+          485,
+          "Kutna Hora",
+          "central Bohemia"
+        ],
+        [
+          539,
+          "Rakovnik",
+          "central Bohemia"
+        ],
+        [
+          1050,
+          "Hodonin",
+          "south Moravia"
+        ],
+        [
+          1286,
+          "Zdar nad Sazavou",
+          "south Moravia"
+        ],
+        [
+          1527,
+          "Tachov",
+          "west Bohemia"
+        ],
+        [
+          1539,
+          "Hl.m. Praha",
+          "Prague"
+        ],
+        [
+          1965,
+          "Hodonin",
+          "south Moravia"
+        ],
+        [
+          2137,
+          "Kladno",
+          "central Bohemia"
+        ],
+        [
+          2464,
+          "Decin",
+          "north Bohemia"
+        ],
+        [
+          2705,
+          "Vyskov",
+          "south Moravia"
+        ],
+        [
+          3837,
+          "Rychnov nad Kneznou",
+          "east Bohemia"
+        ],
+        [
+          4013,
+          "Opava",
+          "north Moravia"
+        ],
+        [
+          5228,
+          "Vsetin",
+          "north Moravia"
+        ],
+        [
+          5256,
+          "Olomouc",
+          "north Moravia"
+        ],
+        [
+          7123,
+          "Zlin",
+          "south Moravia"
+        ],
+        [
+          7774,
+          "Ostrava - mesto",
+          "north Moravia"
+        ],
+        [
+          8073,
+          "Karlovy Vary",
+          "west Bohemia"
+        ],
+        [
+          8212,
+          "Usti nad Orlici",
+          "east Bohemia"
+        ],
+        [
+          10227,
+          "Uherske Hradiste",
+          "south Moravia"
+        ]
+      ],
+      "row_count": 21,
+      "diagnostics": {}
+    },
+    "D2-L03": {
+      "question_id": 173,
+      "translated": false,
+      "sqlite_sql": "SELECT T1.frequency, T2.k_symbol FROM account AS T1 INNER JOIN (SELECT account_id, k_symbol, SUM(amount) AS total_amount FROM `order` GROUP BY account_id, k_symbol) AS T2 ON T1.account_id = T2.account_id WHERE T1.account_id = 3 AND T2.total_amount = 3539",
+      "sqlite_sql_sha256": "4c4b373981aeda1859ea4b68400f5c8c9ab788000fc3f2a1614dd878811742f9",
+      "columns": [
+        "frequency",
+        "k_symbol"
+      ],
+      "rows": [
+        [
+          "POPLATEK MESICNE",
+          "POJISTNE"
+        ]
+      ],
+      "row_count": 1,
+      "diagnostics": {
+        "account3_orders": {
+          "authored_by": "evaluator (diagnostic, not gold)",
+          "sql": "SELECT order_id, amount, k_symbol FROM \"order\" WHERE account_id = 3 ORDER BY order_id",
+          "rows": [
+            [
+              29404,
+              1135.0,
+              "SIPO"
+            ],
+            [
+              29405,
+              327.0,
+              ""
+            ],
+            [
+              29406,
+              3539.0,
+              "POJISTNE"
+            ]
+          ]
+        },
+        "account3_actual_debits_by_k_symbol": {
+          "authored_by": "evaluator (diagnostic, not gold)",
+          "sql": "SELECT k_symbol, COUNT(*), SUM(amount) FROM trans WHERE account_id = 3 AND type = 'VYDAJ' GROUP BY k_symbol ORDER BY k_symbol",
+          "rows": [
+            [
+              null,
+              19,
+              56760
+            ],
+            [
+              " ",
+              13,
+              4251
+            ],
+            [
+              "POJISTNE",
+              13,
+              46007
+            ],
+            [
+              "SIPO",
+              13,
+              14755
+            ],
+            [
+              "SLUZBY",
+              13,
+              195
+            ]
+          ]
+        }
+      }
+    },
+    "D2-L04": {
+      "question_id": 93,
+      "translated": false,
+      "sqlite_sql": "SELECT COUNT(T1.client_id) FROM client AS T1 INNER JOIN district AS T2 ON T1.district_id = T2.district_id WHERE T1.gender = 'M' AND T2.A3 = 'north Bohemia' AND T2.A11 > 8000",
+      "sqlite_sql_sha256": "586375fb2c04ed2e47dad23114af289f7c109bb46528f54cfb1d8f2849afc668",
+      "columns": [
+        "COUNT(T1.client_id)"
+      ],
+      "rows": [
+        [
+          280
+        ]
+      ],
+      "row_count": 1,
+      "diagnostics": {}
+    },
+    "D2-L05": {
+      "question_id": 128,
+      "translated": false,
+      "sqlite_sql": "SELECT T2.A2, COUNT(T1.client_id) FROM client AS T1 INNER JOIN district AS T2 ON T1.district_id = T2.district_id WHERE T1.gender = 'F' GROUP BY T2.district_id, T2.A2 ORDER BY COUNT(T1.client_id) DESC LIMIT 9",
+      "sqlite_sql_sha256": "14ac430b3e7e5312e182d78e626fe84891bfedd05014cb3402a5febca6feb05e",
+      "columns": [
+        "A2",
+        "COUNT(T1.client_id)"
+      ],
+      "rows": [
+        [
+          "Hl.m. Praha",
+          324
+        ],
+        [
+          "Karvina",
+          88
+        ],
+        [
+          "Ostrava - mesto",
+          84
+        ],
+        [
+          "Brno - mesto",
+          75
+        ],
+        [
+          "Zlin",
+          57
+        ],
+        [
+          "Olomouc",
+          50
+        ],
+        [
+          "Frydek - Mistek",
+          42
+        ],
+        [
+          "Kolin",
+          39
+        ],
+        [
+          "Nachod",
+          37
+        ]
+      ],
+      "row_count": 9,
+      "diagnostics": {
+        "female_count_ranking_top12": {
+          "authored_by": "evaluator (diagnostic, not gold)",
+          "sql": "SELECT T2.district_id, T2.A2, COUNT(T1.client_id) AS n FROM client AS T1 INNER JOIN district AS T2 ON T1.district_id = T2.district_id WHERE T1.gender = 'F' GROUP BY T2.district_id, T2.A2 ORDER BY n DESC, T2.district_id LIMIT 12",
+          "rows": [
+            [
+              1,
+              "Hl.m. Praha",
+              324
+            ],
+            [
+              70,
+              "Karvina",
+              88
+            ],
+            [
+              74,
+              "Ostrava - mesto",
+              84
+            ],
+            [
+              54,
+              "Brno - mesto",
+              75
+            ],
+            [
+              64,
+              "Zlin",
+              57
+            ],
+            [
+              72,
+              "Olomouc",
+              50
+            ],
+            [
+              68,
+              "Frydek - Mistek",
+              42
+            ],
+            [
+              5,
+              "Kolin",
+              39
+            ],
+            [
+              46,
+              "Nachod",
+              37
+            ],
+            [
+              16,
+              "Jindrichuv Hradec",
+              34
+            ],
+            [
+              33,
+              "Decin",
+              34
+            ],
+            [
+              52,
+              "Usti nad Orlici",
+              34
+            ]
+          ]
+        }
+      }
+    },
+    "D2-L06": {
+      "question_id": 168,
+      "translated": false,
+      "sqlite_sql": "SELECT CAST(SUM(T2.gender = 'F') AS REAL) * 100 / COUNT(T2.client_id) FROM district AS T1 INNER JOIN client AS T2 ON T1.district_id = T2.district_id WHERE T1.A11 > 10000",
+      "sqlite_sql_sha256": "1d1bba2987781d3273fc4e7ee49cc69a9b25c8489e8b6ee9a9bfc68724f3405a",
+      "columns": [
+        "CAST(SUM(T2.gender = 'F') AS REAL) * 100 / COUNT(T2.client_id)"
+      ],
+      "rows": [
+        [
+          49.609984399375975
+        ]
+      ],
+      "row_count": 1,
+      "diagnostics": {}
+    },
+    "D2-L07": {
+      "question_id": 186,
+      "translated": false,
+      "sqlite_sql": "SELECT CAST(SUM(T1.gender = 'M') AS REAL) * 100 / COUNT(T1.client_id) FROM client AS T1 INNER JOIN district AS T3 ON T1.district_id = T3.district_id INNER JOIN account AS T2 ON T2.district_id = T3.district_id INNER JOIN disp as T4 on T1.client_id = T4.client_id AND T2.account_id = T4.account_id WHERE T2.frequency = 'POPLATEK TYDNE'",
+      "sqlite_sql_sha256": "946fb21e93ea46a9b638b4a3b83f285372614ef04f006e4c88aad81c9b2af059",
+      "columns": [
+        "CAST(SUM(T1.gender = 'M') AS REAL) * 100 / COUNT(T1.client_id)"
+      ],
+      "rows": [
+        [
+          52.63157894736842
+        ]
+      ],
+      "row_count": 1,
+      "diagnostics": {}
+    },
+    "D2-L08": {
+      "question_id": 98,
+      "translated": false,
+      "sqlite_sql": "SELECT T2.account_id FROM loan AS T1 INNER JOIN account AS T2 ON T1.account_id = T2.account_id WHERE STRFTIME('%Y', T1.date) = '1997' AND T2.frequency = 'POPLATEK TYDNE' ORDER BY T1.amount LIMIT 1",
+      "sqlite_sql_sha256": "8f645f1cff000094c3b162a86b9b358a30917efd6cce51c61e7c72a48cc35180",
+      "columns": [
+        "account_id"
+      ],
+      "rows": [
+        [
+          176
+        ]
+      ],
+      "row_count": 1,
+      "diagnostics": {
+        "min_amount_tie_groups": {
+          "authored_by": "evaluator (diagnostic, not gold)",
+          "sql": "SELECT T1.amount, COUNT(*) FROM loan AS T1 INNER JOIN account AS T2 ON T1.account_id = T2.account_id WHERE STRFTIME('%Y', T1.date) = '1997' AND T2.frequency = 'POPLATEK TYDNE' GROUP BY T1.amount ORDER BY T1.amount LIMIT 3",
+          "rows": [
+            [
+              27456,
+              1
+            ],
+            [
+              44940,
+              1
+            ],
+            [
+              48096,
+              1
+            ]
+          ]
+        },
+        "candidates_and_null_amounts": {
+          "authored_by": "evaluator (diagnostic, not gold)",
+          "sql": "SELECT COUNT(*), SUM(T1.amount IS NULL) FROM loan AS T1 INNER JOIN account AS T2 ON T1.account_id = T2.account_id WHERE STRFTIME('%Y', T1.date) = '1997' AND T2.frequency = 'POPLATEK TYDNE'",
+          "rows": [
+            [
+              19,
+              0
+            ]
+          ]
+        }
+      }
+    },
+    "D2-L09": {
+      "question_id": 99,
+      "translated": false,
+      "sqlite_sql": "SELECT T1.account_id FROM loan AS T1 INNER JOIN account AS T2 ON T1.account_id = T2.account_id WHERE STRFTIME('%Y', T2.date) = '1993' AND T1.duration > 12 ORDER BY T1.amount DESC LIMIT 1",
+      "sqlite_sql_sha256": "506a292040f8cd15576766eca23afa95d106923fc2a08acf9bc487b711e83cb7",
+      "columns": [
+        "account_id"
+      ],
+      "rows": [
+        [
+          10451
+        ]
+      ],
+      "row_count": 1,
+      "diagnostics": {
+        "max_amount_tie_groups": {
+          "authored_by": "evaluator (diagnostic, not gold)",
+          "sql": "SELECT T1.amount, COUNT(*) FROM loan AS T1 INNER JOIN account AS T2 ON T1.account_id = T2.account_id WHERE STRFTIME('%Y', T2.date) = '1993' AND T1.duration > 12 GROUP BY T1.amount ORDER BY T1.amount DESC LIMIT 3",
+          "rows": [
+            [
+              482940,
+              1
+            ],
+            [
+              464520,
+              1
+            ],
+            [
+              417060,
+              1
+            ]
+          ]
+        },
+        "candidates_and_null_amounts": {
+          "authored_by": "evaluator (diagnostic, not gold)",
+          "sql": "SELECT COUNT(*), SUM(T1.amount IS NULL) FROM loan AS T1 INNER JOIN account AS T2 ON T1.account_id = T2.account_id WHERE STRFTIME('%Y', T2.date) = '1993' AND T1.duration > 12",
+          "rows": [
+            [
+              115,
+              0
+            ]
+          ]
+        }
+      }
+    },
+    "D2-L10": {
+      "question_id": 136,
+      "translated": false,
+      "sqlite_sql": "SELECT COUNT(T1.account_id) FROM account AS T1 INNER JOIN loan AS T2 ON T1.account_id = T2.account_id WHERE T2.date BETWEEN '1995-01-01' AND '1997-12-31' AND T1.frequency = 'POPLATEK MESICNE' AND T2.amount >= 250000",
+      "sqlite_sql_sha256": "3501fd921d0ecf7416e519daac08634122e7e8384fa9c2576060f09c5cf75745",
+      "columns": [
+        "COUNT(T1.account_id)"
+      ],
+      "rows": [
+        [
+          65
+        ]
+      ],
+      "row_count": 1,
+      "diagnostics": {
+        "boundary_date_loans": {
+          "authored_by": "evaluator (diagnostic, not gold)",
+          "sql": "SELECT T2.loan_id, T2.date, T2.amount, T1.frequency FROM account AS T1 INNER JOIN loan AS T2 ON T1.account_id = T2.account_id WHERE T2.date IN ('1995-01-01', '1997-12-31') ORDER BY T2.loan_id",
+          "rows": [
+            [
+              7100,
+              "1997-12-31",
+              348120,
+              "POPLATEK MESICNE"
+            ]
+          ]
+        },
+        "max_loans_per_account": {
+          "authored_by": "evaluator (diagnostic, not gold)",
+          "sql": "SELECT MAX(n) FROM (SELECT COUNT(*) AS n FROM loan GROUP BY account_id)",
+          "rows": [
+            [
+              1
+            ]
+          ]
+        }
+      }
+    }
+  }
+}
