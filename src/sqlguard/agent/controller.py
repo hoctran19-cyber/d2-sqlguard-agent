@@ -230,7 +230,7 @@ class AgentController:
         # Lần gọi planner đầu tiên: dùng chung helper với các lần repair để cùng một cách đếm
         # ngân sách, phát event và xử lý lỗi (planner lỗi luôn thành _PlannerFailure).
         sql = await self._call_planner(
-            state, lambda: self._planner.create_plan(state.request.question, context)
+            state, lambda: self._planner.create_plan(state.request.question, context), deadline
         )
 
         # Cờ đảm bảo lỗi schema/cú pháp của DB chỉ được sửa tối đa MỘT lần trong mỗi run.
@@ -327,18 +327,19 @@ class AgentController:
                 retryable = True
             except asyncio.CancelledError:
                 duration_ms = (perf_counter() - tool_started) * 1000
+                error_category = self._cancellation_category(deadline)
                 self._emit(
                     state,
                     "tool_call_completed",
                     status="failed",
-                    error_category="cancelled",
+                    error_category=error_category,
                     duration_ms=duration_ms,
                 )
                 self._emit(
                     state,
                     "execute_completed",
                     status="failed",
-                    error_category="cancelled",
+                    error_category=error_category,
                     duration_ms=duration_ms,
                 )
                 raise
@@ -450,6 +451,7 @@ class AgentController:
 
     def _check_output(self, state: AgentState, scope: RunScope, answer: str) -> None:
         """Chặn câu trả lời cuối nếu rò rỉ; mọi lỗi của bước kiểm tra cũng chặn (fail closed)."""
+        check_started = perf_counter()
         check = scope.output_check
         # Không có output_check (chế độ mock) thì giữ nguyên hành vi cũ.
         if check is None:
@@ -463,18 +465,30 @@ class AgentController:
                 "output_check_completed",
                 status="failed",
                 error_category="output_check_error",
+                duration_ms=(perf_counter() - check_started) * 1000,
             )
             raise ToolError("Output check failed", category="output_check_error") from None
         if leaked:
             # Event chỉ nêu danh mục; tuyệt đối không đưa câu trả lời hay giá trị bị rò vào.
             self._emit(
-                state, "output_check_completed", status="blocked", error_category="canary_leak"
+                state,
+                "output_check_completed",
+                status="blocked",
+                error_category="canary_leak",
+                duration_ms=(perf_counter() - check_started) * 1000,
             )
             raise ToolError("Result withheld by output check", category="canary_leak")
         # Sạch: ghi nhận đã kiểm tra xong để event/audit phản ánh đúng diễn biến của run.
-        self._emit(state, "output_check_completed", status="completed")
+        self._emit(
+            state,
+            "output_check_completed",
+            status="completed",
+            duration_ms=(perf_counter() - check_started) * 1000,
+        )
 
-    async def _call_planner(self, state: AgentState, make_call: Callable[[], Any]) -> str:
+    async def _call_planner(
+        self, state: AgentState, make_call: Callable[[], Any], deadline: float
+    ) -> str:
         """Gọi planner một lần, tính vào ngân sách planner và phát event; trả về SQL đề xuất.
 
         ``make_call`` trả về coroutine của ``create_plan`` hoặc ``repair_plan``. Mọi lỗi (ngoại
@@ -510,18 +524,19 @@ class AgentController:
             raise _PlannerFailure from None
         except asyncio.CancelledError:
             duration_ms = (perf_counter() - planner_started) * 1000
+            error_category = self._cancellation_category(deadline)
             self._emit(
                 state,
                 "llm_call_completed",
                 status="failed",
-                error_category="cancelled",
+                error_category=error_category,
                 duration_ms=duration_ms,
             )
             self._emit(
                 state,
                 "sql_generation_completed",
                 status="failed",
-                error_category="cancelled",
+                error_category=error_category,
                 duration_ms=duration_ms,
             )
             raise
@@ -638,7 +653,7 @@ class AgentController:
         )
         try:
             sql = await self._call_planner(
-                state, lambda: repair(state.request.question, context, feedback)
+                state, lambda: repair(state.request.question, context, feedback), deadline
             )
         except _PlannerFailure:
             self._emit(
@@ -650,11 +665,12 @@ class AgentController:
             )
             raise
         except asyncio.CancelledError:
+            error_category = self._cancellation_category(deadline)
             self._emit(
                 state,
                 "repair_completed",
                 status="failed",
-                error_category="cancelled",
+                error_category=error_category,
                 duration_ms=(perf_counter() - repair_started) * 1000,
             )
             raise
@@ -692,6 +708,13 @@ class AgentController:
         if remaining <= 0:
             raise TimeoutError
         return remaining
+
+    @staticmethod
+    def _cancellation_category(deadline: float) -> str:
+        """Phân biệt timeout của run với việc tác vụ bị caller hủy chủ động."""
+        if asyncio.get_running_loop().time() >= deadline:
+            return "run_timeout"
+        return "cancelled"
 
     @staticmethod
     def _set_terminal_step(state: AgentState) -> None:

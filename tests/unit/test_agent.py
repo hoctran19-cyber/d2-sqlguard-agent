@@ -1,4 +1,5 @@
 import asyncio
+from math import isfinite
 
 from tests.conftest import make_controller
 
@@ -24,6 +25,7 @@ def assert_single_terminal_event(events, expected_type, status, error_category=N
     assert terminal_events[0].status == status
     assert terminal_events[0].error_category == error_category
     assert terminal_events[0].duration_ms is not None
+    assert isfinite(terminal_events[0].duration_ms) and terminal_events[0].duration_ms >= 0
 
 
 def test_valid_request_completes_demo_flow():
@@ -38,6 +40,11 @@ def test_valid_request_completes_demo_flow():
     assert result.state.sql_attempt_count == 1
     assert result.state.current_step == "completed"
     assert_single_terminal_event(events.events, "run_completed", "succeeded")
+    assert all(event.run_id == result.state.run_id for event in events.events)
+    assert all(
+        event.duration_ms is None or (isfinite(event.duration_ms) and event.duration_ms >= 0)
+        for event in events.events
+    )
 
 
 def test_tool_error_is_reported_and_retried_within_budget():
@@ -119,6 +126,7 @@ def test_sql_attempt_budget_stops_before_security_validation_or_tool_call():
     assert_single_terminal_event(
         events.events, "budget_exhausted", "budget_exhausted", "sql_attempt_budget_exhausted"
     )
+    assert all(event.run_id == result.state.run_id for event in events.events)
 
 
 def test_llm_call_budget_stops_before_planning():
@@ -141,10 +149,12 @@ def test_llm_call_budget_stops_before_planning():
 
 
 def test_query_timeout_is_bounded_and_not_retried_without_budget():
+    events = InMemoryEventSink()
     tool = MockQueryTool(delay_seconds=0.05)
     result = asyncio.run(
         make_controller(
             tool=tool,
+            events=events,
             budget=ExecutionBudget(max_retries=0, query_timeout_seconds=0.001),
         ).run(AgentRequest("Question"))
     )
@@ -152,6 +162,13 @@ def test_query_timeout_is_bounded_and_not_retried_without_budget():
     assert result.state.status == RunStatus.FAILED
     assert result.state.failure_reason == "tool_timeout"
     assert result.state.retry_count == 0
+    assert all(event.run_id == result.state.run_id for event in events.events)
+    execution = [event for event in events.events if event.event_type == "execute_completed"]
+    assert len(execution) == 1
+    assert execution[0].status == "failed"
+    assert execution[0].error_category == "tool_timeout"
+    assert execution[0].duration_ms is not None and execution[0].duration_ms >= 0
+    assert_single_terminal_event(events.events, "run_failed", "failed", "tool_timeout")
 
 
 def test_overall_timeout_terminates_a_hung_planner():
@@ -177,8 +194,50 @@ def test_overall_timeout_terminates_a_hung_planner():
     ]
     assert len(generation) == 1
     assert generation[0].status == "failed"
+    assert generation[0].error_category == "run_timeout"
+    assert generation[0].duration_ms is not None and generation[0].duration_ms >= 0
+    assert all(event.run_id == result.state.run_id for event in events.events)
+
+
+def test_external_cancellation_emits_correlated_failed_terminal_event():
+    async def exercise_cancellation():
+        started = asyncio.Event()
+
+        class WaitingPlanner:
+            async def create_plan(self, question, context):
+                started.set()
+                await asyncio.Event().wait()
+
+        events = InMemoryEventSink()
+        memory = InMemoryMemory()
+        controller = make_controller(planner=WaitingPlanner(), events=events, memory=memory)
+        task = asyncio.create_task(controller.run(AgentRequest("Question")))
+        await started.wait()
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        else:
+            raise AssertionError("Cancelled run should propagate CancelledError")
+        return events, memory
+
+    events, memory = asyncio.run(exercise_cancellation())
+    terminal = [event for event in events.events if event.event_type in CANONICAL_TERMINAL_EVENTS]
+    assert len(terminal) == 1
+    assert terminal[0].event_type == "run_failed"
+    assert terminal[0].status == "failed"
+    assert terminal[0].error_category == "cancelled"
+    run_ids = {event.run_id for event in events.events}
+    assert len(run_ids) == 1
+    run_id = run_ids.pop()
+    assert memory.get(run_id, "state") == ("failed",)
+    generation = [
+        event for event in events.events if event.event_type == "sql_generation_completed"
+    ]
+    assert len(generation) == 1
     assert generation[0].error_category == "cancelled"
-    assert generation[0].duration_ms is not None
+    assert generation[0].duration_ms is not None and generation[0].duration_ms >= 0
 
 
 def test_security_rejection_does_not_call_tool():
@@ -198,6 +257,7 @@ def test_security_rejection_does_not_call_tool():
     assert result.state.failure_reason == "security_rejection"
     assert tool.calls == 0
     assert_single_terminal_event(events.events, "run_refused", "refused", "security_rejection")
+    assert all(event.run_id == result.state.run_id for event in events.events)
 
 
 def test_security_gate_exception_fails_closed():
@@ -379,8 +439,11 @@ def test_planner_and_tool_exceptions_have_clear_terminal_categories():
         async def create_plan(self, question, context):
             raise RuntimeError("private planner details")
 
+    planner_events = InMemoryEventSink()
     planner_result = asyncio.run(
-        make_controller(planner=BrokenPlanner()).run(AgentRequest("Question"))
+        make_controller(planner=BrokenPlanner(), events=planner_events).run(
+            AgentRequest("Question")
+        )
     )
 
     events = InMemoryEventSink()
@@ -399,10 +462,20 @@ def test_planner_and_tool_exceptions_have_clear_terminal_categories():
 
     assert planner_result.state.failure_reason == "planner_error"
     assert planner_result.state.status == RunStatus.FAILED
+    generation = [
+        event for event in planner_events.events if event.event_type == "sql_generation_completed"
+    ]
+    assert len(generation) == 1
+    assert generation[0].error_category == "planner_error"
+    assert generation[0].duration_ms is not None and generation[0].duration_ms >= 0
+    assert all(event.run_id == planner_result.state.run_id for event in planner_events.events)
+    assert "private planner details" not in repr(planner_events.events)
     assert tool_result.state.failure_reason == "tool_exception"
     assert tool_result.state.retry_count == 0
     assert tool.calls == 1
     assert_single_terminal_event(events.events, "run_failed", "failed", "tool_exception")
+    assert all(event.run_id == tool_result.state.run_id for event in events.events)
+    assert "private tool details" not in repr(events.events)
 
 
 def test_memory_retrieval_failure_does_not_reach_planner_or_tool():
