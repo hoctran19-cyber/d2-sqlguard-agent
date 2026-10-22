@@ -60,8 +60,18 @@ def _field(obj: Any, snake: str, camel: str) -> Any:
 
 
 def _unwrap(result: Any) -> Any:
+    is_error = _field(result, "is_error", "isError")
     structured = _field(result, "structured_content", "structuredContent")
-    if _field(result, "is_error", "isError"):
+    content = getattr(result, "content", None)
+    if not isinstance(is_error, bool) or not isinstance(content, list):
+        raise ToolError(
+            "MCP result has an invalid shape", category="mcp_invalid_result", retryable=False
+        )
+    if structured is not None and not isinstance(structured, dict):
+        raise ToolError(
+            "MCP result has an invalid shape", category="mcp_invalid_result", retryable=False
+        )
+    if is_error:
         category, retryable = "mcp_tool_error", False
         if isinstance(structured, dict):
             remote = structured.get("category")
@@ -75,7 +85,7 @@ def _unwrap(result: Any) -> Any:
         return structured
     texts = [
         item.text
-        for item in getattr(result, "content", None) or []
+        for item in content
         if getattr(item, "type", None) == "text" and isinstance(getattr(item, "text", None), str)
     ]
     if not texts:
