@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 import re
+import sqlite3
 import sys
 from collections.abc import Callable, Mapping
 from dataclasses import asdict
@@ -22,6 +23,7 @@ from sqlguard.agent.controller import AgentController, RunScope
 from sqlguard.agent.models import AgentRequest, ExecutionBudget
 from sqlguard.agent.planning import OllamaPlanner, PlannerConfigError, create_planner
 from sqlguard.agent.postgres_schema import PostgresSchemaAdapter, SchemaAdapterError
+from sqlguard.agent.sqlite_schema import SQLITE_PATH_ENV, SQLiteSchemaAdapter
 from sqlguard.agent.runtime import (
     QUERY_SOURCE_ENV,
     SCHEMA_SOURCE_ENV,
@@ -236,10 +238,10 @@ def load_reviewed_cases(
         dialect = row.get("dialect")
         if dialect not in SUPPORTED_DIALECTS:
             raise PilotInputError(f"Reviewed case {case_id!r} has unsupported dialect {dialect!r}.")
-        if dialect != "postgresql":
+        if dialect not in {"postgresql", "sqlite"}:
             raise PilotInputError(
                 f"Reviewed case {case_id!r} uses {dialect!r}; the pilot requires PostgreSQL "
-                "Financial source questions and does not translate SQL dialects."
+                "or SQLite Financial source questions and does not translate SQL dialects."
             )
         selected.append(
             {
@@ -282,16 +284,24 @@ def load_role_policy(path: str | Path, role: str) -> tuple[RolePolicy, str]:
 
 def _validate_runtime_config(env: Mapping[str, str], role: str) -> str:
     if role not in _RUNTIME_LOGINS:
-        raise PilotInputError(
-            "Pilot role must be one of sales, finance, or operations and must match the "
-            "least-privilege login credential."
-        )
+        raise PilotInputError("Pilot role must be one of sales, finance, or operations.")
     if env.get("SQLGUARD_PLANNER", "").casefold() != "ollama":
         raise PilotInputError("Set SQLGUARD_PLANNER=ollama; the pilot has no planner fallback.")
-    if env.get(SCHEMA_SOURCE_ENV, "").casefold() != "postgres":
-        raise PilotInputError(f"Set {SCHEMA_SOURCE_ENV}=postgres; schema must be loaded from DB.")
-    if env.get(QUERY_SOURCE_ENV, "").casefold() != "postgres":
-        raise PilotInputError(f"Set {QUERY_SOURCE_ENV}=postgres; mock tools are not supported.")
+    schema_source = env.get(SCHEMA_SOURCE_ENV, "").casefold()
+    query_source = env.get(QUERY_SOURCE_ENV, "").casefold()
+    if schema_source not in {"postgres", "sqlite"}:
+        raise PilotInputError(f"Set {SCHEMA_SOURCE_ENV}=postgres or sqlite; schema must be loaded from DB.")
+    if query_source not in {"postgres", "sqlite"}:
+        raise PilotInputError(f"Set {QUERY_SOURCE_ENV}=postgres or sqlite; mock tools are not supported.")
+    if schema_source != query_source:
+        raise PilotInputError("BIRD pilot requires matching schema and query backends.")
+    if query_source == "sqlite":
+        path = env.get(SQLITE_PATH_ENV)
+        if not path or not path.strip():
+            raise PilotInputError(f"Set {SQLITE_PATH_ENV} to the local BIRD SQLite database file.")
+        if not Path(path).expanduser().is_file():
+            raise PilotInputError(f"SQLite database file configured by {SQLITE_PATH_ENV} does not exist.")
+        return path
     dsn = env.get(DSN_ENV_PREFIX + role.upper())
     if not dsn:
         raise PilotInputError(
@@ -502,6 +512,61 @@ def verify_database(
         ) from None
 
 
+def verify_sqlite_database(
+    path: str | Path,
+    role: str,
+    policy: RolePolicy,
+    expected_database_id: str,
+    revision: str,
+) -> None:
+    """Verify the SQLite file and operator-maintained provenance marker in read-only mode.
+
+    SQLite has no PostgreSQL-style roles/grants; OS file permissions are a separate boundary.
+    """
+    database = Path(path).expanduser()
+    if not database.is_file():
+        raise PilotInputError("Configured BIRD SQLite database file does not exist.")
+    uri = f"{database.resolve().as_uri()}?mode=ro"
+    expected_marker = (
+        f"sqlguard-bird-pilot:v1; database_id={expected_database_id}; revision={revision}"
+    )
+    try:
+        with sqlite3.connect(uri, uri=True, timeout=5) as connection:
+            connection.execute("PRAGMA query_only = ON")
+            tables = {
+                row[0]
+                for row in connection.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                )
+            }
+            marker_table = "sqlguard_bird_pilot_metadata"
+            if marker_table not in tables or marker_table in policy.tables:
+                raise PilotInputError(
+                    "SQLite database must contain a metadata table excluded from the role policy."
+                )
+            columns = {
+                row[1]
+                for row in connection.execute(f'PRAGMA table_info("{marker_table}")')
+            }
+            if columns != {"marker"}:
+                raise PilotInputError("SQLite BIRD metadata table must contain only a marker column.")
+            markers = list(connection.execute(f'SELECT marker FROM "{marker_table}"'))
+            if markers != [(expected_marker,)]:
+                raise PilotInputError(
+                    "SQLite database marker does not match the audited BIRD database ID and "
+                    "source revision; review the database and marker described in the BIRD README."
+                )
+            if not policy.has_role(role):
+                raise PilotInputError(f"Role {role!r} is not present in the supplied BIRD policy.")
+    except PilotInputError:
+        raise
+    except sqlite3.Error:
+        raise PilotInputError(
+            "Cannot verify the read-only SQLite database or its metadata marker; check the "
+            "database file and marker without exposing database contents."
+        ) from None
+
+
 def _schema_matches_policy(schema: SchemaContext, policy: RolePolicy, role: str) -> bool:
     visible = {
         table.name.casefold(): {column.name.casefold() for column in table.columns}
@@ -675,40 +740,50 @@ def run_pilot(
         for case in cases
     ):
         raise PilotInputError("Selected cases are missing questions or source references.")
+    backend = env.get(QUERY_SOURCE_ENV, "").casefold()
+    expected_dialect = "postgresql" if backend == "postgres" else "sqlite"
     if any(
         not isinstance(case.get("database_id"), str)
         or case["database_id"].casefold() != expected_database_id.casefold()
-        or case.get("dialect") != "postgresql"
+        or case.get("dialect") != expected_dialect
         for case in cases
     ):
         raise PilotInputError(
-            "Every selected case must belong to the audited Financial database and use "
-            "PostgreSQL dialect."
+            "Every selected case must belong to the audited Financial database and use the "
+            "same dialect as the selected PostgreSQL or SQLite backend."
         )
-    dsn = _validate_runtime_config(env, role)
+    database_locator = _validate_runtime_config(env, role)
     if not isinstance(database_name, str) or not database_name.strip():
-        raise PilotInputError("Provide the expected PostgreSQL --database-name.")
+        raise PilotInputError("Provide a logical --database-name for the selected BIRD database.")
     if not policy.has_role(role):
         raise PilotInputError(f"Role {role!r} is not present in the supplied BIRD policy.")
-    verify_database(
-        dsn,
-        role,
-        policy,
-        database_name,
-        expected_database_id,
-        revision,
-    )
-    try:
-        schema_adapter = PostgresSchemaAdapter.from_env(policy=policy, env=env)
-        schema = schema_adapter.load_sync(role)
-    except SchemaAdapterError as error:
-        raise PilotInputError(
-            f"Cannot load the selected role's PostgreSQL schema ({error.category}); "
-            "check the BIRD database and grants."
-        ) from None
+    if backend == "postgres":
+        verify_database(
+            database_locator, role, policy, database_name, expected_database_id, revision
+        )
+        try:
+            schema_adapter = PostgresSchemaAdapter.from_env(policy=policy, env=env)
+            schema = schema_adapter.load_sync(role)
+        except SchemaAdapterError as error:
+            raise PilotInputError(
+                f"Cannot load the selected role's PostgreSQL schema ({error.category}); "
+                "check the BIRD database and grants."
+            ) from None
+    else:
+        verify_sqlite_database(
+            database_locator, role, policy, expected_database_id, revision
+        )
+        try:
+            schema_adapter = SQLiteSchemaAdapter.from_env(policy=policy, env=env)
+            schema = schema_adapter.load_sync(role)
+        except SchemaAdapterError as error:
+            raise PilotInputError(
+                f"Cannot load the selected role's SQLite schema ({error.category}); "
+                "check the BIRD database file and role policy."
+            ) from None
     if not _schema_matches_policy(schema, policy, role):
         raise PilotInputError(
-            "Loaded PostgreSQL schema does not exactly match the selected role policy."
+            f"Loaded {backend} schema does not exactly match the selected role policy."
         )
 
     try:
@@ -728,10 +803,10 @@ def run_pilot(
         )
     except QueryRuntimeError as error:
         raise PilotInputError(
-            f"Cannot build the PostgreSQL runtime ({error.category}); check role configuration."
+            f"Cannot build the {backend} runtime ({error.category}); check role configuration."
         ) from None
     if runtime_factory is None:
-        raise PilotInputError("PostgreSQL query runtime is required; mock mode is not supported.")
+        raise PilotInputError("A real PostgreSQL or SQLite query runtime is required; mock mode is not supported.")
     if not isinstance(runtime_factory.audit, InMemoryAuditSink):
         raise PilotInputError("Pilot requires an in-memory, redacted audit sink.")
 
@@ -774,7 +849,10 @@ def run_pilot(
         "acquisition_date": audit.get("acquisition_date"),
         "source_files": audit["source"]["files"],
         "database_id": expected_database_id,
-        "postgres_database": database_name,
+        "database_backend": backend,
+        "database_name": database_name,
+        "postgres_database": database_name if backend == "postgres" else None,
+        "sqlite_database_file": Path(database_locator).name if backend == "sqlite" else None,
         "role": role,
         "policy_version": policy.version,
         "policy_sha256": policy_sha256,
@@ -798,6 +876,11 @@ def run_pilot(
             "Gold SQL was referenced but never sent to the planner or executed.",
             "Result correctness was not evaluated.",
             "Execution success does not imply semantic correctness.",
+            (
+                "SQLite has no PostgreSQL-style role grants; OS file permissions are a separate security boundary."
+                if backend == "sqlite"
+                else "PostgreSQL runtime privileges were preflighted against the selected role policy."
+            ),
         ],
     }
     artifact_path = run_directory / "pilot.json"
@@ -836,7 +919,11 @@ def main(argv: list[str] | None = None) -> int:
         "--policy", type=Path, required=True, help="Local SQLGuard role policy JSON."
     )
     parser.add_argument("--role", required=True, choices=sorted(_RUNTIME_LOGINS))
-    parser.add_argument("--database-name", required=True)
+    parser.add_argument(
+        "--database-name",
+        required=True,
+        help="Logical name for the audited BIRD database (not a connection string or path).",
+    )
     args = parser.parse_args(argv)
     reviewed_ids = [value.strip() for value in args.reviewed_ids.split(",") if value.strip()]
     try:
