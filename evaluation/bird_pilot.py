@@ -23,7 +23,6 @@ from sqlguard.agent.controller import AgentController, RunScope
 from sqlguard.agent.models import AgentRequest, ExecutionBudget
 from sqlguard.agent.planning import OllamaPlanner, PlannerConfigError, create_planner
 from sqlguard.agent.postgres_schema import PostgresSchemaAdapter, SchemaAdapterError
-from sqlguard.agent.sqlite_schema import SQLITE_PATH_ENV, SQLiteSchemaAdapter
 from sqlguard.agent.runtime import (
     QUERY_SOURCE_ENV,
     SCHEMA_SOURCE_ENV,
@@ -33,6 +32,7 @@ from sqlguard.agent.runtime import (
     create_planner_for_role,
 )
 from sqlguard.agent.schema import SchemaContext
+from sqlguard.agent.sqlite_schema import SQLITE_PATH_ENV, SQLiteSchemaAdapter
 from sqlguard.mcp.tools import InProcessToolRegistry
 from sqlguard.memory.store import InMemoryMemory
 from sqlguard.observability.events import Event, InMemoryEventSink
