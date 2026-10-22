@@ -17,7 +17,6 @@ from sqlguard.agent.planning import OllamaPlanner, Plan
 from sqlguard.agent.postgres_schema import PostgresSchemaAdapter
 from sqlguard.agent.runtime import build_query_runtime_factory
 from sqlguard.agent.schema import SchemaColumn, SchemaContext, SchemaTable
-from sqlguard.agent.sqlite_schema import SQLITE_PATH_ENV
 from sqlguard.security.policy import load_default_policy
 from sqlguard.security.service import QueryResult
 
@@ -134,6 +133,7 @@ def test_runtime_requires_real_ollama_and_postgres_configuration():
 
 
 def test_runtime_accepts_sqlite_and_rejects_mixed_backends(tmp_path):
+    from sqlguard.agent.sqlite_schema import SQLITE_PATH_ENV
     import sqlite3
     database = tmp_path / "financial.sqlite"
     with sqlite3.connect(database):
