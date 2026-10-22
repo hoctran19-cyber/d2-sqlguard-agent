@@ -48,7 +48,9 @@ async def evaluate(
                 latency_ms=latency_ms,
                 error_category=run.state.failure_reason,
                 security_decision=(
-                    "denied" if run.state.failure_reason == "security_rejection" else None
+                    "denied"
+                    if run.state.failure_reason in {"security_rejection", "db_permission_denied"}
+                    else None
                 ),
             )
         )

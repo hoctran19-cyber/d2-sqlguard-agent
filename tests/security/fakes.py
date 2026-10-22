@@ -1,6 +1,9 @@
-"""Offline doubles for the security tests: a SQLite executor seeded with the same synthetic
-reference rows (including canaries) as db/security. SQLite has no grants, so these tests show
-what the AST gate alone prevents; tests/security/test_db_grants.py covers the DB layer."""
+"""Offline doubles for the security tests.
+
+``GateOnlyExecutor`` is an in-memory SQLite database seeded with the synthetic reference rows
+(including canaries) from db/security. Unlike ``sqlguard.security.sqlite.SQLiteExecutor`` it has
+no authorizer, so tests using it show what the AST gate alone prevents;
+tests/security/test_sqlite_authorizer.py covers the database layer."""
 
 from __future__ import annotations
 
@@ -14,7 +17,7 @@ from sqlguard.security.service import ExecutorError, QueryResult
 DB_DIR = Path(__file__).resolve().parents[2] / "db" / "security"
 
 
-class SQLiteExecutor:
+class GateOnlyExecutor:
     def __init__(self) -> None:
         self.connection = sqlite3.connect(":memory:")
         for name in ("00_reference_schema.sql", "20_reference_seed.sql"):

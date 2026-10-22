@@ -2,7 +2,7 @@
 
 This is deliberately *not* an agent tool. The backend calls it for the ``/demo/attack-lab``
 route; it writes through the dedicated ``sqlguard_note_writer`` credential, which can only
-``UPDATE (note)`` on allowlisted tables. Every mutation:
+``UPDATE (note)`` on the tables listed in the policy's ``note_targets``. Every mutation:
 
 * requires the lab to be enabled (demo profile) and a target on the allowlist;
 * is refused while an agent run is active, so a run never sees a note change mid-flight;
@@ -25,20 +25,32 @@ from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from typing import Protocol
 
-# Fixed statements per table: identifiers never come from the request.
-NOTE_SQL: dict[str, tuple[str, str]] = {
-    "customers": (
-        "SELECT note FROM customers WHERE customer_id = %s",
-        "UPDATE customers SET note = %s WHERE customer_id = %s",
-    ),
-    "orders": (
-        "SELECT note FROM orders WHERE order_id = %s",
-        "UPDATE orders SET note = %s WHERE order_id = %s",
-    ),
-}
-DEFAULT_TARGETS: frozenset[tuple[str, int]] = frozenset(
-    (table, row_id) for table in ("customers", "orders") for row_id in (1, 2, 3)
-)
+from sqlguard.security.policy import RolePolicy, load_default_policy
+
+TARGETS_ENV = "SQLGUARD_ATTACK_LAB_TARGETS"
+
+
+def note_statements(policy: RolePolicy) -> dict[str, tuple[str, str]]:
+    """Fixed read/update statements per note table. Identifiers come from the reviewed policy
+    file, never from the request; values are always bound parameters."""
+    return {
+        table: (
+            f'SELECT note FROM "{table}" WHERE "{key}" = %s',
+            f'UPDATE "{table}" SET note = %s WHERE "{key}" = %s',
+        )
+        for table, key in policy.note_targets.items()
+    }
+
+
+def parse_targets(text: str) -> frozenset[tuple[str, int]]:
+    """Parse ``"client.1,trans.42"`` (e.g. from ``SQLGUARD_ATTACK_LAB_TARGETS``)."""
+    targets = set()
+    for item in filter(None, (part.strip() for part in text.split(","))):
+        table, _, raw_id = item.partition(".")
+        if not table or not raw_id.isdigit():
+            raise ValueError(f"Invalid Attack Lab target {item!r}")
+        targets.add((table.casefold(), int(raw_id)))
+    return frozenset(targets)
 
 
 class LabError(Exception):
@@ -89,14 +101,16 @@ class AttackLab:
         writer: NoteWriter,
         *,
         enabled: bool,
-        targets: frozenset[tuple[str, int]] = DEFAULT_TARGETS,
+        targets: frozenset[tuple[str, int]],
+        policy: RolePolicy | None = None,
         audit=None,
         run_active: Callable[[], bool] = lambda: False,
         max_length: int = 2000,
     ) -> None:
-        unknown = {table for table, _ in targets} - set(NOTE_SQL)
+        allowed = set((policy or load_default_policy()).note_targets)
+        unknown = {table for table, _ in targets} - allowed
         if unknown:
-            raise ValueError(f"No note statement for tables: {sorted(unknown)}")
+            raise ValueError(f"Tables are not note targets in the policy: {sorted(unknown)}")
         self._writer = writer
         self._enabled = enabled
         self._targets = targets
@@ -256,14 +270,15 @@ class AttackLab:
 class PostgresNoteWriter:
     """Writes with the note-writer credential (``SQLGUARD_DB_DSN_NOTE_WRITER``) only."""
 
-    def __init__(self, dsn: str) -> None:
+    def __init__(self, dsn: str, policy: RolePolicy | None = None) -> None:
         self._dsn = dsn
+        self._sql = note_statements(policy or load_default_policy())
 
     async def read_note(self, table: str, row_id: int) -> str | None:
-        return await asyncio.to_thread(self._run, NOTE_SQL[table][0], (row_id,), False)
+        return await asyncio.to_thread(self._run, self._sql[table][0], (row_id,), False)
 
     async def write_note(self, table: str, row_id: int, value: str | None) -> None:
-        await asyncio.to_thread(self._run, NOTE_SQL[table][1], (value, row_id), True)
+        await asyncio.to_thread(self._run, self._sql[table][1], (value, row_id), True)
 
     def _run(self, sql: str, params: tuple, write: bool):
         import psycopg
