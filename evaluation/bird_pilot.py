@@ -290,9 +290,13 @@ def _validate_runtime_config(env: Mapping[str, str], role: str) -> str:
     schema_source = env.get(SCHEMA_SOURCE_ENV, "").casefold()
     query_source = env.get(QUERY_SOURCE_ENV, "").casefold()
     if schema_source not in {"postgres", "sqlite"}:
-        raise PilotInputError(f"Set {SCHEMA_SOURCE_ENV}=postgres or sqlite; schema must be loaded from DB.")
+        raise PilotInputError(
+            f"Set {SCHEMA_SOURCE_ENV}=postgres or sqlite; schema must be loaded from DB."
+        )
     if query_source not in {"postgres", "sqlite"}:
-        raise PilotInputError(f"Set {QUERY_SOURCE_ENV}=postgres or sqlite; mock tools are not supported.")
+        raise PilotInputError(
+            f"Set {QUERY_SOURCE_ENV}=postgres or sqlite; mock tools are not supported."
+        )
     if schema_source != query_source:
         raise PilotInputError("BIRD pilot requires matching schema and query backends.")
     if query_source == "sqlite":
@@ -300,7 +304,9 @@ def _validate_runtime_config(env: Mapping[str, str], role: str) -> str:
         if not path or not path.strip():
             raise PilotInputError(f"Set {SQLITE_PATH_ENV} to the local BIRD SQLite database file.")
         if not Path(path).expanduser().is_file():
-            raise PilotInputError(f"SQLite database file configured by {SQLITE_PATH_ENV} does not exist.")
+            raise PilotInputError(
+                f"SQLite database file configured by {SQLITE_PATH_ENV} does not exist."
+            )
         return path
     dsn = env.get(DSN_ENV_PREFIX + role.upper())
     if not dsn:
@@ -549,7 +555,9 @@ def verify_sqlite_database(
                 for row in connection.execute(f'PRAGMA table_info("{marker_table}")')
             }
             if columns != {"marker"}:
-                raise PilotInputError("SQLite BIRD metadata table must contain only a marker column.")
+                raise PilotInputError(
+                    "SQLite BIRD metadata table must contain only a marker column."
+                )
             markers = list(connection.execute(f'SELECT marker FROM "{marker_table}"'))
             if markers != [(expected_marker,)]:
                 raise PilotInputError(
@@ -806,7 +814,9 @@ def run_pilot(
             f"Cannot build the {backend} runtime ({error.category}); check role configuration."
         ) from None
     if runtime_factory is None:
-        raise PilotInputError("A real PostgreSQL or SQLite query runtime is required; mock mode is not supported.")
+        raise PilotInputError(
+            "A real PostgreSQL or SQLite query runtime is required; mock mode is not supported."
+        )
     if not isinstance(runtime_factory.audit, InMemoryAuditSink):
         raise PilotInputError("Pilot requires an in-memory, redacted audit sink.")
 
@@ -877,9 +887,15 @@ def run_pilot(
             "Result correctness was not evaluated.",
             "Execution success does not imply semantic correctness.",
             (
-                "SQLite has no PostgreSQL-style role grants; OS file permissions are a separate security boundary."
+                (
+                    "SQLite has no PostgreSQL-style role grants; OS file permissions are a "
+                    "separate security boundary."
+                )
                 if backend == "sqlite"
-                else "PostgreSQL runtime privileges were preflighted against the selected role policy."
+                else (
+                    "PostgreSQL runtime privileges were preflighted against the selected "
+                    "role policy."
+                )
             ),
         ],
     }

@@ -4,6 +4,7 @@ from datetime import date
 from pathlib import Path
 
 import pytest
+
 from evaluation.bird_audit import audit_dataset
 from evaluation.bird_pilot import (
     PilotInputError,
@@ -13,12 +14,11 @@ from evaluation.bird_pilot import (
     verify_database,
     verify_sqlite_database,
 )
-
 from sqlguard.agent.planning import OllamaPlanner, Plan
 from sqlguard.agent.postgres_schema import PostgresSchemaAdapter
-from sqlguard.agent.sqlite_schema import SQLITE_PATH_ENV
 from sqlguard.agent.runtime import build_query_runtime_factory
 from sqlguard.agent.schema import SchemaColumn, SchemaContext, SchemaTable
+from sqlguard.agent.sqlite_schema import SQLITE_PATH_ENV
 from sqlguard.security.policy import load_default_policy
 from sqlguard.security.service import QueryResult
 
