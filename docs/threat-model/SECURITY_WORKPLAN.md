@@ -385,3 +385,44 @@ done
 sha256sum "$DB"                          # macOS: shasum -a 256 "$DB"
 ls <thư mục MINIDEV>                     # để biết có mini_dev_sqlite.json không
 ```
+
+### 12.8 Việc Khang cần làm và cần thảo luận với nhóm (cập nhật 22/10)
+
+**Khang tự làm**
+
+| # | Việc | Để mở khóa |
+| --- | --- | --- |
+| K-a | Chạy lệnh §12.7 trên `financial.sqlite` ở máy, gửi lại output (schema, số dòng, SHA-256, danh sách file trong `MINIDEV`) | S1 (đối chiếu tên cột), S2b |
+| K-b | Nếu có `mini_dev_sqlite.json`: lấy 32 câu `db_id = financial` (chỉ là text, đã ghi nguồn trong `NOTICE`) để thêm vào repo | S4 (gold SQLite) |
+| K-c | Khi có script S2b: chạy trên máy, kiểm fixture, commit `tests/fixtures/bird_financial_mini.sql` (không commit file `.sqlite`) | S1 (đổi policy mặc định), S4, S7 |
+| K-d | Bật GitHub Actions trên fork `perckgg/sqlguard-agent` (Settings → Actions → Allow), để CI chạy trên PR | Có kết quả CI trước khi merge |
+| K-e | Sau khi PR trên fork được merge: mở PR từ fork sang repo gốc `hoctran19-cyber` (Claude không truy cập được repo gốc) | Nhóm thấy code |
+| K-f | S8: chạy Ollama + bản lab trên máy, mỗi case × 3 run | Kết quả cho mục 5 report |
+
+**Cần thảo luận với Học**
+
+| # | Nội dung | Ghi chú |
+| --- | --- | --- |
+| H-a | Review `706b03f`: DB từ chối quyền → `REFUSED`, `failure_reason=db_permission_denied` (đổi quyết định cũ "lỗi DB là `FAILED`" trong test của Học) | File `controller.py` của Học |
+| H-b | Có map luôn trường hợp gate ở ranh giới tool (`SecureSqlTool`) từ chối mà không sửa được sang `REFUSED` không? Hiện ra `FAILED` với `security_rejection` | Ảnh hưởng UAR/ASR |
+| H-c | Đổi role trong runtime, demo, README, `.env.example` từ `sales`/`finance`/`operations` sang `teller`/`credit`/`risk` (Q3) | Cần trước S8 |
+| H-d | `runtime.py` đọc `SQLGUARD_POLICY` từ `env` của runtime thay vì `os.environ` (S1) | Thay đổi nhỏ trong file của Học |
+| H-e | Bỏ phần PostgreSQL phía agent (S5): `agent/postgres_schema.py`, nhánh `postgres` trong `runtime.py`/`demo.py`, extra `[postgres]` | Sau khi S4 xong |
+
+**Cần thảo luận với Kiệt**
+
+| # | Nội dung | Ghi chú |
+| --- | --- | --- |
+| Ki-a | Scorer/harness tính `failure_reason=db_permission_denied` (DB chặn) và `security_rejection` (gate chặn) đều là "bị chặn", báo riêng theo lớp | `src/sqlguard/evaluation.py` đã làm; cần làm tương tự trong `evaluation/runner.py`, `scorer.py` |
+| Ki-b | Web app (S9): chuyển sang `PolicySQLGate` + `SecureSqlTool` + `SQLiteExecutor`; 3 tài khoản `teller`/`credit`/`risk`; `/api/sql` đang chạy chuỗi SQL gốc thay vì `normalized_sql` và trả lỗi DB nguyên văn (`f"Lỗi SQL: {error}"`) | Cần trước demo 28/10 |
+| Ki-c | `evaluation/bird_pilot.py` chỉ chạy PostgreSQL và `financial-postgresql-gold-sql.json` là gold PostgreSQL: port sang SQLite hay bỏ | S5 |
+| Ki-d | Format output của S8 (JSONL) và Q7 (dùng `evidence` của BIRD hay không) | S8 |
+
+**Cần cả nhóm chốt**
+
+| # | Nội dung |
+| --- | --- |
+| N-a | Xác nhận bỏ hẳn PostgreSQL: xoá job CI `db`, `compose.postgres-sandbox.yml`, `db/security/`, phần PostgreSQL trong `db/bird_financial/` (S5) |
+| N-b | Ai làm API cho trang Observe, lịch sử run và route Attack Lab (owner API chưa chốt); cả 4 cảnh security của demo cần các route này |
+| N-c | Dòng delta trong report: D1 "đơn hàng nội bộ" → ngân hàng (BIRD Financial); PostgreSQL → SQLite, lớp DB là authorizer thay cho grants, kèm giới hạn "ai đọc được file thì vượt mọi lớp" |
+| N-d | License CC BY-SA 4.0: fixture con và 32 câu hỏi commit vào repo phải ghi nguồn và phát hành cùng license (`NOTICE`) |
