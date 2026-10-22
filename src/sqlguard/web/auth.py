@@ -17,15 +17,35 @@ SESSION_TTL_SECONDS = 8 * 60 * 60  # Session sống tối đa 8 giờ.
 
 @dataclass(frozen=True)
 class User:
+    # "admin": xem toàn bộ dữ liệu; "evaluator": chỉ dùng trang Evaluation;
+    # BUSINESS_ROLES: vào /home, xem Info tham chiếu, truy vấn dữ liệu bị tắt.
     username: str
-    role: str  # "admin": xem toàn bộ dữ liệu; "evaluator": chỉ dùng trang Evaluation.
+    role: str
     home: str  # Trang được chuyển tới sau khi đăng nhập.
 
 
+ADMIN_ROLE = "admin"
+EVALUATOR_ROLE = "evaluator"
+# Role nghiệp vụ Financial. Chưa có Security Gate thực thi policy Financial nên các role này
+# chưa được truy vấn dữ liệu (xem role_reference.py).
+BUSINESS_ROLES = ("operator", "analyst", "credit_officer")
+
+ROLE_LABELS = {
+    ADMIN_ROLE: "Admin — quản trị demo",
+    EVALUATOR_ROLE: "Evaluator — chỉ dùng trang Evaluation",
+    "operator": "Operator — chuyên viên vận hành và hỗ trợ người dùng",
+    "analyst": "Analyst — chuyên viên phân tích và tổng hợp",
+    "credit_officer": "Credit Officer — chuyên viên quản trị dư nợ và tín dụng",
+}
+
 # Tài khoản demo theo UI.md. Mật khẩu chỉ để chạy local, KHÔNG dùng cho môi trường thật.
+# Role gắn cố định với username; client không thể tự khai role khi đăng nhập.
 DEMO_USERS = {
-    "admin": ("123456", User("admin", "admin", "/home")),
-    "eval": ("123456", User("eval", "evaluator", "/evaluation/")),
+    "admin": ("123456", User("admin", ADMIN_ROLE, "/home")),
+    "eval": ("123456", User("eval", EVALUATOR_ROLE, "/evaluation/")),
+    "operator": ("123456", User("operator", "operator", "/home")),
+    "analyst": ("123456", User("analyst", "analyst", "/home")),
+    "credit": ("123456", User("credit", "credit_officer", "/home")),
 }
 
 
