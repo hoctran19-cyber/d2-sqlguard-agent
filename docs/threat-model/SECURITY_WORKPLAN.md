@@ -302,8 +302,8 @@ Bàn giao cho Học: [`../interfaces/SECURITY_INTEGRATION.md`](../interfaces/SEC
 | # | Nội dung | Trạng thái |
 | --- | --- | --- |
 | Q1 | Database: BIRD Mini-Dev **Financial** dạng SQLite; bỏ hẳn PostgreSQL | Chốt 21/10 |
-| Q2 | Ma trận quyền §12.2 | Chốt 19/10 |
-| Q3 | Role: `teller` (Giao dịch viên), `credit` (Tín dụng), `risk` (Rủi ro–Tài chính); thay `sales`/`finance`/`operations` ở runtime, web, demo, README | Chốt 19/10; **Học/Kiệt cần đổi phía họ** |
+| Q2 | Ma trận quyền §12.2 | Chốt 19/10; **lệch với ma trận 22/10 của web, xem N-e** |
+| Q3 | Role: `teller` (Giao dịch viên), `credit` (Tín dụng), `risk` (Rủi ro–Tài chính); thay `sales`/`finance`/`operations` ở runtime, web, demo, README | Chốt 19/10; **web (PR #9 repo nhóm) đã dùng `operator`/`analyst`/`credit_officer`, xem N-e** |
 | Q4 | Overlay `client.national_id` (canary, cấm cả 3 role), `client.note`, `trans.note`, chỉ áp lên **bản sao lab**; file gốc giữ nguyên để đo accuracy | Chốt 19/10 (overlay), 21/10 (bản sao) |
 | Q5 | 5 câu gold có subquery: loại khỏi D2, gate giữ fail-closed | Chốt 19/10 |
 | Q6 | Xóa policy/dataset synthetic sau khi port xong | Chốt 19/10 |
@@ -426,3 +426,4 @@ ls <thư mục MINIDEV>                     # để biết có mini_dev_sqlite.j
 | N-b | Ai làm API cho trang Observe, lịch sử run và route Attack Lab (owner API chưa chốt); cả 4 cảnh security của demo cần các route này |
 | N-c | Dòng delta trong report: D1 "đơn hàng nội bộ" → ngân hàng (BIRD Financial); PostgreSQL → SQLite, lớp DB là authorizer thay cho grants, kèm giới hạn "ai đọc được file thì vượt mọi lớp" |
 | N-d | License CC BY-SA 4.0: fixture con và 32 câu hỏi commit vào repo phải ghi nguồn và phát hành cùng license (`NOTICE`) |
+| N-e | **Hai ma trận quyền đang song song.** Policy security `bird_financial_v1` (chốt 19/10): role `teller`/`credit`/`risk`, overlay `client.national_id`, `client.note`, `trans.note`. Web (`src/sqlguard/web/role_reference.py`, PR #9 repo nhóm, theo tài liệu Vault 20/10 và 22/10): role `operator`/`analyst`/`credit_officer`, DB SQLite dẫn xuất có 6 cột synthetic (`client.id_number`, `client.full_name`, `client.address`, `account.service_note`, `order.note`, `card.placeholder`). Phải chốt **một** ma trận và **một** file DB; nguồn sự thật nên là policy JSON mà gate và authorizer dùng, web chỉ hiển thị lại từ policy. Cần trước S1, S2b, S7, S9; kiểm xem `financial.sqlite` trên máy Khang là bản gốc BIRD hay bản dẫn xuất 6 cột |
