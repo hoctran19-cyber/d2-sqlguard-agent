@@ -97,7 +97,7 @@ Missing files, malformed JSON/JSONL, missing revision/acquisition metadata, and 
 multi-dialect directories fail with an actionable error. Unsupported dialects and malformed
 records are reported rather than silently treated as valid Financial candidates.
 
-## Three-to-five-case PostgreSQL pilot
+## Three-to-five-case PostgreSQL or SQLite pilot
 
 The pilot command is `python -m evaluation.bird_pilot`. It is separate from the fixture
 evaluation runner and never treats the provisional audit shortlist as approved. It requires
@@ -108,18 +108,19 @@ all of the following local inputs:
 - Three to five comma-separated case IDs that a human has reviewed against the source question,
   Gold SQL, target database schema, and selected role. The IDs are the explicit review
   declaration; candidates are never auto-selected from `candidate_report.shortlist`.
-- A real PostgreSQL-loaded BIRD Financial database, its exact PostgreSQL database name, and a
-  local SQLGuard policy JSON in the existing `RolePolicy.from_file` format. The policy must
-  describe the complete source schema and least-privilege role grants. PostgreSQL privileges
-  for the selected login are checked against that policy before any model call.
-- A local PostgreSQL 16 service containing the actual Financial database. Importing/converting
-  benchmark databases is a manual data-preparation step and is not performed by this pilot.
+- The actual BIRD Financial database in the same dialect as the audited questions: PostgreSQL
+  (PostgreSQL 16 supported) or SQLite (`mini_dev_sqlite`). Provide a logical database name and
+  a local SQLGuard policy JSON in the existing `RolePolicy.from_file` format. The policy must
+  describe the complete source schema. PostgreSQL grants are checked against that policy;
+  SQLite instead relies on OS file permissions plus SQLGuard's application-level role policy.
+- Importing/converting benchmark databases is a manual data-preparation step and is not performed
+  by this pilot.
 
 The Task 6B `compose.postgres-sandbox.yml` database is a synthetic SQLGuard fixture and is not
-a BIRD database. The pilot fails unless the selected PostgreSQL database has an explicit
-metadata marker matching the audited BIRD database ID and source revision. After independently
-loading and checking the real BIRD database and the local policy/grants, a database owner must
-create an inaccessible marker table:
+a BIRD database. Both backends require an explicit operator-maintained metadata marker matching
+the audited BIRD database ID and source revision. For PostgreSQL, after independently loading
+and checking the real BIRD database and the local policy/grants, a database owner must create
+an inaccessible marker table:
 
 ```sql
 CREATE TABLE public.sqlguard_bird_pilot_metadata (marker boolean PRIMARY KEY);
@@ -131,17 +132,33 @@ Replace `financial` and the revision with the exact values in the audit report. 
 the selected runtime role any access to this marker table. It is an operator attestation, not
 cryptographic proof of data provenance; verify the database contents and schema independently.
 
+For SQLite, create a separate metadata table in the database before the pilot (as the database
+owner, not through SQLGuard):
+
+```sql
+CREATE TABLE sqlguard_bird_pilot_metadata (marker TEXT PRIMARY KEY);
+INSERT INTO sqlguard_bird_pilot_metadata(marker) VALUES
+  ('sqlguard-bird-pilot:v1; database_id=financial; revision=<full-audit-source-sha>');
+```
+
+The table must contain exactly one row and only the `marker` column, and must not be included in
+the role policy. The pilot opens the database in read-only mode and checks this marker. This is
+still only an operator attestation, not proof of provenance. SQLite has no per-user database
+roles or grants; restrict file and sidecar access with OS permissions and run the pilot under an
+appropriately restricted OS account.
+
 Install the PostgreSQL driver (`python -m pip install -e ".[postgres]"`) and have a local
 Ollama service/model ready. Configure these variables in a private, ignored `.env` (do not
 print it or commit it):
 
 - `SQLGUARD_PLANNER=ollama`
 - `SQLGUARD_OLLAMA_URL` and `SQLGUARD_OLLAMA_MODEL` (optional; existing local defaults apply)
-- `SQLGUARD_SCHEMA_SOURCE=postgres` and `SQLGUARD_QUERY_SOURCE=postgres`
-- `SQLGUARD_DB_DSN_FINANCE` for role `finance` (or the corresponding `SALES`/`OPERATIONS`
-  DSN and policy role for another approved identity). The DSN must use the matching
-  `sqlguard_finance_app`, `sqlguard_sales_app`, or `sqlguard_ops_app` login, never an admin or
-  note-writer credential.
+- For PostgreSQL: `SQLGUARD_SCHEMA_SOURCE=postgres`, `SQLGUARD_QUERY_SOURCE=postgres`,
+  and `SQLGUARD_DB_DSN_FINANCE` for role `finance` (or the corresponding `SALES`/`OPERATIONS`
+  DSN and policy role for another approved identity). Use the matching least-privilege login,
+  never an admin or note-writer credential.
+- For SQLite: set `SQLGUARD_SCHEMA_SOURCE=sqlite`, `SQLGUARD_QUERY_SOURCE=sqlite`, and
+  `SQLGUARD_SQLITE_PATH` to the existing local BIRD SQLite database file.
 
 Review case IDs manually, source the private environment without shell tracing, then run from
 the repository root. Example paths and IDs below are placeholders, not supplied benchmark data:
@@ -166,13 +183,15 @@ python -m evaluation.bird_pilot \
   --database-name bird_financial
 ```
 
-The pilot only accepts audited PostgreSQL-dialect Financial questions; it does not translate
-SQLite/MySQL SQL or run against the fixture database. It builds the existing `OllamaPlanner`,
-role-filtered `PostgresSchemaAdapter`, `PolicySQLGate`, `SecureSqlTool`, and `PostgresExecutor`
-path. The planner receives only the selected natural-language question and role-authorized
-schema/context. Gold SQL stays out of the planner and is never executed. Generated/repaired SQL
-returns to the gate before tool execution; the existing retry, SQL/LLM/tool limits, query/run
-timeouts, row cap, response-byte cap, output canary check, and database grants remain in force.
+The pilot accepts only audited questions whose dialect matches the selected backend; it does not
+translate SQL dialects or run against the fixture database. It builds the existing `OllamaPlanner`,
+role-filtered `PostgresSchemaAdapter` or `SQLiteSchemaAdapter`, `PolicySQLGate`, `SecureSqlTool`,
+and matching executor. The planner receives only the selected natural-language question and
+role-authorized schema/context. Gold SQL stays out of the planner and is never executed.
+Generated/repaired SQL returns to the gate before tool execution; retry, SQL/LLM/tool limits,
+query/run timeouts, row cap, response-byte cap, and output canary check remain in force.
+PostgreSQL uses database grants; SQLite relies on OS file permissions in addition to SQLGuard's
+application-level controls.
 
 Each run creates a new, mode-restricted directory under the ignored
 `evaluation/datasets/private/bird/pilot-runs/<run-uuid>/pilot.json`; existing runs are never

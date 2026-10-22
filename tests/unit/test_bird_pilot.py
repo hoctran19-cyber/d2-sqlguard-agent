@@ -1,8 +1,11 @@
+# ruff: noqa: I001
+
 import json
 from datetime import date
 from pathlib import Path
 
 import pytest
+
 from evaluation.bird_audit import audit_dataset
 from evaluation.bird_pilot import (
     PilotInputError,
@@ -99,6 +102,14 @@ def test_unsupported_sql_dialect_fails_explicitly(tmp_path):
         load_reviewed_cases(report_path, [dataset], ["1", "2", "3"])
 
 
+def test_sqlite_reviewed_cases_keep_sqlite_dialect(tmp_path):
+    report_path, dataset, _ = _write_sources(tmp_path, dialect="sqlite")
+
+    _, cases = load_reviewed_cases(report_path, [dataset], ["1", "2", "3"])
+
+    assert all(case["dialect"] == "sqlite" for case in cases)
+
+
 def test_audit_dialect_cannot_override_source_record_dialect(tmp_path):
     report_path, dataset, report = _write_sources(tmp_path)
     report["financial_records"][0]["dialect"] = "sqlite"
@@ -121,6 +132,61 @@ def test_runtime_requires_real_ollama_and_postgres_configuration():
 
     env["SQLGUARD_QUERY_SOURCE"] = "postgres"
     assert _validate_runtime_config(env, "finance") == "not-printed"
+
+
+def test_runtime_accepts_sqlite_and_rejects_mixed_backends(tmp_path):
+    sqlite3 = __import__("sqlite3")
+    SQLITE_PATH_ENV = __import__(
+        "sqlguard.agent.sqlite_schema", fromlist=["SQLITE_PATH_ENV"]
+    ).SQLITE_PATH_ENV
+    database = tmp_path / "financial.sqlite"
+    with sqlite3.connect(database):
+        pass
+    env = {
+        "SQLGUARD_PLANNER": "ollama",
+        "SQLGUARD_SCHEMA_SOURCE": "sqlite",
+        "SQLGUARD_QUERY_SOURCE": "sqlite",
+        SQLITE_PATH_ENV: str(database),
+    }
+
+    assert _validate_runtime_config(env, "finance") == str(database)
+    env["SQLGUARD_SCHEMA_SOURCE"] = "postgres"
+    with pytest.raises(PilotInputError, match="matching schema and query backends"):
+        _validate_runtime_config(env, "finance")
+
+
+def test_sqlite_database_marker_is_checked(tmp_path):
+    sqlite3 = __import__("sqlite3")
+    verify_sqlite_database = __import__(
+        "evaluation.bird_pilot", fromlist=["verify_sqlite_database"]
+    ).verify_sqlite_database
+    database = tmp_path / "financial.sqlite"
+    marker = f"sqlguard-bird-pilot:v1; database_id=financial; revision={REVISION}"
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "CREATE TABLE sqlguard_bird_pilot_metadata (marker TEXT PRIMARY KEY)"
+        )
+        connection.execute(
+            "INSERT INTO sqlguard_bird_pilot_metadata(marker) VALUES (?)", (marker,)
+        )
+
+    verify_sqlite_database(database, "finance", load_default_policy(), "financial", REVISION)
+
+
+def test_sqlite_database_marker_rejects_wrong_revision(tmp_path):
+    import sqlite3
+    from evaluation.bird_pilot import verify_sqlite_database
+    database = tmp_path / "financial.sqlite"
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "CREATE TABLE sqlguard_bird_pilot_metadata (marker TEXT PRIMARY KEY)"
+        )
+        connection.execute(
+            "INSERT INTO sqlguard_bird_pilot_metadata(marker) VALUES (?)",
+            ("sqlguard-bird-pilot:v1; database_id=financial; revision=" + "a" * 40,),
+        )
+    with pytest.raises(PilotInputError, match="does not match the audited BIRD"):
+        verify_sqlite_database(database, "finance", load_default_policy(), "financial", REVISION)
 
 
 def test_unavailable_postgres_is_reported_without_disclosing_dsn_or_exception():
