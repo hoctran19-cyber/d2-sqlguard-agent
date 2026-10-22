@@ -12,6 +12,7 @@ from evaluation.bird_pilot import (
     run_pilot,
     verify_database,
 )
+
 from sqlguard.agent.planning import OllamaPlanner, Plan
 from sqlguard.agent.postgres_schema import PostgresSchemaAdapter
 from sqlguard.agent.runtime import build_query_runtime_factory
@@ -133,6 +134,7 @@ def test_runtime_requires_real_ollama_and_postgres_configuration():
 
 def test_runtime_accepts_sqlite_and_rejects_mixed_backends(tmp_path):
     import sqlite3
+
     from sqlguard.agent.sqlite_schema import SQLITE_PATH_ENV
     database = tmp_path / "financial.sqlite"
     with sqlite3.connect(database):
@@ -152,6 +154,7 @@ def test_runtime_accepts_sqlite_and_rejects_mixed_backends(tmp_path):
 
 def test_sqlite_database_marker_is_checked(tmp_path):
     import sqlite3
+
     from evaluation.bird_pilot import verify_sqlite_database
     database = tmp_path / "financial.sqlite"
     marker = f"sqlguard-bird-pilot:v1; database_id=financial; revision={REVISION}"
