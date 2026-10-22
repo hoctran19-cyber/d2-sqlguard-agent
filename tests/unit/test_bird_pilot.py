@@ -1,8 +1,7 @@
-from datetime import date
-from pathlib import Path
-
 import json
 import sqlite3
+from datetime import date
+from pathlib import Path
 
 import pytest
 
