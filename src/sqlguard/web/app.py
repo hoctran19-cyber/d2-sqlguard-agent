@@ -3,7 +3,8 @@
 Routes giao diện (UI.md):
   /            -> chuyển tới /login (chưa đăng nhập) hoặc trang chủ của user
   /login       -> form đăng nhập
-  /home        -> khung sidebar + Query/Database (tài khoản admin)
+  /home        -> khung sidebar + Query/Database (tài khoản admin);
+                  role nghiệp vụ chỉ có thông báo + Info tham chiếu, API dữ liệu trả 403
   /evaluation/ -> console evaluation đã có (chỉ tài khoản eval)
 """
 
@@ -17,7 +18,17 @@ from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
-from sqlguard.web.auth import SESSION_COOKIE, SESSION_TTL_SECONDS, SessionStore, User, authenticate
+from sqlguard.web.auth import (
+    ADMIN_ROLE,
+    BUSINESS_ROLES,
+    EVALUATOR_ROLE,
+    ROLE_LABELS,
+    SESSION_COOKIE,
+    SESSION_TTL_SECONDS,
+    SessionStore,
+    User,
+    authenticate,
+)
 from sqlguard.web.database import (
     DatabaseUnavailable,
     FinancialDatabase,
@@ -27,6 +38,7 @@ from sqlguard.web.database import (
 )
 from sqlguard.web.demo_planner import PLANNER_NAME, SAMPLE_QUESTIONS
 from sqlguard.web.query_service import answer_question, build_gate, explain_denial
+from sqlguard.web.role_reference import role_reference
 
 STATIC_DIR = Path(__file__).parent / "static"
 MAX_BODY_BYTES = 64_000  # Câu hỏi/SQL đều ngắn; chặn body quá lớn.
@@ -49,9 +61,29 @@ def create_app(db_path: Path | None = None) -> FastAPI:
         user = current_user(request)
         if user is None:
             raise HTTPException(401, "Chưa đăng nhập")
-        if user.role != "admin":
+        if user.role != ADMIN_ROLE:
+            # Role nghiệp vụ cũng bị chặn ở đây cho tới khi có Security Gate cho policy Financial.
             raise HTTPException(403, "Tài khoản này không được xem dữ liệu")
         return user
+
+    def require_info_user(request: Request) -> User:
+        """Dependency cho popup Info: admin và ba role nghiệp vụ (không gồm evaluator)."""
+        user = current_user(request)
+        if user is None:
+            raise HTTPException(401, "Chưa đăng nhập")
+        if user.role != ADMIN_ROLE and user.role not in BUSINESS_ROLES:
+            raise HTTPException(403, "Tài khoản này không có trang Info")
+        return user
+
+    def user_payload(user: User) -> dict:
+        # data_access cho UI biết có hiện Query/Database không; server vẫn tự kiểm từng API.
+        return {
+            "username": user.username,
+            "role": user.role,
+            "role_label": ROLE_LABELS.get(user.role, user.role),
+            "home": user.home,
+            "data_access": user.role == ADMIN_ROLE,
+        }
 
     async def read_json(request: Request) -> dict:
         """Đọc body JSON có giới hạn kích thước; chỉ nhận object."""
@@ -104,7 +136,7 @@ def create_app(db_path: Path | None = None) -> FastAPI:
                 if is_api:
                     return JSONResponse({"detail": "Chưa đăng nhập"}, status_code=401)
                 return RedirectResponse("/login", status_code=303)
-            if user.role != "evaluator":
+            if user.role != EVALUATOR_ROLE:
                 if is_api:
                     return JSONResponse({"detail": "Không có quyền"}, status_code=403)
                 return RedirectResponse(user.home, status_code=303)
@@ -138,7 +170,8 @@ def create_app(db_path: Path | None = None) -> FastAPI:
         user = current_user(request)
         if user is None:
             return RedirectResponse("/login", status_code=303)
-        if user.role != "admin":  # Tài khoản eval chỉ dùng trang Evaluation.
+        # Admin và role nghiệp vụ dùng /home; tài khoản eval chỉ dùng trang Evaluation.
+        if user.role != ADMIN_ROLE and user.role not in BUSINESS_ROLES:
             return RedirectResponse(user.home, status_code=303)
         return spa()
 
@@ -149,10 +182,11 @@ def create_app(db_path: Path | None = None) -> FastAPI:
     @app.post("/api/login")
     async def login(request: Request):
         payload = await read_json(request)
+        # Chỉ đọc username/password; trường khác (ví dụ "role") bị bỏ qua.
         user = authenticate(str(payload.get("username", "")), str(payload.get("password", "")))
         if user is None:
             raise HTTPException(401, "Sai tên đăng nhập hoặc mật khẩu")
-        response = JSONResponse({"username": user.username, "role": user.role, "home": user.home})
+        response = JSONResponse(user_payload(user))
         response.set_cookie(
             SESSION_COOKIE,
             sessions.create(user),
@@ -175,7 +209,7 @@ def create_app(db_path: Path | None = None) -> FastAPI:
         user = current_user(request)
         if user is None:
             raise HTTPException(401, "Chưa đăng nhập")
-        return {"username": user.username, "role": user.role, "home": user.home}
+        return user_payload(user)
 
     # ---------- API dữ liệu (tài khoản admin) ----------
 
@@ -184,8 +218,27 @@ def create_app(db_path: Path | None = None) -> FastAPI:
         return {"database": "financial", "tables": database_call(database.table_names)}
 
     @app.get("/api/info")
-    def info(user: User = Depends(require_admin)):
-        """Popup Info: user được đọc những bảng/cột nào. Admin: toàn bộ dữ liệu."""
+    def info(user: User = Depends(require_info_user)):
+        """Popup Info: user được đọc những bảng/cột nào.
+
+        Admin: toàn bộ dữ liệu, đọc cột thật từ database. Role nghiệp vụ: ma trận tham chiếu
+        tĩnh (không chạm database), tách rõ với quyền thực tế đang bị tắt.
+        """
+        if user.role in BUSINESS_ROLES:
+            return {
+                "username": user.username,
+                "role": user.role,
+                "role_label": ROLE_LABELS[user.role],
+                "access": "reference",
+                "effective_access": {
+                    "data_queries": "disabled",
+                    "reason": "Truy vấn dữ liệu của role nghiệp vụ đang tắt cho tới khi Security "
+                    "Gate thực thi policy Financial; mọi API dữ liệu trả 403.",
+                },
+                "note": "Bảng dưới đây là quyền tham chiếu theo tài liệu policy, chưa được "
+                "enforce trong runtime và không phải quyền truy cập đang có hiệu lực.",
+                "reference": role_reference(user.role),
+            }
         columns = database_call(database.table_columns)
         return {
             "username": user.username,
