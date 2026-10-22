@@ -1,0 +1,145 @@
+/* Giao diện SQLGuard: bố cục sidebar + nội dung, hỗ trợ sáng/tối theo hệ điều hành. */
+
+/* ---------- Biến màu ---------- */
+:root {
+  --bg: #f7f7f5; --panel: #ffffff; --sidebar: #efeeea; --text: #1f2328; --muted: #646b75;
+  --line: #e1e0db; --accent: #c2410c; --accent-soft: #fbe9df; --code: #f2f1ee;
+  --ok: #1d7a46; --ok-soft: #e3f4ea; --warn: #8a5a00; --warn-soft: #fff3d6;
+  --bad: #b42318; --bad-soft: #fde8e6; --radius: 10px;
+  --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #1b1b1a; --panel: #242423; --sidebar: #151514; --text: #e8e6e1; --muted: #a09d96;
+    --line: #34332f; --accent: #f08a5d; --accent-soft: #3a2a22; --code: #2c2b29;
+    --ok: #5fd08f; --ok-soft: #173326; --warn: #f2c35b; --warn-soft: #382c12;
+    --bad: #ff8a80; --bad-soft: #3a1d1b;
+  }
+}
+
+/* ---------- Nền tảng ---------- */
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; }
+body { background: var(--bg); color: var(--text); font: 14px/1.5 var(--font); }
+code, pre, textarea.sql-input { font-family: var(--mono); font-size: 13px; }
+.muted { color: var(--muted); }
+.small { font-size: 12px; }
+.hidden { display: none !important; }
+.row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.space-between { justify-content: space-between; align-items: flex-start; }
+
+/* ---------- Nút và ô nhập ---------- */
+.btn { font: inherit; font-weight: 600; border: 0; border-radius: 8px; padding: 8px 16px;
+  background: var(--accent); color: #fff; cursor: pointer; display: inline-flex; gap: 6px;
+  align-items: center; }
+.btn.secondary { background: var(--accent-soft); color: var(--accent); }
+.btn.wide { width: 100%; justify-content: center; margin-top: 8px; }
+.btn:disabled { opacity: .45; cursor: not-allowed; }
+input, textarea { font: inherit; color: var(--text); background: var(--panel);
+  border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; width: 100%; }
+input:focus, textarea:focus { outline: 2px solid var(--accent-soft); border-color: var(--accent); }
+.field-label { display: block; color: var(--muted); font-weight: 600; margin: 10px 0 4px; }
+.error-box { background: var(--bad-soft); color: var(--bad); border-radius: 8px; padding: 8px 12px;
+  margin: 10px 0; white-space: pre-wrap; }
+.spinner { width: 14px; height: 14px; border-radius: 50%; border: 2px solid var(--line);
+  border-top-color: var(--accent); animation: spin .8s linear infinite; display: inline-block; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.badge { display: inline-block; padding: 1px 9px; border-radius: 999px; font-size: 12px;
+  font-weight: 600; background: var(--code); color: var(--muted); }
+.badge.full { background: var(--ok-soft); color: var(--ok); }
+.badge.partial { background: var(--warn-soft); color: var(--warn); }
+.badge.refused, .badge.failed { background: var(--bad-soft); color: var(--bad); }
+
+/* ---------- Trang đăng nhập ---------- */
+.login-page { min-height: 100vh; display: grid; place-items: center; padding: 16px; }
+.login-card { width: 100%; max-width: 360px; background: var(--panel); border: 1px solid var(--line);
+  border-radius: 14px; padding: 28px; }
+.brand { margin: 0; font-family: Georgia, "Times New Roman", serif; font-size: 28px; }
+
+/* ---------- Khung chính: sidebar + nội dung ---------- */
+.layout { display: grid; grid-template-columns: 240px 1fr; height: 100vh; }
+.sidebar { background: var(--sidebar); border-right: 1px solid var(--line); display: flex;
+  flex-direction: column; min-height: 0; }
+.sidebar-header { padding: 16px 18px; font: 600 20px Georgia, "Times New Roman", serif; }
+.sidebar-nav { flex: 1; overflow-y: auto; padding: 4px 10px; }
+.nav-item { display: block; padding: 7px 10px; border-radius: 8px; color: var(--text);
+  text-decoration: none; }
+.nav-item:hover { background: var(--line); }
+.nav-item.active { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+.nav-title { margin: 14px 10px 4px; font-size: 12px; font-weight: 700; color: var(--muted);
+  text-transform: uppercase; letter-spacing: .04em; cursor: default; }
+.nav-sub { padding-left: 22px; font-family: var(--mono); font-size: 13px; }
+.sidebar-footer { position: relative; border-top: 1px solid var(--line); padding: 10px; }
+.user-button { font: inherit; width: 100%; display: flex; gap: 8px; align-items: center;
+  background: none; border: 0; color: var(--text); padding: 6px 8px; border-radius: 8px;
+  cursor: pointer; }
+.user-button:hover { background: var(--line); }
+.avatar { width: 26px; height: 26px; border-radius: 50%; background: var(--accent); color: #fff;
+  display: grid; place-items: center; font-weight: 700; font-size: 12px; }
+.user-menu { position: absolute; left: 10px; right: 10px; bottom: 56px; background: var(--panel);
+  border: 1px solid var(--line); border-radius: 10px; padding: 4px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, .12); }
+.user-menu button { font: inherit; display: block; width: 100%; text-align: left; border: 0;
+  background: none; color: var(--text); padding: 8px 10px; border-radius: 6px; cursor: pointer; }
+.user-menu button:hover { background: var(--code); }
+.content { overflow-y: auto; min-width: 0; }
+.page { max-width: 1100px; margin: 0 auto; padding: 24px; }
+.page-title { margin: 0 0 4px; font-size: 20px; }
+.loading-screen { padding: 24px; color: var(--muted); }
+
+/* Màn hình hẹp: sidebar nằm trên, nội dung bên dưới. */
+@media (max-width: 760px) {
+  .layout { grid-template-columns: 1fr; height: auto; }
+  .sidebar { border-right: 0; border-bottom: 1px solid var(--line); }
+  .page { padding: 16px; }
+}
+
+/* ---------- Component SQL + bảng dữ liệu ---------- */
+.sql-input { resize: vertical; min-height: 64px; }
+.sql-table .row { margin: 8px 0; }
+.table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 8px;
+  background: var(--panel); margin-top: 8px; }
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th, td { text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--line);
+  white-space: nowrap; }
+th { background: var(--code); color: var(--muted); font-weight: 600; position: sticky; top: 0; }
+td.null { color: var(--muted); font-style: italic; }
+tbody tr:last-child td { border-bottom: 0; }
+.pager { display: flex; gap: 12px; align-items: center; justify-content: flex-end; margin-top: 10px; }
+
+/* ---------- Trang Query ---------- */
+.ask-page { display: flex; flex-direction: column; align-items: center; padding-top: 14vh; }
+.ask-title { font: 400 40px Georgia, "Times New Roman", serif; margin: 0 0 24px; text-align: center; }
+.ask-box { width: 100%; max-width: 720px; background: var(--panel); border: 1px solid var(--line);
+  border-radius: 16px; padding: 10px; box-shadow: 0 2px 10px rgba(0, 0, 0, .04); }
+.ask-input { border: 0; resize: none; padding: 6px; }
+.ask-input:focus { outline: none; }
+.ask-actions { display: flex; justify-content: flex-end; }
+.samples { width: 100%; max-width: 720px; margin-top: 18px; }
+.chip { font: inherit; font-size: 13px; border: 1px solid var(--line); background: var(--panel);
+  color: var(--text); border-radius: 999px; padding: 5px 12px; margin: 0 6px 8px 0; cursor: pointer; }
+.chip:hover { border-color: var(--accent); color: var(--accent); }
+.question-bubble { background: var(--code); border-radius: 12px; padding: 10px 14px;
+  max-width: 760px; margin-bottom: 14px; }
+.waiting { display: flex; gap: 10px; align-items: center; color: var(--muted); padding: 12px 0; }
+.status-box { border: 1px solid var(--line); border-left-width: 4px; border-radius: 10px;
+  background: var(--panel); padding: 12px 16px; margin-bottom: 14px; }
+.status-box p { margin: 6px 0 0; }
+.status-box.full { border-left-color: var(--ok); }
+.status-box.partial { border-left-color: var(--warn); }
+.status-box.refused, .status-box.failed { border-left-color: var(--bad); }
+.status-head { display: flex; gap: 10px; align-items: center; }
+.sql-box { background: var(--code); border-radius: 8px; padding: 10px 12px; overflow-x: auto;
+  margin: 0; }
+
+/* ---------- Popup Info ---------- */
+.dialog { border: 1px solid var(--line); border-radius: 14px; padding: 0; width: min(760px, 92vw);
+  background: var(--panel); color: var(--text); }
+.dialog::backdrop { background: rgba(0, 0, 0, .35); }
+.dialog-head { display: flex; justify-content: space-between; align-items: center;
+  padding: 12px 16px; border-bottom: 1px solid var(--line); }
+.dialog-body { padding: 12px 16px 16px; max-height: 70vh; overflow-y: auto; }
+.dialog-body td { white-space: normal; }
+.icon-button { font: 20px/1 var(--font); border: 0; background: none; color: var(--muted);
+  cursor: pointer; }

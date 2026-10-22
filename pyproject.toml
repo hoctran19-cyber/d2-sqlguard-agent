@@ -23,6 +23,7 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["src"]
 markers = ["db: needs a disposable PostgreSQL server (SQLGUARD_TEST_PG_ADMIN_DSN)"]
 
 [tool.ruff]
@@ -38,3 +39,4 @@ package-dir = {"" = "src"}
 
 [tool.setuptools.package-data]
 "sqlguard.security" = ["policies/*.json"]
+"sqlguard.web" = ["static/*.html", "static/css/*.css", "static/js/*.js", "static/js/*/*.js"]
