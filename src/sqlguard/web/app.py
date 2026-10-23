@@ -30,6 +30,7 @@ from sqlguard.observability.events import (
     LiveEventSink,
     SQLiteEventStore,
 )
+from sqlguard.observability.trace import assess_trace, serialize_trace_event
 from sqlguard.web.auth import (
     ADMIN_ROLE,
     BUSINESS_ROLES,
@@ -67,20 +68,8 @@ def _sse_message(event_name: str, data: dict) -> str:
 
 
 def _sse_event(sequence: int, event: Event) -> str:
-    data = {
-        "run_id": event.run_id,
-        "event_type": event.event_type,
-        "timestamp": event.timestamp.isoformat(),
-        "status": event.status,
-        "module": getattr(event, "module", None),
-        "step": getattr(event, "step", None),
-        "duration_ms": event.duration_ms,
-        "error_category": event.error_category,
-        "attempt_id": getattr(event, "attempt_id", None),
-        "related_attempt_id": getattr(event, "related_attempt_id", None),
-        "retry_count": getattr(event, "retry_count", None),
-        "data": getattr(event, "data", None),
-    }
+    data = serialize_trace_event(event, sequence)
+    data["stream_sequence"] = sequence
     return (
         f"id: {sequence}\nevent: agent_event\n"
         f"data: {json.dumps(data, separators=(',', ':'), ensure_ascii=False)}\n\n"
@@ -391,6 +380,17 @@ def create_app(db_path: Path | None = None) -> FastAPI:
             raise HTTPException(503, "Live event stream chưa sẵn sàng.") from None
 
         async def stream():
+            def completion_message() -> str:
+                records, capture_status = live_events.snapshot(normalized_run_id)
+                trace = [serialize_trace_event(event, sequence) for sequence, event in records]
+                return _sse_message(
+                    "stream_complete",
+                    {
+                        "run_id": normalized_run_id,
+                        "trace_assessment": assess_trace(trace, capture_status=capture_status),
+                    },
+                )
+
             try:
                 yield ": connected\n\n"
                 if subscription.replay_gap:
@@ -401,7 +401,7 @@ def create_app(db_path: Path | None = None) -> FastAPI:
                 for sequence, event in subscription.replay:
                     yield _sse_event(sequence, event)
                 if subscription.completed:
-                    yield _sse_message("stream_complete", {"run_id": normalized_run_id})
+                    yield completion_message()
                     return
                 while not await request.is_disconnected():
                     try:
@@ -410,7 +410,7 @@ def create_app(db_path: Path | None = None) -> FastAPI:
                         yield ": keep-alive\n\n"
                         continue
                     if item is None:
-                        yield _sse_message("stream_complete", {"run_id": normalized_run_id})
+                        yield completion_message()
                         return
                     sequence, event = item
                     yield _sse_event(sequence, event)
@@ -442,12 +442,22 @@ def create_app(db_path: Path | None = None) -> FastAPI:
                 raise HTTPException(503, "Live event stream chưa sẵn sàng.") from None
             live_sink = LiveEventSink(live_events)
         try:
-            return await answer_question(
+            answer = await answer_question(
                 database,
                 question,
                 run_id=run_id,
                 live_sink=live_sink,
             )
+            if run_id is not None:
+                records, capture_status = live_events.snapshot(run_id)
+                trace_events = [
+                    serialize_trace_event(event, sequence) for sequence, event in records
+                ]
+                answer["trace_events"] = trace_events
+                answer["trace_assessment"] = assess_trace(
+                    trace_events, capture_status=capture_status
+                )
+            return answer
         except EventStoreError:
             raise HTTPException(503, "Không thể khởi tạo event store.") from None
         except DatabaseUnavailable as error:

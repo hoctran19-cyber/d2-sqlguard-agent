@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   createPlayback,
   eventNode,
+  resolveEvidenceReferences,
   summarizeWorkflow,
   timelineEntries,
 } from "../../src/sqlguard/web/static/js/workflow.js";
@@ -45,9 +46,28 @@ test("timeline preserves persisted order and links every event to its workflow n
     { event: events[1], index: 1, nodeId: "memory_context" },
     { event: events[2], index: 2, nodeId: "gate" },
   ]);
+  assert.equal(eventNode("schema_context_ready"), "planner");
   assert.equal(eventNode("repair_started"), "planner");
   assert.equal(eventNode("tool_call_started"), "tool");
   assert.equal(eventNode("execute_completed"), "database");
+});
+
+test("scoring evidence resolves each event reference independently and marks missing refs", () => {
+  const plannerEvent = { event_id: "run-1:7", sequence: 7, event_type: "plan_created" };
+  const gateEvent = { event_id: "run-1:8", sequence: 8, event_type: "security_check_completed" };
+
+  assert.deepEqual(
+    resolveEvidenceReferences(
+      ["run-1:7", "run-1:8", "run-1:99", null],
+      [plannerEvent, null, gateEvent],
+    ),
+    [
+      { reference: "run-1:7", event: plannerEvent },
+      { reference: "run-1:8", event: gateEvent },
+      { reference: "run-1:99", event: null },
+      { reference: null, event: null },
+    ],
+  );
 });
 
 test("summarizes real controller events and prevents a gate rejection from reaching the tool", () => {

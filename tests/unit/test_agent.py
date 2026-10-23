@@ -348,7 +348,7 @@ def test_runtime_trace_covers_successful_agent_stages_with_metadata_only():
         assert event.run_id == result.state.run_id
         assert not hasattr(event, "question")
         assert not hasattr(event, "sql")
-        if event.event_type.endswith("_completed"):
+        if event.event_type.endswith("_completed") and event.status != "not_checked":
             assert event.duration_ms is not None
 
     dumped = repr(events.events)

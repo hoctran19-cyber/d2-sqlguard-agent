@@ -27,7 +27,7 @@ from sqlguard.agent.runtime import (
     create_planner_for_role,
 )
 from sqlguard.agent.sqlite_schema import SQLITE_PATH_ENV
-from sqlguard.mcp.tools import InProcessToolRegistry, ToolError, ToolRegistry
+from sqlguard.mcp.tools import InProcessToolRegistry, ToolCallResult, ToolError, ToolRegistry
 from sqlguard.memory.store import InMemoryMemory
 from sqlguard.observability.events import (
     CompositeEventSink,
@@ -168,7 +168,13 @@ class FinancialQueryTool:
             raise ToolError("query failed", category="sql_error", retryable=False) from None
         except DatabaseUnavailable:
             raise ToolError("db unavailable", category="db_unavailable", retryable=False) from None
-        return json.dumps({"total_rows": self.last_result.total_rows})
+        return ToolCallResult(
+            value=json.dumps({"total_rows": self.last_result.total_rows}),
+            evidence={
+                "database_execution": "confirmed",
+                "source": "financial_database.run_page",
+            },
+        )
 
 
 async def answer_question(
@@ -261,6 +267,14 @@ class _WebRecordingRegistry:
         result = await self._registry.call(name, arguments, timeout_seconds=timeout_seconds)
         if name == "query" and isinstance(result, dict):
             self.result = result
+            if result.get("source") == "database" and isinstance(result.get("executed_sql"), str):
+                return ToolCallResult(
+                    value=result,
+                    evidence={
+                        "database_execution": "confirmed",
+                        "source": "secure_sql_tool.executor_result",
+                    },
+                )
         return result
 
 

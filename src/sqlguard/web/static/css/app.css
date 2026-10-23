@@ -172,6 +172,29 @@ tbody tr:last-child td { border-bottom: 0; }
 .workflow-delay input { width: 120px; }
 .workflow-delay-value { min-width: 50px; }
 .workflow-run-summary span { background: var(--code); border-radius: 6px; padding: 5px 8px; }
+.workflow-assessment { margin: 12px 0; padding: 10px; border: 1px solid var(--line); border-radius: 8px; }
+.workflow-criteria { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 8px; list-style: none; margin: 8px 0 0; padding: 0; }
+.workflow-criterion { padding: 10px; border: 1px solid var(--line); border-radius: 6px; }
+.workflow-criterion > strong { text-transform: capitalize; }
+.workflow-criterion p { margin: 6px 0; }
+.workflow-criterion-status { float: right; font-size: 12px; text-transform: uppercase; }
+.workflow-criterion-status.pass { color: var(--ok); }
+.workflow-criterion-status.violation, .workflow-criterion-status.failed { color: var(--bad); }
+.workflow-criterion-status.not_checked, .workflow-criterion-status.unknown,
+.workflow-criterion-status.not_observed { color: var(--muted); }
+.workflow-evidence-list { display: grid; gap: 6px; list-style: none; margin: 8px 0 0; padding: 0; }
+.workflow-evidence-item { min-width: 0; border: 1px solid var(--line); border-radius: 6px;
+  font-size: 12px; overflow-wrap: anywhere; }
+.workflow-evidence-item > summary { display: grid; gap: 3px; padding: 7px; cursor: pointer; }
+.workflow-evidence-item > summary strong { color: var(--accent); }
+.workflow-evidence-item > :not(summary) { margin-left: 8px; margin-right: 8px; }
+.workflow-evidence-item > .workflow-evidence-metadata { margin-top: 8px; }
+.workflow-evidence-item > .workflow-safe-output { max-height: 240px; overflow: auto; }
+.workflow-evidence-item.unavailable { border-color: var(--warn); }
+.workflow-evidence-reference { font-size: 11px; }
+.workflow-evidence-open { margin-bottom: 8px; border: 0; padding: 0; color: var(--accent);
+  background: none; cursor: pointer; }
 .workflow-controller { display: flex; align-items: center; gap: 12px; margin: 12px 0; }
 .workflow-flow { display: flex; flex-wrap: wrap; align-items: stretch; gap: 6px; }
 .workflow-node-wrap { display: flex; align-items: center; gap: 6px; flex: 1 1 145px; }
@@ -216,7 +239,7 @@ tbody tr:last-child td { border-bottom: 0; }
   background: var(--code); white-space: pre-wrap; overflow-wrap: anywhere; }
 @media (max-width: 760px) {
   .workflow-node-wrap { flex-basis: 100%; }
-  .workflow-arrow { transform: rotate(90deg); }
+  .workflow-arrow { margin-right: 12px; transform: rotate(90deg); }
 }
 
 /* ---------- Popup Info ---------- */

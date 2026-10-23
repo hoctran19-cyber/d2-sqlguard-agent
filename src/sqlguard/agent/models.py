@@ -54,6 +54,8 @@ class AgentState:
     started_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     finished_at: datetime | None = None
     sql_attempt_count: int = 0
+    active_sql_attempt_id: str | None = None
+    related_sql_attempt_id: str | None = None
 
     def __post_init__(self) -> None:
         if self.request.run_id is not None:

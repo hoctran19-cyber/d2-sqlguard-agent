@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from time import perf_counter
@@ -15,9 +15,10 @@ from sqlguard.agent.models import (
     RunStatus,
 )
 from sqlguard.agent.planning import Plan, Planner, RepairFeedback
-from sqlguard.mcp.tools import ToolError, ToolRegistry
+from sqlguard.mcp.tools import ToolCallResult, ToolError, ToolRegistry
 from sqlguard.memory.store import MemoryStore
 from sqlguard.observability.events import EventSink, LiveEvent, safe_error_category
+from sqlguard.observability.trace import sql_artifact
 from sqlguard.security.gate import SecurityDecision, SecurityGate
 from sqlguard.security.prompting import render_denial
 from sqlguard.security.service import SecurityToolError
@@ -67,11 +68,143 @@ def _safe_violation_codes(decision: SecurityDecision) -> list[str]:
     ]
 
 
+def _safe_identifiers(values: Any) -> list[str] | None:
+    if not isinstance(values, tuple | list):
+        return None
+    return [
+        value
+        for value in values
+        if isinstance(value, str) and len(value) <= 128 and value.isidentifier()
+    ]
+
+
+def _sanitize_trace_data(data: dict[str, Any]) -> dict[str, Any]:
+    safe: dict[str, Any] = {}
+    for key, value in data.items():
+        if key in {"counters", "budget", "request_parameters"} and isinstance(value, dict):
+            safe[key] = dict(value)
+        elif key == "model" and isinstance(value, str):
+            safe[key] = value[:128]
+        elif key in {"question", "entries", "result_preview", "value"}:
+            if key == "question" and isinstance(value, str):
+                safe["question"] = {"redacted": True, "characters": len(value)}
+            elif key == "entries" and isinstance(value, tuple | list):
+                safe["memory_entries"] = {"redacted": True, "count": len(value)}
+            elif key == "result_preview" and isinstance(value, str):
+                safe["result_preview"] = {"redacted": True, "characters": len(value)}
+            else:
+                safe[key] = {"redacted": True}
+        elif key == "sql" and isinstance(value, str):
+            safe["sql_artifact"] = sql_artifact(value, source="controller_event")
+        elif key == "parameters" and isinstance(value, dict):
+            parameters: dict[str, Any] = {}
+            for name, parameter in value.items():
+                if name == "sql" and isinstance(parameter, str):
+                    parameters["sql_artifact"] = sql_artifact(parameter, source="tool_arguments")
+                elif name in {"page", "limit", "offset"} and type(parameter) is int:
+                    parameters[name] = parameter
+            safe[key] = parameters
+        elif key in {
+            "sql_artifact",
+            "sql_truncated",
+            "result_truncated",
+            "tool_name",
+            "decision",
+            "check",
+            "kind",
+            "policy_version",
+            "gate_references_status",
+            "database_execution",
+            "execution_source",
+        } and isinstance(value, str | bool | int | float):
+            safe[key] = value if not isinstance(value, str) else value[:128]
+        elif key in {
+            "violations",
+            "referenced_tables",
+            "referenced_columns",
+            "removed_columns",
+            "notices",
+        }:
+            safe[key] = _safe_identifiers(value) or []
+    return safe
+
+
+def _trace_io(
+    event_type: str, data: dict[str, Any]
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    if event_type.endswith("_started") or event_type == "run_started":
+        return data, None
+    if data:
+        return None, data
+    return None, None
+
+
+def _trace_evidence(
+    event_type: str,
+    status: str | None,
+    data: dict[str, Any],
+    error_category: str | None = None,
+) -> dict[str, Any]:
+    evidence: dict[str, Any] = {
+        "source": "agent_controller",
+        "redaction": "sql_literals_and_user_payloads_redacted",
+    }
+    artifact = data.get("sql_artifact")
+    if not artifact and isinstance(data.get("parameters"), dict):
+        artifact = data["parameters"].get("sql_artifact")
+    if isinstance(artifact, dict):
+        evidence["sql_artifact"] = artifact
+    if event_type == "security_check_completed":
+        evidence["gate_decision"] = status
+        evidence["policy_version"] = data.get("policy_version")
+        evidence["gate_references"] = {
+            "tables": data.get("referenced_tables"),
+            "columns": data.get("referenced_columns"),
+            "source": "security_gate_decision",
+            "status": data.get("gate_references_status", "unknown"),
+        }
+        evidence["omitted_columns"] = data.get("removed_columns", [])
+        evidence["notices"] = data.get("notices", [])
+    if event_type == "tool_call_started":
+        evidence["tool_invocation"] = "started"
+    if event_type == "execute_started":
+        evidence["database_execution"] = "attempting"
+        evidence["database_access"] = "unknown"
+    if event_type == "execute_completed":
+        execution = data.get("database_execution")
+        if (
+            execution is None
+            and status == "failed"
+            and error_category
+            in {
+                "db_error",
+                "db_permission_denied",
+                "db_read_only_violation",
+                "db_schema_error",
+                "db_syntax_error",
+                "sql_error",
+            }
+        ):
+            execution = "failed"
+            evidence["execution_source"] = "database_error_category"
+        evidence["database_execution"] = (
+            execution if execution in {"confirmed", "failed"} else "unknown"
+        )
+        evidence["database_access"] = "unknown"
+        evidence.setdefault(
+            "execution_source", data.get("execution_source", "tool_registry_result")
+        )
+    if event_type == "fields_omitted":
+        evidence["omission_source"] = "runtime_policy"
+    return evidence
+
+
 def _event_module(event_type: str) -> str:
     if event_type.startswith("context_retrieval_") or event_type.startswith("memory_"):
         return "memory"
     if (
         event_type.startswith(("llm_call_", "sql_generation_", "repair_"))
+        or event_type == "schema_context_ready"
         or event_type == "plan_created"
     ):
         return "planner"
@@ -276,6 +409,8 @@ class AgentController:
             )
             if state.sql_attempt_count >= sql_limit:
                 raise _BudgetExceeded("sql_attempt_budget_exhausted")
+            state.related_sql_attempt_id = state.active_sql_attempt_id
+            state.active_sql_attempt_id = f"sql-{state.sql_attempt_count + 1}"
             self._emit(
                 state,
                 "security_check_started",
@@ -306,6 +441,18 @@ class AgentController:
                 data={
                     "decision": "allow" if allowed else "deny",
                     "violations": _safe_violation_codes(decision),
+                    "sql": _bounded_text(sql),
+                    "policy_version": getattr(decision, "policy_version", None),
+                    "referenced_tables": list(getattr(decision, "referenced_tables", ())),
+                    "referenced_columns": list(getattr(decision, "referenced_columns", ())),
+                    "gate_references_status": (
+                        "observed"
+                        if hasattr(decision, "referenced_tables")
+                        and hasattr(decision, "referenced_columns")
+                        else "unknown"
+                    ),
+                    "removed_columns": list(getattr(decision, "removed_columns", ())),
+                    "notices": list(getattr(decision, "notices", ())),
                 },
             )
             if not allowed:
@@ -402,6 +549,22 @@ class AgentController:
                 category = "tool_exception"
                 retryable = False
             else:
+                execution_evidence = {}
+                if isinstance(output, ToolCallResult):
+                    if (
+                        isinstance(output.evidence, Mapping)
+                        and output.evidence.get("database_execution") == "confirmed"
+                        and output.evidence.get("source")
+                        in {
+                            "financial_database.run_page",
+                            "secure_sql_tool.executor_result",
+                        }
+                    ):
+                        execution_evidence = {
+                            "database_execution": "confirmed",
+                            "execution_source": output.evidence["source"],
+                        }
+                    output = output.value
                 self._emit(
                     state,
                     "tool_call_completed",
@@ -413,6 +576,7 @@ class AgentController:
                     "execute_completed",
                     status="completed",
                     duration_ms=(perf_counter() - tool_started) * 1000,
+                    data=execution_evidence,
                 )
                 answer_started = perf_counter()
                 # Observe xử lý kết quả nhưng chỉ phát metadata, không phát nội dung kết quả.
@@ -509,8 +673,14 @@ class AgentController:
         """Chặn câu trả lời cuối nếu rò rỉ; mọi lỗi của bước kiểm tra cũng chặn (fail closed)."""
         check_started = perf_counter()
         check = scope.output_check
-        # Không có output_check (chế độ mock) thì giữ nguyên hành vi cũ.
+        # A missing checker is explicit evidence absence; result handling is unchanged.
         if check is None:
+            self._emit(
+                state,
+                "output_check_completed",
+                status="not_checked",
+                data={"check": "no_output_check_configured"},
+            )
             return
         try:
             leaked = check(answer)
@@ -522,6 +692,7 @@ class AgentController:
                 status="failed",
                 error_category="output_check_error",
                 duration_ms=(perf_counter() - check_started) * 1000,
+                data={"check": "configured_output_check"},
             )
             raise ToolError("Output check failed", category="output_check_error") from None
         if leaked:
@@ -532,6 +703,7 @@ class AgentController:
                 status="blocked",
                 error_category="canary_leak",
                 duration_ms=(perf_counter() - check_started) * 1000,
+                data={"check": "configured_output_check"},
             )
             raise ToolError("Result withheld by output check", category="canary_leak")
         # Sạch: ghi nhận đã kiểm tra xong để event/audit phản ánh đúng diễn biến của run.
@@ -540,6 +712,7 @@ class AgentController:
             "output_check_completed",
             status="completed",
             duration_ms=(perf_counter() - check_started) * 1000,
+            data={"check": "configured_output_check"},
         )
 
     async def _call_planner(
@@ -760,6 +933,11 @@ class AgentController:
             # Chặn category tùy ý ở ranh giới sink để không rò dữ liệu dù caller truyền nhầm.
             if details.get("error_category") is not None:
                 details["error_category"] = _safe_error_category(details["error_category"])
+            if details.get("status") is None:
+                if event_type == "run_started" or event_type.endswith("_started"):
+                    details["status"] = "running"
+                elif event_type == "plan_created":
+                    details["status"] = "completed"
             data = dict(details.pop("data", {}) or {})
             data.update(
                 {
@@ -776,15 +954,57 @@ class AgentController:
                     },
                 }
             )
+            safe_data = _sanitize_trace_data(data)
+            input_data, output_data = _trace_io(event_type, safe_data)
+            evidence = _trace_evidence(
+                event_type,
+                details.get("status"),
+                safe_data,
+                details.get("error_category"),
+            )
+            if event_type == "run_started":
+                evidence["sensitive_data_checks"] = {"request_input": "not_checked"}
+            elif event_type == "llm_call_started":
+                evidence["sensitive_data_checks"] = {"planner_input": "not_checked"}
+            elif event_type == "plan_created":
+                evidence["sensitive_data_checks"] = {"planner_output": "not_checked"}
+            elif event_type == "tool_call_started":
+                evidence["sensitive_data_checks"] = {"tool_arguments": "not_checked"}
+            elif event_type == "tool_call_completed":
+                evidence["sensitive_data_checks"] = {"tool_output": "not_checked"}
+            elif event_type == "output_check_completed":
+                check_configured = safe_data.get("check") == "configured_output_check"
+                evidence["sensitive_data_checks"] = {
+                    "final_response": (
+                        "pass"
+                        if check_configured and details.get("status") == "completed"
+                        else "violation"
+                        if check_configured and details.get("status") == "blocked"
+                        else "not_checked"
+                    )
+                }
+            attempt_id = state.active_sql_attempt_id
+            if event_type.startswith(("llm_call_", "sql_generation_", "plan_created", "repair_")):
+                if state.current_step == "repair" or attempt_id is None:
+                    attempt_id = f"sql-{state.sql_attempt_count + 1}"
+            related_attempt_id = details.pop("related_attempt_id", None)
+            if related_attempt_id is None and attempt_id != state.active_sql_attempt_id:
+                related_attempt_id = state.active_sql_attempt_id
+            if related_attempt_id is None:
+                related_attempt_id = state.related_sql_attempt_id
             self._events.emit(
                 LiveEvent(
                     run_id=state.run_id,
                     event_type=event_type,
                     module=_event_module(event_type),
                     step=state.current_step,
-                    attempt_id=f"sql-{state.sql_attempt_count + 1}",
+                    attempt_id=attempt_id,
+                    related_attempt_id=related_attempt_id,
                     retry_count=state.retry_count,
-                    data=data,
+                    data=safe_data,
+                    input=input_data,
+                    output=output_data,
+                    evidence=evidence,
                     **details,
                 )
             )

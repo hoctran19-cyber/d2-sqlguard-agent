@@ -2,6 +2,7 @@ import { h, spinner } from "../dom.js";
 import {
   createPlayback,
   eventNode,
+  resolveEvidenceReferences,
   summarizeWorkflow,
   timelineEntries,
   WORKFLOW_NODES,
@@ -19,6 +20,7 @@ const STATUS_LABELS = {
 
 const EVENT_LABELS = {
   run_started: "Run started",
+  schema_context_ready: "Planner schema context",
   context_retrieval_started: "Context retrieval started",
   context_retrieval_completed: "Context retrieval completed",
   llm_call_started: "Planner call started",
@@ -72,6 +74,7 @@ export function createWorkflowVisualizer(
   let connectionState = live ? "connecting" : "playback";
   let connectionMessage = live ? "Connecting to live event stream…" : "Playback of collected events";
   let followLive = true;
+  let traceAssessment = answer.trace_assessment || null;
   const seenSequences = new Set(events.map((event) => event.stream_sequence).filter(Boolean));
   const root = h("section", { class: "workflow-panel", "aria-label": "Workflow visualizer" });
   let detailLevel = "detailed";
@@ -123,6 +126,10 @@ export function createWorkflowVisualizer(
   );
   const playbackButtons = h("div", { class: "workflow-playback-buttons" });
   const summary = h("div", { class: "workflow-run-summary" });
+  const assessment = h("section", {
+    class: "workflow-assessment",
+    "aria-label": "Trace scoring evidence",
+  });
   const runDetails = h("section", { class: "workflow-run-details" });
 
   const playback = createPlayback(
@@ -150,6 +157,7 @@ export function createWorkflowVisualizer(
   detailSelect.addEventListener("change", () => {
     detailLevel = detailSelect.value;
     renderRunDetails();
+    renderAssessment();
     renderSelectedEvent();
   });
 
@@ -161,6 +169,7 @@ export function createWorkflowVisualizer(
     controls,
     playbackButtons,
     summary,
+    assessment,
     canvas,
     h("h3", {}, "Execution Timeline"),
     timeline,
@@ -195,6 +204,10 @@ export function createWorkflowVisualizer(
       renderConnection();
       renderEmptyState();
     },
+    setTraceAssessment(value) {
+      traceAssessment = value && typeof value === "object" ? value : null;
+      renderAssessment();
+    },
     updateAnswer(update) {
       answerState = { ...answerState, ...update, events };
       renderSummary();
@@ -205,6 +218,7 @@ export function createWorkflowVisualizer(
 
   function renderDynamic() {
     renderSummary();
+    renderAssessment();
     renderCanvas();
     renderPlaybackButtons();
     renderSelectedEvent();
@@ -331,7 +345,18 @@ export function createWorkflowVisualizer(
         "Execution was not observed; the run ended before a tool call.");
     }
     return h("p", { class: "workflow-branch" },
-      "A DB schema/syntax failure may trigger at most one repair; all other failures follow controller policy.");
+      repairCauseFromEvents(visibleEvents));
+  }
+
+  function repairCauseFromEvents(visibleEvents) {
+    const databaseFailure = visibleEvents.findLast((event) =>
+      ["db_schema_error", "db_syntax_error"].includes(event.error_category));
+    if (databaseFailure) {
+      return `Database ${databaseFailure.error_category} observed; no repair event is present in this trace.`;
+    }
+    return visibleEvents.length
+      ? "No repair event is present in this trace."
+      : "Waiting for repair or retry events.";
   }
 
   function renderPlaybackButtons() {
@@ -404,6 +429,8 @@ export function createWorkflowVisualizer(
       h("dd", {}, [event.module, event.step].filter(Boolean).join(" / ") || "—"),
       h("dt", {}, "Timestamp"),
       h("dd", {}, formatTimestamp(event.timestamp)),
+      h("dt", {}, "Run ID"),
+      h("dd", {}, event.run_id || "Not provided"),
       h("dt", {}, "Status"),
       h("dd", {}, event.status || "—"),
       h("dt", {}, "Duration"),
@@ -419,14 +446,130 @@ export function createWorkflowVisualizer(
           : null,
       ].filter(Boolean).join(" · ") || "—"),
     );
+    const safePayload = {
+      input: event.input,
+      output: event.output,
+      evidence: event.evidence,
+      data: event.data,
+    };
+    const hasPayload = Object.values(safePayload).some(
+      (value) => value !== undefined && value !== null,
+    );
     eventDetail.replaceChildren(
       h("h4", {}, "Selected event"),
       metadata,
-      detailLevel === "detailed" && event.data
-        ? h("pre", { class: "workflow-safe-output" }, JSON.stringify(event.data, null, 2))
+      detailLevel === "detailed" && hasPayload
+        ? h("pre", { class: "workflow-safe-output" }, JSON.stringify(safePayload, null, 2))
         : null,
     );
     renderTimeline();
+  }
+
+  function renderAssessment() {
+    if (!traceAssessment || !traceAssessment.criteria) {
+      assessment.replaceChildren(
+        h("h3", {}, "Trace scoring evidence"),
+        h("p", { class: "muted" },
+          "Assessment is unavailable until a captured trace can be verified."),
+      );
+      return;
+    }
+    const criteria = Object.entries(traceAssessment.criteria);
+    assessment.replaceChildren(
+      h("h3", {}, "Trace scoring evidence"),
+      h("p", { class: "muted small" },
+        `Capture: ${traceAssessment.capture_status || "unknown"} · Schema v${traceAssessment.schema_version || "?"}`),
+      h("ul", { class: "workflow-criteria" },
+        ...criteria.map(([name, criterion]) => {
+          const evidenceIds = Array.isArray(criterion.evidence) ? criterion.evidence : [];
+          const evidenceEntries = resolveEvidenceReferences(evidenceIds, events);
+          return h("li", { class: "workflow-criterion" },
+            h("strong", {}, name.replaceAll("_", " ")),
+            h("span", { class: `workflow-criterion-status ${criterion.status || "unknown"}` },
+              criterion.status || "unknown"),
+            detailLevel === "detailed"
+              ? h("p", {}, criterion.reason || "No assessment reason provided.")
+              : null,
+            detailLevel === "detailed"
+              ? evidenceIds.length
+                ? h("ul", { class: "workflow-evidence-list" },
+                  ...evidenceEntries.map(({ reference, event }) =>
+                    renderEvidence(event, reference)))
+                : h("p", { class: "muted small" }, "No event evidence recorded.")
+              : null,
+          );
+        }),
+      ),
+    );
+  }
+
+  function renderEvidence(event, reference) {
+    if (!event) {
+      const reason = typeof reference === "string"
+        ? "The referenced event was not found in the captured trace."
+        : "The scoring reference is not a valid event ID.";
+      return h("li", {},
+        h("details", { class: "workflow-evidence-item unavailable" },
+          h("summary", {}, "Evidence unavailable"),
+          h("p", { class: "muted small" }, reason),
+          typeof reference === "string"
+            ? h("p", { class: "workflow-evidence-reference" },
+              h("span", {}, "Reference: "),
+              h("code", {}, reference))
+            : null,
+        ));
+    }
+
+    const action = EVENT_LABELS[event.event_type] || event.event_type || "Event";
+    const module = [event.module, event.step].filter(Boolean).join(" / ")
+      || nodeLabel(eventNode(event.event_type));
+    const reason = eventReason(event);
+    const safePayload = {
+      input: event.input,
+      output: event.output,
+      evidence: event.evidence,
+      data: event.data,
+    };
+    const hasPayload = Object.values(safePayload).some(
+      (value) => value !== undefined && value !== null,
+    );
+    const sequence = Number.isInteger(event.sequence) ? event.sequence : null;
+
+    return h("li", {},
+      h("details", { class: "workflow-evidence-item" },
+        h("summary", {},
+          h("strong", {}, sequence === null ? "Event" : `Event #${sequence}`),
+          h("span", {}, `${action} · ${event.status || "status unavailable"}`),
+          h("span", { class: "muted small" }, module),
+        ),
+        h("dl", { class: "workflow-evidence-metadata" },
+          h("dt", {}, "Event type"),
+          h("dd", {}, event.event_type || "Not provided"),
+          h("dt", {}, "Timestamp"),
+          h("dd", {}, formatTimestamp(event.timestamp)),
+          h("dt", {}, "Run ID"),
+          h("dd", {}, event.run_id || "Not provided"),
+          h("dt", {}, "Module / step"),
+          h("dd", {}, module),
+          h("dt", {}, "Status"),
+          h("dd", {}, event.status || "Not provided"),
+          h("dt", {}, "Error category"),
+          h("dd", {}, event.error_category || "—"),
+          h("dt", {}, "Reason"),
+          h("dd", {}, reason || "No reason recorded."),
+        ),
+        detailLevel === "detailed" && hasPayload
+          ? h("pre", { class: "workflow-safe-output" }, JSON.stringify(safePayload, null, 2))
+          : null,
+        h("button", {
+          type: "button",
+          class: "workflow-evidence-open",
+          onclick: () => {
+            const index = events.indexOf(event);
+            if (index >= 0) playback.select(index);
+          },
+        }, "Open event in timeline"),
+      ));
   }
 
   function renderRunDetails() {
@@ -435,25 +578,20 @@ export function createWorkflowVisualizer(
       return;
     }
     const details = [
-      h("h3", {}, "Run details returned by Query API"),
-      h("p", {}, h("strong", {}, "Input: "), answerState.question || "Not provided"),
+      h("h3", {}, "Run summary"),
       h("p", {}, h("strong", {}, "Planner: "),
         answerState.planner === "ollama" ? "Ollama Planner" : answerState.planner || "Not provided"),
-      answerState.sql
-        ? h("div", {},
-          h("h4", {}, "SQL observed from the live planner / Query API"),
-          h("pre", { class: "workflow-safe-output" }, answerState.sql))
-        : h("p", { class: "muted" }, "SQL has not been observed yet."),
-      answerState.result !== undefined && answerState.result !== null
-        ? h("div", {},
-          h("h4", {}, "Query result returned by the Query API"),
-          h("pre", { class: "workflow-safe-output" }, JSON.stringify(answerState.result, null, 2)))
-        : h("p", { class: "muted" }, "No query result was returned yet."),
-      answerState.reason
-        ? h("p", {}, h("strong", {}, "Final message: "), answerState.reason)
-        : null,
+      h("p", {}, h("strong", {}, "Final state: "),
+        answerState.execution_status || answerState.status || "Not provided"),
+      h("p", { class: "muted small" },
+        "SQL and module payloads are shown from redacted trace evidence above; result rows remain in the Query response."),
     ];
     runDetails.replaceChildren(...details);
+  }
+
+  function selectEventById(eventId) {
+    const index = events.findIndex((event) => event.event_id === eventId);
+    if (index >= 0) playback.select(index);
   }
 
   function lastEventIndexForNode(nodeId) {
@@ -486,4 +624,15 @@ function formatTimestamp(value) {
 
 function formatDuration(value) {
   return value === null || value === undefined ? "Not provided" : `${Math.round(value)} ms`;
+}
+
+function eventReason(event) {
+  const candidates = [
+    event.error_category,
+    event.evidence?.decision_reason,
+    event.evidence?.reason,
+    event.output?.reason,
+    event.data?.reason,
+  ];
+  return candidates.find((value) => typeof value === "string" && value.length > 0) || null;
 }

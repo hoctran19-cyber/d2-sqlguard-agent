@@ -119,6 +119,7 @@ async function ask(container, user, question) {
   );
   let started = false;
   let receivedLiveEvents = 0;
+  const receivedSequences = new Set();
   let finalized = false;
   const source = new EventSource(`/api/query/stream/${encodeURIComponent(runId)}`);
   activeEventSource = source;
@@ -153,16 +154,38 @@ async function ask(container, user, question) {
     }
     if (finalized) return;
     finalized = true;
-    if (!receivedLiveEvents && Array.isArray(answer.events)) {
-      for (const event of answer.events) visualizer.appendLiveEvent(event);
-      if (answer.events.length) {
+    const traceEvents = Array.isArray(answer.trace_events) ? answer.trace_events : [];
+    if (traceEvents.length) {
+      let recovered = 0;
+      for (const event of traceEvents) {
+        const sequence = event.stream_sequence ?? event.sequence;
+        if (sequence && receivedSequences.has(sequence)) continue;
+        visualizer.appendLiveEvent({ ...event, stream_sequence: sequence });
+        if (sequence) receivedSequences.add(sequence);
+        recovered += 1;
+      }
+      if (!receivedLiveEvents && traceEvents.length) {
         visualizer.setConnectionState(
           "playback",
           "Live stream unavailable; showing events collected by the completed run.",
         );
+      } else if (recovered) {
+        visualizer.setConnectionState(
+          "completed",
+          `${recovered} missing event(s) restored from the completed run trace.`,
+        );
+      }
+    } else if (!receivedLiveEvents && Array.isArray(answer.events)) {
+      for (const event of answer.events) visualizer.appendLiveEvent(event);
+      if (answer.events.length) {
+        visualizer.setConnectionState(
+          "playback",
+          "Live stream unavailable; showing metadata collected by the completed run.",
+        );
       }
     }
     lastAnswer = answer;
+    visualizer.setTraceAssessment(answer.trace_assessment);
     visualizer.updateAnswer(answer);
     showAnswer(container, user, answer, visualizer);
   };
@@ -175,6 +198,7 @@ async function ask(container, user, question) {
     try {
       const event = JSON.parse(message.data);
       event.stream_sequence = Number(message.lastEventId);
+      if (event.stream_sequence) receivedSequences.add(event.stream_sequence);
       receivedLiveEvents += 1;
       visualizer.appendLiveEvent(event);
     } catch {
@@ -184,8 +208,14 @@ async function ask(container, user, question) {
   source.addEventListener("stream_gap", () => {
     visualizer.setConnectionState("reconnecting", "some early events are outside the replay window.");
   });
-  source.addEventListener("stream_complete", () => {
+  source.addEventListener("stream_complete", (message) => {
     source.close();
+    try {
+      const completion = JSON.parse(message.data);
+      visualizer.setTraceAssessment(completion.trace_assessment);
+    } catch {
+      visualizer.setTraceAssessment(null);
+    }
     visualizer.setConnectionState("completed", "run event stream completed");
   });
   source.onerror = () => {
@@ -211,8 +241,10 @@ function showAnswer(container, user, answer, visualizer = null) {
     answer.omitted_fields && answer.omitted_fields.length
       ? h("p", { class: "muted" }, "Phần bị bỏ: ", answer.omitted_fields.join(", "))
       : null,
-    answer.run_id ? h("p", { class: "muted small" },
-      `Run ${answer.run_id} · planner ${answer.planner}${answer.model ? ` · model ${answer.model}` : ""} · ${Math.round(answer.duration_ms)} ms`) : null,
+    answer.run_id ? h("details", { class: "query-run-details" },
+      h("summary", { class: "muted small" }, "Run details"),
+      h("p", { class: "muted small" },
+        `Run ID: ${answer.run_id} · planner ${answer.planner}${answer.model ? ` · model ${answer.model}` : ""} · ${Math.round(answer.duration_ms)} ms`)) : null,
     answer.execution_status
       ? h("p", { class: "muted small" },
         `Backend: SQLite tổng hợp · execution: ${answer.execution_status} · ${answer.row_count} dòng${answer.truncated ? " (đã giới hạn kết quả)" : ""}`)

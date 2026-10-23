@@ -10,7 +10,7 @@ from sqlguard.agent.planning import DemoPlanner, OllamaPlanner, Plan, RepairFeed
 from sqlguard.agent.runtime import build_query_runtime_factory
 from sqlguard.mcp.tools import InProcessToolRegistry, MockQueryTool
 from sqlguard.memory.store import InMemoryMemory
-from sqlguard.observability.events import InMemoryEventSink
+from sqlguard.observability.events import InMemoryEventSink, LiveEvent
 from sqlguard.security.audit import InMemoryAuditSink
 from sqlguard.security.gate import PolicySQLGate, ReadOnlySQLGate, SecurityContext
 from sqlguard.security.policy import load_default_policy
@@ -22,6 +22,14 @@ REPAIRABLE_SQL = "SELECT no_such_column FROM orders"
 # Câu lệnh ghi: denial KHÔNG thể sửa.
 TERMINAL_SQL = "DELETE FROM orders"
 POLICY = load_default_policy()
+
+
+class RecordingLiveEventSink:
+    def __init__(self):
+        self.events: list[LiveEvent] = []
+
+    def emit(self, event):
+        self.events.append(event)
 
 
 # Planner giả: trả lần lượt các SQL đã định sẵn; ghi lại mọi feedback nhận được.
@@ -99,7 +107,7 @@ def run(ctrl):
 def test_repairable_denial_then_valid_sql_succeeds():
     gate, tool, executor = strict_stack()
     planner = ScriptedRepairPlanner(REPAIRABLE_SQL, [GOOD_SQL])
-    events = InMemoryEventSink()
+    events = RecordingLiveEventSink()
     result = run(controller(planner, RecordingGate(gate), tool, events=events))
 
     assert result.succeeded
@@ -115,6 +123,19 @@ def test_repairable_denial_then_valid_sql_succeeds():
     types = [event.event_type for event in events.events]
     assert "repair_started" in types and "repair_completed" in types
     assert {event.run_id for event in events.events} == {result.state.run_id}
+    repair_events = [event for event in events.events if event.event_type.startswith("repair_")]
+    assert all(event.attempt_id == "sql-2" for event in repair_events)
+    assert all(event.related_attempt_id == "sql-1" for event in repair_events)
+    security_attempts = [
+        (event.attempt_id, event.status)
+        for event in events.events
+        if event.event_type == "security_check_completed"
+    ]
+    assert security_attempts == [("sql-1", "denied"), ("sql-2", "allowed")]
+    assert any(
+        event.event_type == "tool_call_started" and event.attempt_id == "sql-2"
+        for event in events.events
+    )
 
 
 def test_repair_events_are_metadata_only():

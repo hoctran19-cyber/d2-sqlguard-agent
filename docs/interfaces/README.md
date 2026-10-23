@@ -47,9 +47,23 @@ restart or expired replay window cannot recover transient payloads.
 
 Live payloads such as the authenticated request's prompt, proposed SQL, and filtered output
 preview are transient and are not written by the SQLite event store or included in the ordinary
-Query response's event list. Playback controls only change presentation; they do not pause the
-agent. The SSE broker is process-local, so deployments with multiple workers need sticky routing
-or a shared event broker before they can stream runs across workers.
+Query response's metadata-only `events` list. When a caller supplies `run_id`, the completed
+Query response additively includes `trace_events` and `trace_assessment`, sourced from the same
+bounded in-process event hub; older response fields remain unchanged. Trace schema v1 uses
+`event_id = "{run_id}:{sequence}"`, and includes redacted input/output, evidence, attempt
+correlation, and lifecycle metadata. SQL literals are replaced before exposure; result rows and
+prompt contents are not copied into trace payloads.
+
+The assessment separates SQL generation, confirmed execution, oracle-based result correctness,
+gate/tool authorization, trace completeness, sensitive-data checks, table/column references, and
+field omission/user notice. Criterion statuses include `pass`, `failed`, `violation`,
+`not_checked`, `not_observed`, and `unknown`; trace completeness uses `complete`, `incomplete`,
+or `unknown`.
+SQL references and gate references do not prove actual database access. Missing sensitive-data
+checks or runtime omission/notice events remain unverified rather than being scored as safe.
+Playback controls only change presentation; they do not pause the agent. The SSE broker is
+process-local, so deployments with multiple workers need sticky routing or a shared event broker
+before they can stream runs across workers.
 
 ## Adapter requirements
 

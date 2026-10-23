@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import sqlite3
 import threading
@@ -13,6 +14,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Protocol, TypeAlias
 from uuid import uuid4
+
+logger = logging.getLogger(__name__)
 
 EVENT_DB_PATH_ENV = "SQLGUARD_EVENT_DB_PATH"
 DEFAULT_HISTORY_LIMIT = 20
@@ -94,6 +97,9 @@ class LiveEvent(Event):
     related_attempt_id: str | None = None
     retry_count: int | None = None
     data: Mapping[str, JSONValue] | None = None
+    input: Mapping[str, JSONValue] | None = None
+    output: Mapping[str, JSONValue] | None = None
+    evidence: Mapping[str, JSONValue] = field(default_factory=dict)
 
 
 @dataclass
@@ -105,6 +111,7 @@ class _LiveRun:
     ] = field(default_factory=dict)
     next_sequence: int = 1
     completed: bool = False
+    capture_complete: bool = True
 
 
 @dataclass(frozen=True)
@@ -168,7 +175,13 @@ class LiveEventHub:
             if run.completed:
                 return
             snapshot = (
-                replace(event, data=dict(event.data) if event.data is not None else None)
+                replace(
+                    event,
+                    data=dict(event.data) if event.data is not None else None,
+                    input=dict(event.input) if event.input is not None else None,
+                    output=dict(event.output) if event.output is not None else None,
+                    evidence=dict(event.evidence),
+                )
                 if isinstance(event, LiveEvent)
                 else event
             )
@@ -177,6 +190,7 @@ class LiveEventHub:
             run.events.append((sequence, snapshot))
             if len(run.events) > self._max_events_per_run:
                 del run.events[: len(run.events) - self._max_events_per_run]
+                run.capture_complete = False
             subscribers = tuple(run.subscribers.values())
             if event.event_type in TERMINAL_EVENT_TYPES:
                 run.completed = True
@@ -186,7 +200,25 @@ class LiveEventHub:
                 if event.event_type in TERMINAL_EVENT_TYPES:
                     loop.call_soon_threadsafe(queue.put_nowait, None)
             except RuntimeError:
+                with self._lock:
+                    run = self._runs.get(event.run_id)
+                    if run is not None:
+                        run.capture_complete = False
                 continue
+
+    def mark_incomplete(self, run_id: str) -> None:
+        with self._lock:
+            run = self._runs.get(run_id)
+            if run is not None:
+                run.capture_complete = False
+
+    def snapshot(self, run_id: str) -> tuple[tuple[tuple[int, Event], ...], str]:
+        with self._lock:
+            run = self._runs.get(run_id)
+            if run is None:
+                return (), "unknown"
+            state = "complete" if run.completed and run.capture_complete else "incomplete"
+            return tuple(run.events), state
 
     def complete(self, run_id: str) -> None:
         with self._lock:
@@ -227,7 +259,13 @@ class LiveEventSink:
     def emit(self, event: Event) -> None:
         try:
             self.hub.publish(event)
-        except RuntimeError:
+        except Exception:
+            try:
+                self.hub.mark_incomplete(event.run_id)
+            except Exception:
+                logger.warning(
+                    "Live trace capture failed and its incomplete status could not be recorded."
+                )
             return
 
 

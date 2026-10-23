@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Protocol
 
@@ -24,6 +25,14 @@ class ToolRegistry(Protocol):
     async def call(
         self, name: str, arguments: dict[str, Any], *, timeout_seconds: float
     ) -> Any: ...
+
+
+@dataclass(frozen=True)
+class ToolCallResult:
+    """Tool value plus typed, non-sensitive execution evidence from its implementation."""
+
+    value: Any
+    evidence: Mapping[str, str]
 
 
 @dataclass

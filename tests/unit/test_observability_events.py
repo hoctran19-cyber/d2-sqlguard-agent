@@ -231,12 +231,17 @@ def test_live_event_hub_keeps_run_order_and_replays_only_missing_events():
     asyncio.run(exercise())
 
 
-def test_live_sink_does_not_propagate_subscriber_transport_failure():
+def test_live_sink_does_not_propagate_transport_or_capture_status_failure(caplog):
     class BrokenHub:
         def publish(self, event):
             raise RuntimeError("private subscriber failure")
 
+        def mark_incomplete(self, run_id):
+            raise RuntimeError("private status failure")
+
     LiveEventSink(BrokenHub()).emit(make_event("run-broken-ui", "run_started"))
+    assert "private" not in caplog.text
+    assert "incomplete status could not be recorded" in caplog.text
 
 
 def test_live_event_hub_marks_completed_stream_and_reports_replay_gap():

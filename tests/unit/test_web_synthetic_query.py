@@ -127,15 +127,39 @@ def test_query_sse_replays_run_payload_and_missing_events_by_cursor(web_client, 
     streamed = [
         json.loads(line.removeprefix("data: "))
         for line in stream_response.text.splitlines()
-        if line.startswith("data: ") and '"event_type"' in line
+        if line.startswith("data: ") and '"event_id"' in line
     ]
     assert [event["event_type"] for event in streamed][0] == "run_started"
     assert streamed[-1]["event_type"] == "run_completed"
     assert [event["run_id"] for event in streamed] == [run_id] * len(streamed)
-    assert streamed[0]["data"]["question"] == SYNTHETIC_QUESTION
+    assert streamed[0]["data"]["question"] == {
+        "redacted": True,
+        "characters": len(SYNTHETIC_QUESTION),
+    }
     assert streamed[0]["module"] == "controller"
-    assert any(event.get("data", {}).get("sql") == ALLOWED_SQL for event in streamed)
+    sql_artifacts = [
+        (event.get("output") or {}).get("sql_artifact")
+        for event in streamed
+        if (event.get("output") or {}).get("sql_artifact")
+    ]
+    assert any(
+        "SELECT order_id, total_amount_vnd FROM orders ORDER BY order_id"
+        in artifact.get("redacted_sql", "")
+        for artifact in sql_artifacts
+    )
     assert "data" not in response.json()["events"][0]
+    trace_events = response.json()["trace_events"]
+    assert [event["sequence"] for event in trace_events] == list(range(1, len(trace_events) + 1))
+    assert all(event["event_id"] == f"{run_id}:{event['sequence']}" for event in trace_events)
+    assert (
+        response.json()["trace_assessment"]["criteria"]["trace_completeness"]["status"]
+        == "complete"
+    )
+    assert response.json()["trace_assessment"]["criteria"]["sql_execution"]["status"] == "pass"
+    assert (
+        response.json()["trace_assessment"]["criteria"]["sensitive_data_flow"]["status"]
+        == "not_checked"
+    )
     assert "SYNTHETIC-ID-001" not in response.text
 
     replay_response = web_client.get(
@@ -265,8 +289,12 @@ def test_policy_denials_never_reach_sqlite_executor(web_client, monkeypatch, web
 
     monkeypatch.setattr("sqlguard.agent.runtime.SQLiteExecutor", RecordingExecutor)
     install_ollama(monkeypatch, sql)
+    run_id = str(uuid4())
 
-    response = web_client.post("/api/query", json={"question": "Question"})
+    response = web_client.post(
+        "/api/query",
+        json={"question": "Question", "run_id": run_id},
+    )
     body = response.json()
 
     assert response.status_code == 200
@@ -286,6 +314,8 @@ def test_policy_denials_never_reach_sqlite_executor(web_client, monkeypatch, web
     )
     assert gate_event["status"] == "denied"
     assert gate_event["error_category"] == "security_rejection"
+    assert body["trace_assessment"]["criteria"]["security_policy"]["status"] == "pass"
+    assert not any(event["event_type"] == "tool_call_started" for event in body["trace_events"])
     assert not any(
         event["event_type"] == "execute_completed" and event["status"] == "completed"
         for event in body["events"]
@@ -440,6 +470,8 @@ def test_invalid_ollama_output_is_reported_without_fallback(web_client, monkeypa
     [
         ("db_unavailable", "Không thể truy cập database demo"),
         ("db_timeout", "Truy vấn vượt quá thời gian cho phép"),
+        ("db_schema_error", "Truy vấn không khớp schema database demo"),
+        ("db_syntax_error", "Database không chấp nhận cú pháp truy vấn"),
     ],
 )
 def test_query_executor_failure_has_safe_error_and_no_result(
@@ -451,8 +483,12 @@ def test_query_executor_failure_has_safe_error_and_no_result(
 
     monkeypatch.setattr("sqlguard.agent.runtime.SQLiteExecutor", FailingExecutor)
     install_ollama(monkeypatch)
+    run_id = str(uuid4())
 
-    body = web_client.post("/api/query", json={"question": SYNTHETIC_QUESTION}).json()
+    body = web_client.post(
+        "/api/query",
+        json={"question": SYNTHETIC_QUESTION, "run_id": run_id},
+    ).json()
 
     assert body["status"] == "failed"
     assert body["execution_status"] == "failed"
@@ -465,6 +501,10 @@ def test_query_executor_failure_has_safe_error_and_no_result(
     )
     assert tool_event["status"] == "failed"
     assert tool_event["error_category"] == error_category
+    execution_criterion = body["trace_assessment"]["criteria"]["sql_execution"]
+    assert execution_criterion["status"] == (
+        "failed" if error_category in {"db_schema_error", "db_syntax_error"} else "not_observed"
+    )
     assert not any(
         event["event_type"] == "execute_completed" and event["status"] == "completed"
         for event in body["events"]

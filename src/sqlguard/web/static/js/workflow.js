@@ -13,6 +13,7 @@ export const WORKFLOW_NODES = [
 
 export function eventNode(eventType) {
   if (eventType === "run_started") return "prompt";
+  if (eventType === "schema_context_ready") return "planner";
   if (eventType.startsWith("context_retrieval_")) return "memory_context";
   if (eventType === "memory_state_persisted" || eventType.startsWith("memory_write_")) {
     return "memory_state";
@@ -39,6 +40,17 @@ export function eventNode(eventType) {
 
 export function timelineEntries(events) {
   return events.map((event, index) => ({ event, index, nodeId: eventNode(event.event_type) }));
+}
+
+export function resolveEvidenceReferences(references, events) {
+  const eventsById = new Map(
+    events.filter((event) => event && typeof event.event_id === "string")
+      .map((event) => [event.event_id, event]),
+  );
+  return references.map((reference) => ({
+    reference,
+    event: typeof reference === "string" ? eventsById.get(reference) || null : null,
+  }));
 }
 
 export function summarizeWorkflow(events, answer = {}) {

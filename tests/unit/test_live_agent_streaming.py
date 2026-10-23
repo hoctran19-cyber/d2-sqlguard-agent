@@ -55,7 +55,10 @@ def test_agent_events_reach_subscriber_before_run_finishes_and_remain_run_scoped
             "llm_call_started",
         ]
         assert all(event.run_id == run_id for _, event in received)
-        assert received[0][1].data["question"] == "show demo"
+        assert received[0][1].data["question"] == {
+            "redacted": True,
+            "characters": len("show demo"),
+        }
 
         release_planner.set()
         result = await task
@@ -68,7 +71,8 @@ def test_agent_events_reach_subscriber_before_run_finishes_and_remain_run_scoped
         assert result.succeeded
         assert [sequence for sequence, _ in received] == list(range(1, len(received) + 1))
         sql_event = next(event for _, event in received if event.event_type == "plan_created")
-        assert sql_event.data["sql"] == "SELECT 1 AS value"
+        assert "SELECT" in sql_event.data["sql_artifact"]["redacted_sql"]
+        assert sql_event.output["sql_artifact"]["source"] == "controller_event"
         assert sql_event.module == "planner"
         assert sql_event.attempt_id == "sql-1"
         assert received[-1][1].event_type == "run_completed"
