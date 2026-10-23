@@ -1,0 +1,1 @@
+SELECT l.loan_id, l.account_id, l.amount, l.duration, l.payments, c.full_name FROM loan AS l JOIN disp AS d ON d.account_id = l.account_id AND d.type = 'OWNER' JOIN client AS c ON c.client_id = d.client_id WHERE l.status = 'D';
