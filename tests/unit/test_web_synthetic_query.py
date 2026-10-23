@@ -1,3 +1,4 @@
+import asyncio
 import io
 import json
 import sqlite3
@@ -10,12 +11,22 @@ pytest.importorskip("httpx")
 
 from fastapi.testclient import TestClient  # noqa: E402
 
+from sqlguard.agent.runtime import build_query_runtime  # noqa: E402
 from sqlguard.agent.sqlite_schema import SQLiteSchemaAdapter  # noqa: E402
 from sqlguard.demo_fixture import create_demo_database  # noqa: E402
-from sqlguard.security.service import ExecutorError  # noqa: E402
+from sqlguard.security.policy import load_policy  # noqa: E402
+from sqlguard.security.service import (  # noqa: E402
+    ExecutorError,
+    QueryResult,
+    SecurityToolError,
+)
 from sqlguard.security.sqlite import SQLiteExecutor  # noqa: E402
 from sqlguard.web.app import create_app  # noqa: E402
-from sqlguard.web.query_service import SYNTHETIC_QUESTION  # noqa: E402
+from sqlguard.web.query_service import (  # noqa: E402
+    SYNTHETIC_POLICY_NAME,
+    SYNTHETIC_QUESTION,
+    SYNTHETIC_ROLE,
+)
 
 ALLOWED_SQL = "SELECT order_id, total_amount_vnd FROM orders ORDER BY order_id"
 
@@ -135,7 +146,7 @@ def test_schema_and_query_use_the_same_configured_sqlite_path(web_client, monkey
         "SELECT secret FROM private_table",
     ],
 )
-def test_policy_denials_never_reach_sqlite_executor(web_client, monkeypatch, sql):
+def test_policy_denials_never_reach_sqlite_executor(web_client, monkeypatch, web_db, sql):
     executed = []
 
     class RecordingExecutor(SQLiteExecutor):
@@ -156,6 +167,56 @@ def test_policy_denials_never_reach_sqlite_executor(web_client, monkeypatch, sql
     assert body["gate"]["status"] == "BLOCK"
     assert body["result"] is None
     assert executed == []
+    assert response.status_code == 200
+    assert body["execution_status"] == "refused"
+    assert str(web_db.resolve()) not in response.text
+    assert "Traceback" not in response.text
+    assert "sqlite3." not in response.text
+    assert "SYNTHETIC-ID-001" not in response.text
+    assert "SYNTHETIC-REF-001" not in response.text
+
+
+@pytest.mark.parametrize(
+    ("sql", "violation"),
+    [
+        ("DELETE FROM orders", "write_operation"),
+        (
+            "SELECT order_id FROM orders; SELECT order_id FROM orders",
+            "multiple_statements",
+        ),
+        ("SELECT phone_number FROM customers", "column_forbidden"),
+        ("SELECT secret FROM private_table", "table_unknown"),
+    ],
+)
+def test_secure_tool_rechecks_policy_when_called_directly(web_db, sql, violation):
+    class ExecutorSpy:
+        calls = 0
+
+        async def execute(self, sql, *, role, timeout_seconds, max_rows):
+            self.calls += 1
+            return QueryResult(columns=("result",), rows=(("should not execute",),))
+
+    executor = ExecutorSpy()
+    runtime = build_query_runtime(
+        SYNTHETIC_ROLE,
+        {
+            "SQLGUARD_QUERY_SOURCE": "sqlite",
+            "SQLGUARD_SQLITE_PATH": str(web_db),
+        },
+        executor=executor,
+        policy=load_policy(SYNTHETIC_POLICY_NAME),
+        run_id="direct-secure-tool-test",
+    )
+    assert runtime is not None
+
+    with pytest.raises(SecurityToolError) as error:
+        asyncio.run(runtime.tool.call({"sql": sql}, timeout_seconds=3))
+
+    assert error.value.category == "security_rejection"
+    assert runtime.tool.last_decision is not None
+    assert not runtime.tool.last_decision.allowed
+    assert violation in runtime.tool.last_decision.violations
+    assert executor.calls == 0
 
 
 def test_synthetic_mode_does_not_change_legacy_demo_planner(legacy_db, monkeypatch):
