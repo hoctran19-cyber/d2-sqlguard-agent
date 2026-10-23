@@ -13,12 +13,19 @@ from __future__ import annotations
 import asyncio
 import json
 from pathlib import Path
+from uuid import UUID
 
-from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Query as FastAPIQuery, Request
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
-from sqlguard.observability.events import EventStoreError
+from sqlguard.observability.events import (
+    DEFAULT_HISTORY_LIMIT,
+    MAX_HISTORY_LIMIT,
+    MAX_HISTORY_OFFSET,
+    EventStoreError,
+    SQLiteEventStore,
+)
 from sqlguard.web.auth import (
     ADMIN_ROLE,
     BUSINESS_ROLES,
@@ -283,6 +290,48 @@ def create_app(db_path: Path | None = None) -> FastAPI:
             return query_sample_payload()
         except WebQueryConfigurationError:
             raise HTTPException(503, "Cấu hình Query Web không hợp lệ") from None
+
+    @app.get("/api/query/history")
+    def query_history(
+        limit: int = FastAPIQuery(DEFAULT_HISTORY_LIMIT, ge=1, le=MAX_HISTORY_LIMIT),
+        offset: int = FastAPIQuery(0, ge=0, le=MAX_HISTORY_OFFSET),
+        user: User = Depends(require_admin),
+    ):
+        """Danh sách metadata các run Query; chỉ admin được truy cập."""
+        try:
+            return SQLiteEventStore.from_env().list_runs(limit=limit, offset=offset)
+        except EventStoreError:
+            raise HTTPException(503, "Không thể đọc lịch sử Query.") from None
+
+    @app.get("/api/query/history/{run_id}")
+    def query_history_run(run_id: str, user: User = Depends(require_admin)):
+        """Chuỗi event metadata của một run; không trả SQL, câu hỏi hay kết quả."""
+        if len(run_id) > 64:
+            raise HTTPException(404, "Không tìm thấy lần chạy.")
+        try:
+            normalized_run_id = str(UUID(run_id))
+        except ValueError:
+            raise HTTPException(404, "Không tìm thấy lần chạy.") from None
+        try:
+            events = SQLiteEventStore.from_env().events_for_run(normalized_run_id)
+        except EventStoreError:
+            raise HTTPException(503, "Không thể đọc lịch sử Query.") from None
+        if not events:
+            raise HTTPException(404, "Không tìm thấy lần chạy.")
+        return {
+            "run_id": normalized_run_id,
+            "events": [
+                {
+                    "run_id": event.run_id,
+                    "event_type": event.event_type,
+                    "timestamp": event.timestamp.isoformat(),
+                    "status": event.status,
+                    "duration_ms": event.duration_ms,
+                    "error_category": event.error_category,
+                }
+                for event in events
+            ],
+        }
 
     @app.post("/api/query")
     async def query(request: Request, user: User = Depends(require_admin)):

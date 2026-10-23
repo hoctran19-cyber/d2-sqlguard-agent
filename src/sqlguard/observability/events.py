@@ -10,6 +10,16 @@ from pathlib import Path
 from typing import Protocol
 
 EVENT_DB_PATH_ENV = "SQLGUARD_EVENT_DB_PATH"
+DEFAULT_HISTORY_LIMIT = 20
+MAX_HISTORY_LIMIT = 100
+MAX_HISTORY_OFFSET = 1_000_000
+TERMINAL_EVENT_TYPES = (
+    "run_completed",
+    "run_refused",
+    "run_failed",
+    "run_timed_out",
+    "budget_exhausted",
+)
 SAFE_ERROR_CATEGORIES = frozenset(
     {
         "audit_error",
@@ -206,9 +216,106 @@ class SQLiteEventStore:
                     timestamp=datetime.fromisoformat(timestamp).astimezone(UTC),
                     status=status,
                     duration_ms=duration_ms,
-                    error_category=error_category,
+                    error_category=(
+                        safe_error_category(error_category) if error_category is not None else None
+                    ),
                 )
                 for _, event_type, timestamp, status, duration_ms, error_category in rows
             ]
         except (OSError, sqlite3.Error, OverflowError, ValueError):
             raise EventStoreError("event_store_read_failed") from None
+
+    def list_runs(
+        self, limit: int = DEFAULT_HISTORY_LIMIT, offset: int = 0
+    ) -> dict[str, object]:
+        if type(limit) is not int or not 1 <= limit <= MAX_HISTORY_LIMIT:
+            raise ValueError("limit is outside the allowed range")
+        if type(offset) is not int or not 0 <= offset <= MAX_HISTORY_OFFSET:
+            raise ValueError("offset is outside the allowed range")
+
+        terminal_types = ", ".join("?" for _ in TERMINAL_EVENT_TYPES)
+        try:
+            with closing(sqlite3.connect(self.path, timeout=5)) as connection:
+                [(total,)] = connection.execute(
+                    "SELECT COUNT(DISTINCT run_id) FROM observability_events"
+                ).fetchall()
+                rows = connection.execute(
+                    f"""
+                    WITH run_summary AS (
+                        SELECT
+                            run_id,
+                            MIN(CASE WHEN event_type = 'run_started' THEN timestamp END)
+                                AS started_at,
+                            COUNT(*) AS event_count,
+                            MAX(timestamp) AS latest_timestamp,
+                            MAX(sequence) AS latest_sequence
+                        FROM observability_events
+                        GROUP BY run_id
+                    )
+                    SELECT
+                        summary.run_id,
+                        summary.started_at,
+                        summary.event_count,
+                        (
+                            SELECT timestamp FROM observability_events AS terminal
+                            WHERE terminal.run_id = summary.run_id
+                                AND terminal.event_type IN ({terminal_types})
+                            ORDER BY terminal.sequence DESC LIMIT 1
+                        ) AS ended_at,
+                        (
+                            SELECT status FROM observability_events AS terminal
+                            WHERE terminal.run_id = summary.run_id
+                                AND terminal.event_type IN ({terminal_types})
+                            ORDER BY terminal.sequence DESC LIMIT 1
+                        ) AS status,
+                        (
+                            SELECT duration_ms FROM observability_events AS terminal
+                            WHERE terminal.run_id = summary.run_id
+                                AND terminal.event_type IN ({terminal_types})
+                            ORDER BY terminal.sequence DESC LIMIT 1
+                        ) AS duration_ms,
+                        (
+                            SELECT error_category FROM observability_events AS terminal
+                            WHERE terminal.run_id = summary.run_id
+                                AND terminal.event_type IN ({terminal_types})
+                            ORDER BY terminal.sequence DESC LIMIT 1
+                        ) AS error_category
+                    FROM run_summary AS summary
+                    ORDER BY summary.latest_timestamp DESC,
+                        summary.latest_sequence DESC, summary.run_id ASC
+                    LIMIT ? OFFSET ?
+                    """,
+                    (
+                        *TERMINAL_EVENT_TYPES,
+                        *TERMINAL_EVENT_TYPES,
+                        *TERMINAL_EVENT_TYPES,
+                        *TERMINAL_EVENT_TYPES,
+                        limit,
+                        offset,
+                    ),
+                ).fetchall()
+
+            items = []
+            for run_id, started_at, event_count, ended_at, status, duration_ms, category in rows:
+                items.append(
+                    {
+                        "run_id": run_id,
+                        "started_at": _utc_isoformat(started_at),
+                        "ended_at": _utc_isoformat(ended_at),
+                        "event_count": event_count,
+                        "status": status,
+                        "duration_ms": duration_ms,
+                        "error_category": (
+                            safe_error_category(category) if category is not None else None
+                        ),
+                    }
+                )
+            return {"items": items, "total": total, "limit": limit, "offset": offset}
+        except (OSError, sqlite3.Error, OverflowError, ValueError):
+            raise EventStoreError("event_store_read_failed") from None
+
+
+def _utc_isoformat(value: str | None) -> str | None:
+    if value is None:
+        return None
+    return datetime.fromisoformat(value).astimezone(UTC).isoformat()
