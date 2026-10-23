@@ -304,7 +304,7 @@ def test_demo_main_reports_schema_error_without_secrets(monkeypatch, capsys):
     monkeypatch.setenv("SQLGUARD_SCHEMA_SOURCE", "postgres")
     monkeypatch.setenv("SQLGUARD_ROLE", "sales")
     monkeypatch.delenv("SQLGUARD_DB_DSN_SALES", raising=False)
-    assert demo.main() == 2
+    assert demo.main([]) == 2
     captured = capsys.readouterr()
     assert "schema_error: schema_role_unconfigured" in captured.err
     assert captured.out == ""
@@ -314,6 +314,6 @@ def test_demo_main_reports_schema_error_without_secrets(monkeypatch, capsys):
 def test_demo_default_output_is_unchanged(monkeypatch, capsys):
     for name in ("SQLGUARD_PLANNER", "SQLGUARD_SCHEMA_SOURCE", "SQLGUARD_ROLE"):
         monkeypatch.delenv(name, raising=False)
-    assert demo.main() == 0
+    assert demo.main([]) == 0
     out = capsys.readouterr().out
     assert "planner: demo" in out and "schema:" not in out

@@ -4,9 +4,11 @@ Module này KHÔNG phải policy engine và không được dùng để cho phé
 chép lại ma trận đã chốt trong tài liệu (Vault, D2-Checkpoint/evaluation):
   - 2026-10-20 Financial Database Schema and Role Policy (mục 5: allowlist theo role)
   - 2026-10-22 Financial Roles Business Rationale and Access Matrix (Bảng 2 của từng role)
-Khi chưa có Security Gate thực thi policy Financial, truy vấn dữ liệu của ba role bị tắt ở
-server (xem require_admin trong app.py). Sửa ma trận ở tài liệu trước rồi mới sửa file này
-và tăng REFERENCE_VERSION.
+Ma trận này mô tả schema SQLite dẫn xuất với các cột synthetic; policy ``bird_financial_v1``
+đang dùng tên role teller/credit/risk và schema khác. Chưa có crosswalk được duyệt để ghép
+hai ma trận, vì vậy ba role nghiệp vụ vẫn bị từ chối truy vấn tại server (xem require_admin
+trong app.py). Không dùng bảng tham chiếu này hoặc tên role tương tự để cấp quyền thực thi.
+Sửa ma trận ở tài liệu trước rồi mới sửa file này và tăng REFERENCE_VERSION.
 """
 
 from __future__ import annotations

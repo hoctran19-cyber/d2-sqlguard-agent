@@ -152,7 +152,7 @@ def test_postgres_demo_config_error_exit_code_and_no_mock(monkeypatch, capsys):
     monkeypatch.setenv("SQLGUARD_ROLE", "sales")
     monkeypatch.delenv("SQLGUARD_DB_DSN_SALES", raising=False)
     monkeypatch.delenv("SQLGUARD_PLANNER", raising=False)
-    assert demo.main() == 2
+    assert demo.main([]) == 2
     captured = capsys.readouterr()
     assert "query_config_error: query_role_unconfigured" in captured.err
     assert "demo_value" not in captured.out

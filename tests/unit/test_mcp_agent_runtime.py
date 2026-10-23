@@ -142,6 +142,24 @@ def test_controller_calls_mcp_after_gate_and_closes_connection(monkeypatch, conf
     assert connection.entered and connection.closed
 
 
+def test_mcp_server_receives_configured_policy(monkeypatch, configure_mcp):
+    monkeypatch.setenv("SQLGUARD_POLICY", "d2_synthetic_v1")
+    connection = FakeConnection(FakeSession(result=mcp_result()))
+    captured = {}
+
+    def make_connection(*args, **kwargs):
+        captured.update(kwargs)
+        return connection
+
+    monkeypatch.setattr(demo, "sqlite_server_connection", make_connection)
+    report = asyncio.run(
+        demo.run_demo_report(FixedPlanner(), query_factory=make_factory(configure_mcp))
+    )
+
+    assert report.succeeded
+    assert captured["extra_env"]["SQLGUARD_POLICY"] == "d2_synthetic_v1"
+
+
 def test_rejected_sql_never_reaches_mcp_query_tool(monkeypatch, configure_mcp):
     session = FakeSession(result=mcp_result())
     connection = FakeConnection(session)

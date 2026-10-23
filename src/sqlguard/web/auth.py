@@ -26,9 +26,16 @@ class User:
 
 ADMIN_ROLE = "admin"
 EVALUATOR_ROLE = "evaluator"
-# Role nghiệp vụ Financial. Chưa có Security Gate thực thi policy Financial nên các role này
-# chưa được truy vấn dữ liệu (xem role_reference.py).
+# Keep these identifiers distinct from the teller/credit/risk roles in bird_financial_v1.
+# No reviewed policy crosswalk exists, so recognizing a login does not grant query access.
 BUSINESS_ROLES = ("operator", "analyst", "credit_officer")
+KNOWN_ROLES = frozenset({ADMIN_ROLE, EVALUATOR_ROLE, *BUSINESS_ROLES})
+
+
+def is_known_role(role: object) -> bool:
+    """Accept only the server-defined, canonical role identifiers."""
+    return isinstance(role, str) and role in KNOWN_ROLES
+
 
 ROLE_LABELS = {
     ADMIN_ROLE: "Admin — quản trị demo",
@@ -65,6 +72,8 @@ class SessionStore:
         self._sessions: dict[str, tuple[User, float]] = {}
 
     def create(self, user: User) -> str:
+        if not isinstance(user, User) or not is_known_role(user.role):
+            raise ValueError("Cannot create a session for an unknown role")
         token = secrets.token_urlsafe(32)  # Token ngẫu nhiên, khó đoán.
         self._sessions[token] = (user, time.monotonic() + SESSION_TTL_SECONDS)
         return token
@@ -76,6 +85,9 @@ class SessionStore:
         if entry is None:
             return None
         user, expires_at = entry
+        if not isinstance(user, User) or not is_known_role(user.role):
+            self._sessions.pop(token, None)
+            return None
         if time.monotonic() >= expires_at:  # Hết hạn thì xóa luôn.
             self._sessions.pop(token, None)
             return None
