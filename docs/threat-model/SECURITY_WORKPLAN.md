@@ -4,11 +4,17 @@ Owner: Nguyễn Văn Hoàng Khang. Phạm vi: threat model, SQL parsing/validati
 
 Nguồn đã đối chiếu: toàn bộ source trong repo (commit `553ea55`), Proposal D1 (`CO5151_G2_D1_Proposal`, threat model v0) và Drive D2: `D2-01-requirements`, `D2-02-product-and-implementation-scope`, `D2-05-report-demo-and-delivery`. Các note `D2-03` (dataset/LLM), `D2-04` (evaluation plan), `D2-06` (demo lab/observability) được nhắc đến nhưng **không có trong thư mục Drive**; các mục phụ thuộc vào chúng được đánh dấu *[cần D2-03/04/06]*.
 
-> **Cập nhật 21/10/2026: nhóm chốt dùng SQLite + BIRD Mini-Dev Financial, bỏ hẳn PostgreSQL.**
-> Kế hoạch code hiện hành nằm ở §12; tiến độ ở §11. Ma trận quyền và policy BIRD (chốt 19/10) ở
-> [`BIRD_FINANCIAL_MIGRATION_PLAN.md`](BIRD_FINANCIAL_MIGRATION_PLAN.md).
+> **Cập nhật 23/10/2026:** quyết định schema cũ dùng BIRD Mini-Dev Financial đã được thay thế
+> cho thiết kế business-role policy. Schema chuẩn theo quyết định hiện tại là file
+> `data/financial.sqlite` đã kiểm tra trong workspace ở Task 3; đây không phải xác nhận
+> provenance, revision, license hoặc runtime đang dùng đúng file. Xem
+> [đề xuất ma trận policy business role](../decisions/BUSINESS_ROLE_POLICY_MATRIX_PROPOSAL.md).
+> §13 dưới đây là trạng thái quyết định và kế hoạch hiện hành cho business-role policy.
+> §12 và các kế hoạch BIRD liên quan được giữ lại làm lịch sử, không phải chỉ thị triển khai.
+> Tài liệu [BIRD_FINANCIAL_MIGRATION_PLAN.md](BIRD_FINANCIAL_MIGRATION_PLAN.md) cũng là tài liệu
+> lịch sử đối với lựa chọn schema và business-role policy hiện tại.
 > Các mục §1–§10 bên dưới là kế hoạch gốc (18/10) viết cho PostgreSQL + schema synthetic, giữ lại làm lịch sử
-> thiết kế. Chỗ nào mâu thuẫn với §12 thì §12 thắng. Những phần **hết hiệu lực**: DB grants/roles PostgreSQL
+> thiết kế. Các mục này và §12 lịch sử không phải nguồn quyết định hiện hành. Những phần **hết hiệu lực**: DB grants/roles PostgreSQL
 > (§4 gạch đầu dòng 1–3), job CI `db`, credential note-writer PostgreSQL (T11), dialect `postgres` (§3.1 bước 2, 11; T7),
 > hàm cấm kiểu `pg_*` (T3), cột synthetic `identity_number`/`phone_number`/`unit_cost_vnd`/`bank_reference`/`note` (A2, §6.2).
 
@@ -264,7 +270,7 @@ Mỗi case ghi: `case_id, attack_type, payload_location, role, question, setup (
 
 | Rủi ro | Ảnh hưởng | Giảm thiểu |
 | --- | --- | --- |
-| Dataset chưa chốt (BIRD vs synthetic) | Policy matrix/canary phải làm lại | Policy đọc từ file config; viết tests theo schema synthetic trước |
+| Schema/provenance business-role | Schema thiết kế đã chốt là `data/financial.sqlite`; provenance, license, revision, row-count discrepancy, schema drift và đường dẫn runtime vẫn cần xử lý theo §13 | Preflight đúng artifact/schema, xác minh provenance và fail closed khi drift; không áp dụng grant BIRD cho business role |
 | Contract gate thay đổi đụng controller | Xung đột với Học | Giữ field `allowed` cũ; đổi trong 1 PR có cả hai review |
 | SQLGlot không hỗ trợ đủ cú pháp Postgres | False rejection/bypass | Fail-closed, execute `normalized_sql`, grants backstop |
 | Model local chậm (Qwen3-8B) | Ít runs injection | 4 case × 3 runs là tối thiểu; ghi rõ preliminary |
@@ -276,13 +282,20 @@ Mỗi case ghi: `case_id, attack_type, payload_location, role, question, setup (
 - **Kiệt**: format security case trong manifest, metric ASR/canary leak/false refusal, cost logging cho injection runs.
 - **Owner frontend/API** (chưa chốt): role binding từ session, ownership check, manual SQL dùng cùng service, Attack Lab credential.
 
-## 11. Tiến độ (cập nhật 21/10/2026: S3 xong, đã merge `feature/security-policy`)
+## 11. Tiến độ lịch sử (ảnh chụp 21/10/2026)
 
-Chi tiết và bằng chứng: [`README.md`](README.md) (threat model v1). Phân công chính thức: `SQLGuard_D2_Team_Plan.md` (K1–K5). Phần chuyển sang BIRD làm ngày 19/10 (ma trận, policy, gold SQL) nằm ở [`BIRD_FINANCIAL_MIGRATION_PLAN.md`](BIRD_FINANCIAL_MIGRATION_PLAN.md); phần DB trong file đó viết cho PostgreSQL và được §12 thay bằng SQLite.
+> Đây là ảnh chụp tiến độ trước các quyết định Task 3, không phải trạng thái phê duyệt hiện tại.
+> Các khẳng định về schema, role, license, grant và việc cần làm cho BIRD bên dưới được giữ làm
+> lịch sử; lựa chọn schema business-role hiện tại và điều kiện mở SQL nằm ở §13. Không thực hiện
+> các bước tiếp ghi ở cột cuối như kế hoạch hiện hành.
 
-| Hạng mục | Trạng thái 21/10 | Việc tiếp (§12) |
+Chi tiết và bằng chứng tại thời điểm đó: [`README.md`](README.md) (threat model v1). Phân công
+chính thức tại thời điểm đó: `SQLGuard_D2_Team_Plan.md` (K1–K5). Phần chuyển sang BIRD làm ngày
+19/10 nằm ở [`BIRD_FINANCIAL_MIGRATION_PLAN.md`](BIRD_FINANCIAL_MIGRATION_PLAN.md).
+
+| Hạng mục | Trạng thái lịch sử 21/10 | Việc tiếp theo trong kế hoạch BIRD cũ (không thực thi theo đây) |
 | --- | --- | --- |
-| K1. Permission matrix | **Đã chốt 19/10** (teller/credit/risk, §12.2), có trong `policies/bird_financial_v1.json` (merge `5e3c03f`). Chọn được policy qua `SQLGUARD_POLICY`, nhưng mặc định vẫn là `d2_synthetic_v1` | S1 |
+| K1. Permission matrix | **Được ghi là đã chốt 19/10** (`teller`/`credit`/`risk`, §12.2), có trong `policies/bird_financial_v1.json` (merge `5e3c03f`). Không phải grant được duyệt cho business role hiện tại. | S1 |
 | K2. Gate v2 | Gate cho phép `ON` là AND các khóa ngoại (bảng cầu `disp`): **27/27 câu gold không subquery được chấp nhận** với role được đọc cột, đúng 5 câu subquery bị chặn. Đo trên gold SQL **PostgreSQL**; gate vẫn parse/normalize bằng `postgres` trong khi chạy trên SQLite | S4 |
 | K3. Lớp chặn độc lập ở DB | **Xong (S3)**: authorizer SQLite theo role/cột (`d26e1a0`); chặn `USING`/`NATURAL JOIN` mà authorizer không thấy (`6884f3c`); policy bắt buộc truyền vào executor, đổi tên bản giả thành `GateOnlyExecutor` (`27c6fa5`); DB từ chối quyền thì run kết thúc `REFUSED` với `failure_reason=db_permission_denied` (`706b03f`, sửa `controller.py` của Học, cần Học review) | Ghi vào threat model (S10) |
 | K4. Injection | Bộ case v1 viết cho schema synthetic. Đã có `OllamaPlanner` + runtime `SQLGUARD_QUERY_SOURCE=sqlite` (PR #7) | S2, S7, S8 |
@@ -291,25 +304,37 @@ Chi tiết và bằng chứng: [`README.md`](README.md) (threat model v1). Phân
 | Execute boundary, prompt, schema theo role, repair | Đã ghép vào controller/runtime (PR #7); prompt và sanitizer lấy domain/role từ policy (`fdbad06`) | Giữ |
 | Attack Lab | `note_targets` (`client.note`, `trans.note`) lấy từ policy; phần ghi DB vẫn viết cho PostgreSQL | S6 |
 | Web app | Chạy trên `financial.sqlite` nhưng dùng `ReadOnlySQLGate`, không role, không authorizer, không audit | S9 |
-| Dữ liệu | `financial.sqlite` **chỉ có trên máy Khang** (không commit: nặng, đã nằm trong `.gitignore`, license CC BY-SA cần ghi nguồn). Môi trường cloud của Claude không tải được Hugging Face/GitHub | S2 |
+| Dữ liệu | Ghi nhận lịch sử rằng `financial.sqlite` chỉ có trên máy Khang. Ghi chú license CC BY-SA khi đó chưa được xác minh cho artifact hiện tại và không phải bằng chứng license; provenance/license đang chờ xác minh theo §13. | S2 |
 
 Bàn giao cho Học: [`../interfaces/SECURITY_INTEGRATION.md`](../interfaces/SECURITY_INTEGRATION.md). Thay đổi ở `src/sqlguard/agent/` làm qua PR có Học review.
 
-## 12. Kế hoạch code: SQLite + BIRD Financial (21/10 → 28/10)
+## 12. Kế hoạch lịch sử: SQLite + BIRD Financial (21/10 → 28/10)
+
+> **Lịch sử — không dùng làm quyết định schema, ma trận quyền, hoặc kế hoạch triển khai hiện
+> hành.** Nội dung dưới đây ghi lại phương án BIRD Mini-Dev Financial và role
+> `teller`/`credit`/`risk` trước Task 3. Quyết định đó đã được thay thế cho thiết kế
+> business-role policy bởi §13 và
+> [đề xuất ma trận policy business role](../decisions/BUSINESS_ROLE_POLICY_MATRIX_PROPOSAL.md).
+> Giữ các chi tiết để giải thích lịch sử dự án; không thực hiện các task, lịch hoặc grant trong
+> mục này như thể chúng đã được phê duyệt hiện tại.
 
 ### 12.1 Quyết định
 
 | # | Nội dung | Trạng thái |
 | --- | --- | --- |
-| Q1 | Database: BIRD Mini-Dev **Financial** dạng SQLite; bỏ hẳn PostgreSQL | Chốt 21/10 |
-| Q2 | Ma trận quyền §12.2 | Chốt 19/10; **lệch với ma trận 22/10 của web, xem N-e** |
-| Q3 | Role: `teller` (Giao dịch viên), `credit` (Tín dụng), `risk` (Rủi ro–Tài chính); thay `sales`/`finance`/`operations` ở runtime, web, demo, README | Chốt 19/10; **web (PR #9 repo nhóm) đã dùng `operator`/`analyst`/`credit_officer`, xem N-e** |
-| Q4 | Overlay `client.national_id` (canary, cấm cả 3 role), `client.note`, `trans.note`, chỉ áp lên **bản sao lab**; file gốc giữ nguyên để đo accuracy | Chốt 19/10 (overlay), 21/10 (bản sao) |
-| Q5 | 5 câu gold có subquery: loại khỏi D2, gate giữ fail-closed | Chốt 19/10 |
-| Q6 | Xóa policy/dataset synthetic sau khi port xong | Chốt 19/10 |
-| Q7 | Dùng `evidence` của BIRD hay không | Kiệt quyết |
+| Q1 | Database: BIRD Mini-Dev **Financial** dạng SQLite; bỏ hẳn PostgreSQL | **Lịch sử:** quyết định schema business-role đã được thay thế; §13 chọn `data/financial.sqlite` làm schema chuẩn thiết kế. PostgreSQL/BIRD còn liên quan tới các phần dự án khác cần được xác nhận riêng. |
+| Q2 | Ma trận quyền §12.2 | **Lịch sử, không phải grant hiện hành:** ma trận `bird_financial_v1` không được áp dụng cho ba business role. Grant cụ thể đang chờ phê duyệt theo §13. |
+| Q3 | Role `teller`/`credit`/`risk` thay `sales`/`finance`/`operations` | **Lịch sử, bị thay thế:** business role hiện tại là `operator`, `analyst`, `credit_officer`; không ánh xạ sang role BIRD. `admin` và `evaluator` vẫn là system role riêng. |
+| Q4 | Overlay BIRD `client.national_id`, `client.note`, `trans.note` trên bản sao lab | **Lịch sử BIRD:** không mô tả schema `data/financial.sqlite`. Trong file đã kiểm tra, `trans.note` không tồn tại; không dùng các overlay làm quyền hoặc schema hiện hành. |
+| Q5 | 5 câu gold có subquery loại khỏi D2, gate giữ fail-closed | **Lịch sử của kế hoạch BIRD/D2:** không phải phê duyệt hỗ trợ hoặc mở rộng query shape cho business role. |
+| Q6 | Xóa policy/dataset synthetic sau khi port xong | **Lịch sử/chưa xác nhận phạm vi hiện tại:** không xóa policy hoặc dataset chỉ để khớp proposal mới. |
+| Q7 | Dùng `evidence` của BIRD hay không | **Câu hỏi lịch sử cho đánh giá BIRD:** không quyết định policy business role theo schema hiện tại. |
 
-### 12.2 Ma trận quyền (đã chốt 19/10, nguồn: `policies/bird_financial_v1.json`)
+### 12.2 Ma trận quyền BIRD lịch sử (không áp dụng cho business role hiện tại)
+
+Ma trận sau phản ánh nội dung từng có trong `policies/bird_financial_v1.json`; đây **không**
+phải ma trận được duyệt cho `operator`, `analyst`, hoặc `credit_officer`. Không dùng nó làm
+grant thay thế hoặc ánh xạ ngầm.
 
 | Bảng.cột | teller | credit | risk |
 | --- | --- | --- | --- |
@@ -321,7 +346,7 @@ Bàn giao cho Học: [`../interfaces/SECURITY_INTEGRATION.md`](../interfaces/SEC
 
 Trên 27 câu gold không subquery: 13 câu cả 3 role hỏi được (nguồn task hợp lệ); teller bị cấm 14 câu, risk bị cấm 4 câu (nguồn authorization task).
 
-### 12.3 Gói việc
+### 12.3 Gói việc BIRD lịch sử (không còn là kế hoạch thực thi)
 
 | ID | Việc | File chính | Done khi |
 | --- | --- | --- | --- |
@@ -349,7 +374,7 @@ Trên 27 câu gold không subquery: 13 câu cả 3 role hỏi được (nguồn 
 | T11 | Credential note-writer PostgreSQL | Kết nối writer riêng + authorizer chỉ `UPDATE(note)` + sidecar revision (S6) |
 | Giới hạn | Attacker có quyền DB admin ngoài phạm vi | Ai đọc được file trên OS là vượt mọi lớp; ghi rõ là giả định ngoài phạm vi |
 
-### 12.5 Lịch
+### 12.5 Lịch lịch sử
 
 | Ngày | Việc | Done khi |
 | --- | --- | --- |
@@ -372,7 +397,7 @@ Trên 27 câu gold không subquery: 13 câu cả 3 role hỏi được (nguồn 
 | Đổi role sang `teller`/`credit`/`risk` đụng code Học/Kiệt | Nhắn sớm (22/10); policy vẫn chọn được qua `SQLGUARD_POLICY` trong lúc chuyển |
 | Bỏ PostgreSQL đụng nhiều file của Học/Kiệt | Tách PR theo owner; PR security merge sau khi S4 xanh |
 
-### 12.7 Lệnh Khang chạy trên máy (S2a)
+### 12.7 Lệnh kiểm tra BIRD lịch sử (không phải preflight cho schema chuẩn hiện tại)
 
 Không cần đẩy DB. Chạy và gửi lại output (chỉ là metadata, không có dữ liệu khách hàng):
 
@@ -386,7 +411,7 @@ sha256sum "$DB"                          # macOS: shasum -a 256 "$DB"
 ls <thư mục MINIDEV>                     # để biết có mini_dev_sqlite.json không
 ```
 
-### 12.8 Việc Khang cần làm và cần thảo luận với nhóm (cập nhật 22/10)
+### 12.8 Việc lịch sử cần làm/thảo luận (cập nhật 22/10; không còn là checklist hiện hành)
 
 **Khang tự làm**
 
@@ -427,3 +452,67 @@ ls <thư mục MINIDEV>                     # để biết có mini_dev_sqlite.j
 | N-c | Dòng delta trong report: D1 "đơn hàng nội bộ" → ngân hàng (BIRD Financial); PostgreSQL → SQLite, lớp DB là authorizer thay cho grants, kèm giới hạn "ai đọc được file thì vượt mọi lớp" |
 | N-d | License CC BY-SA 4.0: fixture con và 32 câu hỏi commit vào repo phải ghi nguồn và phát hành cùng license (`NOTICE`) |
 | N-e | **Hai ma trận quyền đang song song.** Policy security `bird_financial_v1` (chốt 19/10): role `teller`/`credit`/`risk`, overlay `client.national_id`, `client.note`, `trans.note`. Web (`src/sqlguard/web/role_reference.py`, PR #9 repo nhóm, theo tài liệu Vault 20/10 và 22/10): role `operator`/`analyst`/`credit_officer`, DB SQLite dẫn xuất có 6 cột synthetic (`client.id_number`, `client.full_name`, `client.address`, `account.service_note`, `order.note`, `card.placeholder`). Phải chốt **một** ma trận và **một** file DB; nguồn sự thật nên là policy JSON mà gate và authorizer dùng, web chỉ hiển thị lại từ policy. Cần trước S1, S2b, S7, S9; kiểm xem `financial.sqlite` trên máy Khang là bản gốc BIRD hay bản dẫn xuất 6 cột. Phân tích bằng chứng và các quyết định chờ duyệt: [`docs/decisions/BUSINESS_ROLE_POLICY_DESIGN.md`](../decisions/BUSINESS_ROLE_POLICY_DESIGN.md). |
+
+**N-e — trạng quo hiện tại:** nội dung trên là ghi chú lịch sử, đã được giải quyết về lựa chọn
+schema cho thiết kế business-role policy. Theo quyết định Task 3, `data/financial.sqlite` là
+schema chuẩn; `operator`, `analyst`, `credit_officer` là ba business role và không ánh xạ sang
+`teller`/`credit`/`risk`. Schema quan sát trực tiếp có 8 bảng, 61 cột; đề xuất chi tiết và các
+giới hạn bằng chứng nằm trong
+[`BUSINESS_ROLE_POLICY_MATRIX_PROPOSAL.md`](../decisions/BUSINESS_ROLE_POLICY_MATRIX_PROPOSAL.md).
+N-e **không** có nghĩa là đã phê duyệt grant: business SQL vẫn bị từ chối cho tới khi checklist
+§13 hoàn tất và có phê duyệt/review rõ ràng.
+
+## 13. Quyết định schema và điều kiện mở business SQL (cập nhật 23/10/2026)
+
+### 13.1 Schema chuẩn và giới hạn bằng chứng
+
+Theo quyết định Task 3 đã được review/chấp thuận, `data/financial.sqlite` là schema chuẩn cho
+thiết kế business-role policy. Quyết định này áp dụng cho file cụ thể đã kiểm tra trong
+workspace; **không** chứng minh provenance, license, upstream revision, hoặc rằng runtime đang
+dùng file đó.
+
+- Schema quan sát: 8 bảng (`district`, `client`, `account`, `disp`, `card`, `loan`, `order`,
+  `trans`) và 61 cột.
+- `trans.note` không tồn tại trong file đã kiểm tra.
+- Sáu cột cần xác minh nguồn gốc và mục đích: `client.id_number`, `client.full_name`,
+  `client.address`, `account.service_note`, `card.placeholder`, `order.note`.
+- Tổng số dòng quan sát trực tiếp: **1.079.680**. Con số tham khảo trước đó **1.124.676**
+  chênh **44.996**; cần đối chiếu, không coi một trong hai con số là invariant policy.
+- `PRAGMA integrity_check` trả `ok`; `PRAGMA foreign_key_check` không phát hiện vi phạm.
+  Các kết quả này chỉ áp dụng cho file cụ thể đã kiểm tra.
+- Provenance, upstream revision, license, nguồn gốc/nội dung của sáu cột trên và chênh lệch row
+  count **chưa được xác minh**. Không khẳng định đây là bản BIRD upstream nguyên bản hoặc gán
+  license khi chưa có bằng chứng.
+- Runtime web hiện có thể mặc định tìm `data/bird/financial.sqlite` (hoặc nhận đường dẫn qua
+  cấu hình), khác với `data/financial.sqlite` được chọn làm schema thiết kế. Đây là mismatch
+  đường dẫn cần xử lý ở task triển khai; không đổi code trong task tài liệu này. Lựa chọn schema
+  trong tài liệu không chứng minh runtime đang dùng đúng artifact.
+
+### 13.2 Quyết định role và trạng thái quyền
+
+Business role là `operator`, `analyst`, `credit_officer`. `admin` và `evaluator` là system role
+riêng. Không ánh xạ business role sang `teller`, `credit`, hoặc `risk`, và không tái sử dụng
+grant từ `bird_financial_v1`. Proposal Task 3 chỉ là đề xuất; **business SQL tiếp tục bị từ chối
+cho tới khi toàn bộ điều kiện dưới đây được hoàn tất, triển khai và review/phê duyệt rõ ràng**.
+
+### 13.3 Checklist bắt buộc trước khi bật business SQL
+
+Thực hiện theo thứ tự. Trạng thái trong bảng phân biệt quyết định đã chốt, bằng chứng chưa có,
+phê duyệt nghiệp vụ đang chờ, và công việc triển khai chưa làm.
+
+| # | Điều kiện | Trạng thái |
+| --- | --- | --- |
+| 1 | Xác minh nguồn/provenance, license, upstream dataset và revision của đúng database artifact; ghi nhận checksum nguồn và người chịu trách nhiệm. | **Chưa xác minh** |
+| 2 | Xác minh nguồn gốc, mục đích và phân loại độ nhạy của `client.id_number`, `client.full_name`, `client.address`, `account.service_note`, `card.placeholder`, `order.note`; đối chiếu vì sao số dòng tham khảo lệch 44.996. | **Chưa xác minh** |
+| 3 | Phê duyệt grant nghiệp vụ cụ thể theo bảng/cột và query shape cho `operator`, `analyst`, `credit_officer`; không suy quyền từ tên role hoặc proposal. | **Chờ phê duyệt** |
+| 4 | Xác định nguồn assignment đáng tin, server-side và quy tắc row-level scope cho `operator` và `credit_officer`. Khi chưa có assignment source có thể enforce, không cấp truy vấn chi tiết. | **Việc cần làm** |
+| 5 | Phê duyệt aggregate-only cho `analyst`: output grammar, dimension/measure được phép, cohort threshold, suppression, complementary suppression, `COUNT(*)`/các aggregate theo ngữ cảnh, và truy vấn lặp/differencing. Không cho analyst xuất row-level data; không mặc định aggregate là an toàn. | **Chờ phê duyệt** |
+| 6 | Chốt đường dẫn database chính thức, artifact/revision và cách xử lý schema drift. Task triển khai phải preflight xác minh đúng file, đủ schema/bảng/cột/FK và fail closed khi sai file hoặc có drift; không coi tài liệu là bằng chứng runtime dùng đúng file. | **Việc cần làm** |
+| 7 | Thiết kế policy riêng, có version, theo schema thực tế và đúng ba role; không tái sử dụng hoặc ánh xạ grant `teller`/`credit`/`risk`. | **Việc cần làm** |
+| 8 | Tích hợp policy gate, executor và query service; enforce mọi lần đọc SQL với role lấy từ session tin cậy. Bảo vệ query gốc, `COUNT` wrapper, pagination và mọi đường truy vấn; giữ nguyên SQLite read-only/authorizer và không dựa vào prompt LLM. | **Việc cần làm** |
+| 9 | Thêm security tests cho allow/deny theo role, column access, row scope, analyst aggregate-only/output suppression, schema drift/fail-closed, pagination/count wrappers và nỗ lực bypass; dùng fixture xác định, không yêu cầu database production. | **Việc cần làm** |
+| 10 | Chỉ mở business SQL sau khi các bước 1–9 hoàn tất, kiểm thử đạt, có review bảo mật và phê duyệt nghiệp vụ rõ ràng; ghi nhận quyết định mở quyền. | **Chờ phê duyệt** |
+
+Cho đến khi checklist được đáp ứng, quyền hiệu lực của cả ba business role đối với SQL dữ liệu
+vẫn là **deny**. SQLite authorizer, allowlist cột, UI filtering hay system prompt riêng lẻ
+không đủ để bảo đảm row scope hoặc aggregate-only.
