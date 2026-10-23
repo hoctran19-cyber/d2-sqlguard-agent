@@ -171,6 +171,21 @@ def test_sql_errors_and_bad_page(admin):
     assert admin.post("/api/sql", json={"sql": "SELECT 1", "page": True}).status_code == 422
 
 
+def test_sql_timeout_does_not_expose_exception_details(admin, monkeypatch):
+    def timeout(*args, **kwargs):
+        raise QueryTimeout("private SQL detail at /private/database.sqlite")
+
+    monkeypatch.setattr(FinancialDatabase, "run_page", timeout)
+
+    response = admin.post("/api/sql", json={"sql": "SELECT private_marker FROM client"})
+
+    assert response.status_code == 408
+    assert response.json() == {"detail": "Truy vấn vượt quá thời gian cho phép."}
+    assert "private SQL detail" not in response.text
+    assert "/private/database.sqlite" not in response.text
+    assert "private_marker" not in response.text
+
+
 def test_slow_query_is_interrupted(db_path):
     database = FinancialDatabase(db_path)
     with pytest.raises(QueryTimeout):

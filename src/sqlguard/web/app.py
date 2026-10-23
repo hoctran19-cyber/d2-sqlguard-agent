@@ -278,8 +278,8 @@ def create_app(db_path: Path | None = None) -> FastAPI:
             raise HTTPException(422, explain_denial(decision))
         try:
             result = await asyncio.to_thread(database_call, database.run_page, sql, page=page)
-        except QueryTimeout as error:
-            raise HTTPException(408, str(error)) from None
+        except QueryTimeout:
+            raise HTTPException(408, "Truy vấn vượt quá thời gian cho phép.") from None
         except QueryError:
             raise HTTPException(400, "Database không thể hoàn tất truy vấn.") from None
         return result.to_dict()
