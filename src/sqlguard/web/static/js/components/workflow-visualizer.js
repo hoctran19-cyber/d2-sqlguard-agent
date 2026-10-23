@@ -483,12 +483,34 @@ export function createWorkflowVisualizer(
         ...criteria.map(([name, criterion]) => {
           const evidenceIds = Array.isArray(criterion.evidence) ? criterion.evidence : [];
           const evidenceEntries = resolveEvidenceReferences(evidenceIds, events);
+          const criterionDetails = [
+            criterion.actual_access
+              ? h("p", { class: "muted small" },
+                `Actual database access: ${criterion.actual_access}.`)
+              : null,
+            criterion.omission_status
+              ? h("p", { class: "muted small" },
+                `Field omission: ${criterion.omission_status} · User notice: ${criterion.notice_status || "unknown"}.`)
+              : null,
+            Array.isArray(criterion.omitted_fields) && criterion.omitted_fields.length
+              ? h("p", { class: "muted small" },
+                `Omitted fields: ${criterion.omitted_fields.join(", ")}`)
+              : null,
+            criterion.boundaries && typeof criterion.boundaries === "object"
+              ? h("ul", { class: "workflow-criterion-boundaries" },
+                ...Object.entries(criterion.boundaries).map(([boundary, status]) =>
+                  h("li", {}, `${boundary.replaceAll("_", " ")}: ${status}`)))
+              : null,
+          ].filter(Boolean);
           return h("li", { class: "workflow-criterion" },
             h("strong", {}, name.replaceAll("_", " ")),
             h("span", { class: `workflow-criterion-status ${criterion.status || "unknown"}` },
               criterion.status || "unknown"),
             detailLevel === "detailed"
               ? h("p", {}, criterion.reason || "No assessment reason provided.")
+              : null,
+            detailLevel === "detailed" && criterionDetails.length
+              ? h("div", { class: "workflow-criterion-details" }, ...criterionDetails)
               : null,
             detailLevel === "detailed"
               ? evidenceIds.length

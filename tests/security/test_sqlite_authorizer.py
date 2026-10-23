@@ -176,6 +176,18 @@ def test_allowed_queries_still_run(db_path, role):
         assert execute(db_path, role, sql).rows, sql
 
 
+def test_authorizer_evidence_is_labeled_as_reference_authorization_not_actual_access(db_path):
+    table = readable_table("sales")
+    column = sorted(POLICY.allowed_columns("sales", table))[0]
+    result = execute(db_path, "sales", f'SELECT "{column}" FROM "{table}"')
+
+    assert result.database_access_evidence["source"] == "sqlite_authorizer"
+    assert result.database_access_evidence["status"] == "authorized_read_references"
+    assert {"table": table, "column": column} in result.database_access_evidence["table_columns"]
+    assert result.database_access_evidence["actual_access"] == "not_observed"
+    assert "do not prove" in result.database_access_evidence["limitation"]
+
+
 def test_join_on_readable_foreign_key_runs(db_path):
     for pair in sorted(POLICY.foreign_keys, key=sorted):
         (left_table, left_column), (right_table, right_column) = sorted(pair)

@@ -127,7 +127,12 @@ def test_query_sse_replays_run_payload_and_missing_events_by_cursor(web_client, 
     streamed = [
         json.loads(line.removeprefix("data: "))
         for line in stream_response.text.splitlines()
-        if line.startswith("data: ") and '"event_id"' in line
+        if (
+            line.startswith("data: ")
+            and '"event_id"' in line
+            and '"event_type"' in line
+            and '"stream_sequence"' in line
+        )
     ]
     assert [event["event_type"] for event in streamed][0] == "run_started"
     assert streamed[-1]["event_type"] == "run_completed"
@@ -160,7 +165,43 @@ def test_query_sse_replays_run_payload_and_missing_events_by_cursor(web_client, 
         response.json()["trace_assessment"]["criteria"]["sensitive_data_flow"]["status"]
         == "not_checked"
     )
+    assessment = response.json()["trace_assessment"]["criteria"]
+    gate_trace = [
+        event for event in trace_events if event["event_type"] == "security_check_completed"
+    ]
+    assert gate_trace and gate_trace[0]["evidence"].get("field_omission"), gate_trace
+    access_criterion = assessment["table_column_access"]
+    assert access_criterion["status"] == "not_observed"
+    assert access_criterion["actual_access"] == "not_observed"
+    assert access_criterion["runtime_observations"]
+    access_event_id = access_criterion["runtime_observations"][0]["event_id"]
+    access_event = next(event for event in trace_events if event["event_id"] == access_event_id)
+    assert access_event["run_id"] == run_id
+    assert access_event["attempt_id"] == access_criterion["runtime_observations"][0]["attempt_id"]
+    assert access_event["evidence"]["database_access"]["source"] == "sqlite_authorizer"
+    assert assessment["sensitive_data_flow"]["boundaries"]["tool_output"] in {"pass", "not_checked"}
+    tool_output_check = next(
+        event
+        for event in trace_events
+        if event["event_type"] == "tool_call_completed" and event["status"] == "completed"
+    )
+    assert tool_output_check["evidence"]["sensitive_data_check"]["source"] == (
+        "secure_sql_tool.canary_check"
+    )
+    final_output_check = next(
+        event for event in trace_events if event["event_type"] == "output_check_completed"
+    )
+    assert final_output_check["evidence"]["sensitive_data_check"]["source"] == (
+        "runtime.output_check"
+    )
+    assert final_output_check["evidence"]["sensitive_data_check"]["policy_id"] == (
+        "d2-synthetic-v1"
+    )
+    assert assessment["mixed_field_omission"]["status"] == "not_applicable", assessment[
+        "mixed_field_omission"
+    ]
     assert "SYNTHETIC-ID-001" not in response.text
+    assert "private_note_value" not in response.text
 
     replay_response = web_client.get(
         f"/api/query/stream/{run_id}",

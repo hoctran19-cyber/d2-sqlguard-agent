@@ -7,10 +7,18 @@ from typing import Any, Protocol
 
 
 class ToolError(Exception):
-    def __init__(self, message: str, *, category: str = "tool_error", retryable: bool = True):
+    def __init__(
+        self,
+        message: str,
+        *,
+        category: str = "tool_error",
+        retryable: bool = True,
+        evidence: Mapping[str, Any] | None = None,
+    ):
         super().__init__(message)
         self.category = category
         self.retryable = retryable
+        self.evidence = evidence
 
 
 class Tool(Protocol):
@@ -32,7 +40,7 @@ class ToolCallResult:
     """Tool value plus typed, non-sensitive execution evidence from its implementation."""
 
     value: Any
-    evidence: Mapping[str, str]
+    evidence: Mapping[str, Any]
 
 
 @dataclass

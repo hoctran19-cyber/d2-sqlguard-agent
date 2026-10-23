@@ -259,8 +259,9 @@ class _WebRecordingGate:
 
 
 class _WebRecordingRegistry:
-    def __init__(self, registry: ToolRegistry) -> None:
+    def __init__(self, registry: ToolRegistry, secure_tool) -> None:
         self._registry = registry
+        self._secure_tool = secure_tool
         self.result: dict[str, Any] | None = None
 
     async def call(self, name: str, arguments: dict[str, Any], *, timeout_seconds: float) -> Any:
@@ -268,12 +269,16 @@ class _WebRecordingRegistry:
         if name == "query" and isinstance(result, dict):
             self.result = result
             if result.get("source") == "database" and isinstance(result.get("executed_sql"), str):
+                evidence = {
+                    "database_execution": "confirmed",
+                    "source": "secure_sql_tool.executor_result",
+                }
+                trace_evidence = getattr(self._secure_tool, "last_trace_evidence", None)
+                if isinstance(trace_evidence, Mapping):
+                    evidence.update(trace_evidence)
                 return ToolCallResult(
                     value=result,
-                    evidence={
-                        "database_execution": "confirmed",
-                        "source": "secure_sql_tool.executor_result",
-                    },
+                    evidence=evidence,
                 )
         return result
 
@@ -385,8 +390,16 @@ async def _answer_synthetic_question(
         nonlocal gate, registry
         runtime = query_factory.for_run(run_id)
         gate = _WebRecordingGate(runtime.gate)
-        registry = _WebRecordingRegistry(InProcessToolRegistry([runtime.tool]))
-        return RunScope(gate, registry, output_check=runtime.output_check)
+        registry = _WebRecordingRegistry(InProcessToolRegistry([runtime.tool]), runtime.tool)
+        return RunScope(
+            gate,
+            registry,
+            output_check=runtime.output_check,
+            output_check_policy_id=runtime.policy.version if runtime.policy else None,
+            output_check_enabled=bool(
+                runtime.policy and runtime.policy.canaries_for(runtime.context.role)
+            ),
+        )
 
     controller = AgentController(
         planner=recording_planner,

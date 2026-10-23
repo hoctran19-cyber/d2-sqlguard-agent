@@ -182,7 +182,9 @@ tbody tr:last-child td { border-bottom: 0; }
 .workflow-criterion-status.pass { color: var(--ok); }
 .workflow-criterion-status.violation, .workflow-criterion-status.failed { color: var(--bad); }
 .workflow-criterion-status.not_checked, .workflow-criterion-status.unknown,
-.workflow-criterion-status.not_observed { color: var(--muted); }
+.workflow-criterion-status.not_observed, .workflow-criterion-status.not_applicable { color: var(--muted); }
+.workflow-criterion-details p { margin: 4px 0; }
+.workflow-criterion-boundaries { margin: 4px 0; padding-left: 18px; color: var(--muted); font-size: 12px; }
 .workflow-evidence-list { display: grid; gap: 6px; list-style: none; margin: 8px 0 0; padding: 0; }
 .workflow-evidence-item { min-width: 0; border: 1px solid var(--line); border-radius: 6px;
   font-size: 12px; overflow-wrap: anywhere; }

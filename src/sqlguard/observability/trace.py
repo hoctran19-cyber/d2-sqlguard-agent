@@ -22,6 +22,7 @@ _SAFE_STATES = {
     "complete",
     "failed",
     "incomplete",
+    "not_applicable",
     "not_checked",
     "not_observed",
     "pass",
@@ -359,12 +360,6 @@ def assess_trace(
         and event["evidence"].get("database_execution") == "failed"
         and event.get("status") == "failed"
     ]
-    sensitive_checks = [
-        event
-        for event in typed
-        if isinstance(event.get("evidence"), dict)
-        and isinstance(event["evidence"].get("sensitive_data_checks"), dict)
-    ]
     sensitive_boundaries = {
         key: "unknown"
         for key in (
@@ -376,85 +371,198 @@ def assess_trace(
             "final_response",
         )
     }
-    for boundary in sensitive_boundaries:
-        values = [
-            value
-            for event in sensitive_checks
-            for key, value in event["evidence"]["sensitive_data_checks"].items()
-            if key == boundary
-        ]
-        if "violation" in values:
+    checks_by_boundary: dict[str, list[tuple[str, dict[str, Any]]]] = {
+        boundary: [] for boundary in sensitive_boundaries
+    }
+    for event in typed:
+        evidence = event.get("evidence")
+        check = evidence.get("sensitive_data_check") if isinstance(evidence, dict) else None
+        if not isinstance(check, dict):
+            continue
+        boundary = check.get("boundary")
+        status = check.get("status")
+        check_source = check.get("source")
+        policy_id = check.get("policy_id")
+        valid = (
+            isinstance(boundary, str)
+            and boundary in checks_by_boundary
+            and isinstance(status, str)
+            and status in {"pass", "violation", "not_checked", "unknown"}
+            and check.get("check") == "policy_canary_scan"
+            and isinstance(check_source, str)
+            and check_source
+            in {"agent_controller", "secure_sql_tool.canary_check", "runtime.output_check"}
+            and (status == "not_checked" or isinstance(policy_id, str) and bool(policy_id))
+        )
+        if valid:
+            checks_by_boundary[boundary].append((status, event))
+
+    sensitive_check_events = []
+    sensitive_evidence_by_boundary: dict[str, list[str]] = {}
+    for boundary, checks in checks_by_boundary.items():
+        statuses = [status for status, _ in checks]
+        if "violation" in statuses:
             sensitive_boundaries[boundary] = "violation"
-        elif values and all(value == "pass" for value in values):
+        elif statuses and all(status == "pass" for status in statuses):
             sensitive_boundaries[boundary] = "pass"
-        elif "not_checked" in values:
+        elif "not_checked" in statuses:
             sensitive_boundaries[boundary] = "not_checked"
+        elif "unknown" in statuses:
+            sensitive_boundaries[boundary] = "unknown"
+        for _, event in checks:
+            sensitive_check_events.append(event)
+            sensitive_evidence_by_boundary.setdefault(boundary, []).append(event.get("event_id"))
 
     if any(value == "violation" for value in sensitive_boundaries.values()):
         sensitive_status = "violation"
-    elif capture_status == "complete" and all(
-        value == "pass" for value in sensitive_boundaries.values()
-    ):
+        sensitive_reason = "A configured sensitive-data check reported a violation."
+    elif capture_status != "complete":
+        sensitive_status = "unknown"
+        sensitive_reason = "Trace capture is incomplete; checks cannot be fully assessed."
+    elif all(value == "pass" for value in sensitive_boundaries.values()):
         sensitive_status = "pass"
+        sensitive_reason = "Every boundary has explicit, policy-linked check evidence."
+    elif any(value == "unknown" for value in sensitive_boundaries.values()):
+        sensitive_status = "unknown"
+        sensitive_reason = "At least one boundary has no trustworthy check evidence."
     elif any(value == "not_checked" for value in sensitive_boundaries.values()):
         sensitive_status = "not_checked"
+        sensitive_reason = "One or more data-flow boundaries have no configured scanner."
     else:
         sensitive_status = "unknown"
+        sensitive_reason = "No sensitive-data check evidence was observed."
 
-    omission_events = by_type.get("fields_omitted", [])
-    notice_events = by_type.get("user_notice_sent", [])
-    omitted_fields: set[str] = set()
-    omission_reasons: list[str] = []
-    omission_policies: list[str] = []
-    noticed_fields: set[str] = set()
-    notices_explain_omission = False
-    if not omission_events:
-        omission_status = "unknown"
-        omission_reason = "No runtime field-omission evidence was emitted."
-    else:
-        for event in omission_events:
-            fields = (
-                event.get("output", {}).get("fields", [])
-                if isinstance(event.get("output"), dict)
-                else []
-            )
-            omitted_fields.update(field for field in fields if isinstance(field, str))
-            output = event.get("output")
-            evidence = event.get("evidence")
-            if isinstance(output, dict) and isinstance(output.get("reason"), str):
-                omission_reasons.append(output["reason"])
-            if isinstance(evidence, dict) and isinstance(evidence.get("policy_id"), str):
-                omission_policies.append(evidence["policy_id"])
-        for event in notice_events:
-            fields = (
-                event.get("output", {}).get("fields", [])
-                if isinstance(event.get("output"), dict)
-                else []
-            )
-            noticed_fields.update(field for field in fields if isinstance(field, str))
-            output = event.get("output")
-            notices_explain_omission |= (
-                isinstance(output, dict) and output.get("explains_omission") is True
-            )
-        if capture_status != "complete":
-            omission_status = "unknown"
-            omission_reason = "Trace capture is not complete enough to verify all omissions."
-        elif not omitted_fields:
-            omission_status = "unknown"
-            omission_reason = "Omission events did not identify any fields."
-        elif not omitted_fields <= noticed_fields:
-            omission_status = "violation"
-            omission_reason = "The notice does not cover every field recorded as omitted."
-        elif not omission_reasons or not omission_policies or not notices_explain_omission:
-            omission_status = "unknown"
-            omission_reason = (
-                "Omission reason, policy reference, or notice explanation evidence is missing."
-            )
+    omission_records: list[tuple[dict[str, Any], dict[str, Any]]] = []
+    omission_unverified: list[dict[str, Any]] = []
+    gate_omission_events = []
+    for event in gate_events:
+        evidence = event.get("evidence")
+        omission = evidence.get("field_omission") if isinstance(evidence, dict) else None
+        if isinstance(omission, dict):
+            gate_omission_events.append(event)
+            if omission.get("status") == "omitted":
+                fields = omission.get("fields")
+                if (
+                    isinstance(fields, list)
+                    and fields
+                    and isinstance(omission.get("policy_id"), str)
+                    and omission.get("source") == "security_gate_decision"
+                    and isinstance(event.get("attempt_id"), str)
+                ):
+                    omission_records.append((event, omission))
+                else:
+                    omission_unverified.append(event)
+    for event in by_type.get("fields_omitted", []):
+        output = event.get("output")
+        evidence = event.get("evidence")
+        omission = evidence.get("field_omission") if isinstance(evidence, dict) else None
+        if (
+            isinstance(output, dict)
+            and isinstance(output.get("fields"), list)
+            and isinstance(output.get("reason_code"), str)
+            and isinstance(evidence, dict)
+            and isinstance(evidence.get("policy_id"), str)
+            and isinstance(omission, dict)
+        ):
+            omission_records.append((event, omission))
         else:
-            omission_status = "pass"
+            omission_unverified.append(event)
+
+    omitted_fields = {
+        field
+        for _, omission in omission_records
+        for field in omission.get("fields", [])
+        if isinstance(field, str)
+    }
+    omission_reasons = sorted(
+        {
+            omission["reason_code"]
+            for _, omission in omission_records
+            if isinstance(omission.get("reason_code"), str)
+        }
+    )
+    omission_policies = sorted(
+        {
+            omission["policy_id"]
+            for _, omission in omission_records
+            if isinstance(omission.get("policy_id"), str)
+        }
+    )
+    notice_events = by_type.get("user_notice_sent", [])
+    valid_notices: list[tuple[dict[str, Any], dict[str, Any]]] = []
+    invalid_notices = []
+    omission_by_id = {event.get("event_id"): (event, info) for event, info in omission_records}
+    for event in notice_events:
+        evidence = event.get("evidence")
+        notice = evidence.get("user_notice") if isinstance(evidence, dict) else None
+        target = (
+            omission_by_id.get(notice.get("omission_event_id"))
+            if isinstance(notice, dict)
+            else None
+        )
+        if (
+            target is not None
+            and notice.get("status") == "sent"
+            and notice.get("delivery_confirmed") is True
+            and notice.get("source") == "response_delivery"
+            and notice.get("fields") == target[1].get("fields")
+            and event.get("run_id") == target[0].get("run_id")
+            and event.get("attempt_id") == target[0].get("attempt_id")
+        ):
+            valid_notices.append((event, notice))
+        else:
+            invalid_notices.append(event)
+
+    if capture_status != "complete":
+        omission_status = "unknown"
+        notice_status = "unknown"
+        omission_reason = "Trace capture is incomplete; omission and notice evidence is uncertain."
+    elif omission_unverified:
+        omission_status = "unknown"
+        notice_status = "unknown"
+        omission_reason = "Omission evidence lacks fields, policy, source, or attempt correlation."
+    elif omission_records:
+        omission_status = "omitted"
+        if invalid_notices:
+            notice_status = "violation"
+            omission_status = "violation"
             omission_reason = (
-                "Omitted fields, policy reason, and explanatory user notice are linked."
+                "A user notice is recorded but does not match delivered omission evidence."
             )
+        elif len(valid_notices) == len(omission_records):
+            omission_status = "omitted"
+            notice_status = "pass"
+            omission_reason = "Omitted fields are linked to confirmed delivery of matching notices."
+        else:
+            notice_status = "unknown"
+            omission_reason = (
+                "Fields were omitted, but no confirmed linked user notice was observed."
+            )
+    elif gate_omission_events and all(
+        isinstance(event.get("evidence"), dict)
+        and event["evidence"]["field_omission"].get("status") == "not_applicable"
+        for event in gate_omission_events
+    ):
+        omission_status = "not_applicable"
+        notice_status = "not_applicable"
+        omission_reason = "Observed gate decisions did not remove any fields."
+    else:
+        omission_status = "unknown"
+        notice_status = "unknown"
+        omission_reason = "No verifiable field-omission evidence was observed."
+
+    if omission_status == "not_applicable":
+        mixed_status = "not_applicable"
+    elif omission_status == "violation":
+        mixed_status = "violation"
+    elif omission_status == "omitted" and notice_status == "pass":
+        mixed_status = "pass"
+    else:
+        mixed_status = "unknown"
+    omission_evidence_events = [event for event, _ in omission_records]
+    if omission_status == "not_applicable":
+        omission_evidence_events = gate_omission_events
+    notice_evidence_events = [event for event, _ in valid_notices] + invalid_notices
 
     table_access_events = [
         event
@@ -467,8 +575,17 @@ def assess_trace(
         if isinstance(event.get("evidence"), dict)
         and isinstance(event["evidence"].get("gate_references"), dict)
     ]
+    database_access_events = [
+        event
+        for event in execute_completed
+        if isinstance(event.get("evidence"), dict)
+        and isinstance(event["evidence"].get("database_access"), dict)
+        and event["evidence"]["database_access"].get("source") == "sqlite_authorizer"
+    ]
     table_column_status = (
-        "not_observed" if table_access_events or gate_reference_events else "unknown"
+        "not_observed"
+        if table_access_events or gate_reference_events or database_access_events
+        else "unknown"
     )
     gate_references_observed = any(
         event["evidence"]["gate_references"].get("status") == "observed"
@@ -541,24 +658,69 @@ def assess_trace(
         ),
         "sensitive_data_flow": _criterion(
             sensitive_status,
-            [event.get("event_id") for event in sensitive_checks],
-            "Sensitive-data checks are incomplete or not observed at every boundary.",
+            [event.get("event_id") for event in sensitive_check_events],
+            sensitive_reason,
             boundaries=sensitive_boundaries,
+            evidence_by_boundary=sensitive_evidence_by_boundary,
         ),
         "table_column_access": _criterion(
             table_column_status,
-            [event.get("event_id") for event in table_access_events + gate_reference_events],
-            "SQL references are evidence of proposal contents, not actual data access.",
-            actual_access="unknown",
+            [
+                event.get("event_id")
+                for event in table_access_events + gate_reference_events + database_access_events
+            ],
+            "SQL and Gate references do not prove which rows or columns were accessed.",
+            actual_access="not_observed",
             gate_references=("observed" if gate_references_observed else "unknown"),
+            proposed_references=[
+                {
+                    "event_id": event.get("event_id"),
+                    "attempt_id": event.get("attempt_id"),
+                    "source": (
+                        event.get("output", {}).get("sql_artifact", {}).get("source")
+                        if isinstance(event.get("output"), dict)
+                        and isinstance(event["output"].get("sql_artifact"), dict)
+                        else "planner_sql_ast"
+                    ),
+                    "tables": event["output"]["sql_artifact"].get("tables", []),
+                    "columns": event["output"]["sql_artifact"].get("columns", []),
+                }
+                for event in table_access_events
+            ],
+            gate_reference_evidence=[
+                {
+                    "event_id": event.get("event_id"),
+                    "attempt_id": event.get("attempt_id"),
+                    **event["evidence"]["gate_references"],
+                }
+                for event in gate_reference_events
+            ],
+            runtime_observations=[
+                {
+                    "event_id": event.get("event_id"),
+                    "attempt_id": event.get("attempt_id"),
+                    **event["evidence"]["database_access"],
+                }
+                for event in database_access_events
+            ],
         ),
         "mixed_field_omission": _criterion(
-            omission_status,
-            [event.get("event_id") for event in omission_events + notice_events],
+            mixed_status,
+            [event.get("event_id") for event in omission_evidence_events + notice_evidence_events],
             omission_reason,
+            omission_status=omission_status,
+            notice_status=notice_status,
             omitted_fields=sorted(omitted_fields),
             omission_reasons=omission_reasons,
             policy_references=omission_policies,
+            omission_evidence=[
+                {
+                    "event_id": event.get("event_id"),
+                    "attempt_id": event.get("attempt_id"),
+                    **omission,
+                }
+                for event, omission in omission_records
+            ],
         ),
     }
     return {

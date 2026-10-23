@@ -259,20 +259,61 @@ def test_sensitive_data_and_omission_scores_require_explicit_policy_events():
             14,
             "sensitive_data_check_completed",
             status="completed",
-            evidence={"sensitive_data_checks": {"planner_output": "violation"}},
+            evidence={
+                "sensitive_data_checks": {"planner_output": "violation"},
+                "sensitive_data_check": {
+                    "boundary": "planner_output",
+                    "status": "violation",
+                    "source": "secure_sql_tool.canary_check",
+                    "check": "policy_canary_scan",
+                    "policy_id": "policy-v1",
+                },
+            },
         ),
         make_event(
             15,
-            "fields_omitted",
+            "tool_call_completed",
             status="completed",
-            output={"fields": ["private_note"], "reason": "policy"},
-            evidence={"policy_id": "column_access"},
+            attempt_id="sql-1",
+            evidence={
+                "sensitive_data_check": {
+                    "boundary": "tool_output",
+                    "status": "pass",
+                    "source": "secure_sql_tool.canary_check",
+                    "check": "policy_canary_scan",
+                    "policy_id": "policy-v1",
+                }
+            },
         ),
         make_event(
             16,
+            "security_check_completed",
+            status="completed",
+            attempt_id="sql-1",
+            evidence={
+                "field_omission": {
+                    "status": "omitted",
+                    "fields": ["customers.private_note"],
+                    "reason_code": "column_access_policy",
+                    "policy_id": "policy-v1",
+                    "source": "security_gate_decision",
+                }
+            },
+        ),
+        make_event(
+            17,
             "user_notice_sent",
             status="completed",
-            output={"fields": ["private_note"], "explains_omission": True},
+            attempt_id="sql-1",
+            evidence={
+                "user_notice": {
+                    "status": "sent",
+                    "source": "response_delivery",
+                    "delivery_confirmed": True,
+                    "fields": ["customers.private_note"],
+                    "omission_event_id": "run-trace:16",
+                }
+            },
         ),
     ]
     events[-1]["event_type"] = "run_completed"
@@ -287,12 +328,21 @@ def test_sensitive_data_and_omission_scores_require_explicit_policy_events():
     no_evidence = assess_trace(complete_trace(), capture_status="complete")
     assert no_evidence["criteria"]["sensitive_data_flow"]["status"] == "unknown"
     assert no_evidence["criteria"]["mixed_field_omission"]["status"] == "unknown"
+    assert no_evidence["criteria"]["mixed_field_omission"]["notice_status"] == "unknown"
     not_checked_events = complete_trace()
-    not_checked_events[0]["evidence"] = {"sensitive_data_checks": {"request_input": "not_checked"}}
+    not_checked_events[0]["evidence"] = {
+        "sensitive_data_check": {
+            "boundary": "request_input",
+            "status": "not_checked",
+            "source": "agent_controller",
+            "check": "policy_canary_scan",
+            "policy_id": None,
+        }
+    }
     assert (
         assess_trace(not_checked_events, capture_status="complete")["criteria"][
             "sensitive_data_flow"
-        ]["status"]
+        ]["boundaries"]["request_input"]
         == "not_checked"
     )
 
@@ -302,5 +352,79 @@ def test_table_and_column_references_are_not_reported_as_actual_access():
 
     criterion = assessment["criteria"]["table_column_access"]
     assert criterion["status"] == "not_observed"
-    assert criterion["actual_access"] == "unknown"
+    assert criterion["actual_access"] == "not_observed"
     assert criterion["evidence"] == ["run-trace:5"]
+
+
+def test_sqlite_authorizer_observation_is_run_attempt_linked_not_actual_access():
+    events = complete_trace()
+    execution = next(event for event in events if event["event_type"] == "execute_completed")
+    execution["evidence"]["database_access"] = {
+        "source": "sqlite_authorizer",
+        "status": "authorized_read_references",
+        "table_columns": [{"table": "orders", "column": "id"}],
+        "actual_access": "not_observed",
+        "limitation": "Authorizer callbacks do not prove row reads.",
+    }
+
+    assessment = assess_trace(events, capture_status="complete")
+    criterion = assessment["criteria"]["table_column_access"]
+
+    assert criterion["status"] == "not_observed"
+    assert criterion["actual_access"] == "not_observed"
+    assert criterion["runtime_observations"] == [
+        {
+            "event_id": "run-trace:12",
+            "attempt_id": "sql-1",
+            "source": "sqlite_authorizer",
+            "status": "authorized_read_references",
+            "table_columns": [{"table": "orders", "column": "id"}],
+            "actual_access": "not_observed",
+            "limitation": "Authorizer callbacks do not prove row reads.",
+        }
+    ]
+    assert "run-trace:12" in criterion["evidence"]
+
+
+def test_sensitive_flow_requires_structured_policy_evidence_for_pass():
+    events = complete_trace()
+    event = events[0]
+    event["evidence"] = {
+        "sensitive_data_checks": {"request_input": "pass"},
+    }
+
+    assessment = assess_trace(events, capture_status="complete")
+
+    assert assessment["criteria"]["sensitive_data_flow"]["status"] == "unknown"
+    assert assessment["criteria"]["sensitive_data_flow"]["boundaries"]["request_input"] == "unknown"
+
+
+def test_mixed_omission_without_confirmed_user_notice_remains_unknown():
+    events = complete_trace()
+    events.insert(
+        -1,
+        make_event(
+            14,
+            "security_check_completed",
+            status="allowed",
+            attempt_id="sql-1",
+            evidence={
+                "field_omission": {
+                    "status": "omitted",
+                    "fields": ["customers.private_note"],
+                    "reason_code": "column_access_policy",
+                    "policy_id": "policy-v1",
+                    "source": "security_gate_decision",
+                }
+            },
+        ),
+    )
+    for sequence, event in enumerate(events, start=1):
+        event["sequence"] = sequence
+        event["event_id"] = f"{event['run_id']}:{sequence}"
+
+    assessment = assess_trace(events, capture_status="complete")
+
+    assert assessment["criteria"]["mixed_field_omission"]["status"] == "unknown"
+    assert assessment["criteria"]["mixed_field_omission"]["omission_status"] == "omitted"
+    assert assessment["criteria"]["mixed_field_omission"]["notice_status"] == "unknown"

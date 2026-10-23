@@ -33,6 +33,8 @@ class RunScope:
     # Kiểm tra câu trả lời cuối; trả True nếu phải giữ lại vì rò rỉ. Do runtime tin cậy dựng sẵn
     # (role lấy từ SecurityContext), không bao giờ nhận role từ câu hỏi hay đầu ra của model.
     output_check: Callable[[str], bool] | None = None
+    output_check_policy_id: str | None = None
+    output_check_enabled: bool = False
 
 
 # Lỗi DB duy nhất được cho planner sửa (một lần/run); lỗi quyền, timeout, read-only, canary
@@ -71,11 +73,91 @@ def _safe_violation_codes(decision: SecurityDecision) -> list[str]:
 def _safe_identifiers(values: Any) -> list[str] | None:
     if not isinstance(values, tuple | list):
         return None
-    return [
-        value
-        for value in values
-        if isinstance(value, str) and len(value) <= 128 and value.isidentifier()
-    ]
+    safe_values = []
+    for value in values:
+        if not isinstance(value, str) or len(value) > 128:
+            continue
+        parts = value.split(".")
+        if len(parts) <= 2 and all(part.isidentifier() for part in parts):
+            safe_values.append(value)
+    return safe_values
+
+
+def _safe_database_access_evidence(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, dict) or value.get("source") != "sqlite_authorizer":
+        return None
+    reads = value.get("table_columns")
+    if not isinstance(reads, list):
+        return None
+    references = []
+    for item in reads:
+        if not isinstance(item, dict):
+            continue
+        table = item.get("table")
+        column = item.get("column")
+        if (
+            isinstance(table, str)
+            and table.isidentifier()
+            and (column is None or isinstance(column, str) and column.isidentifier())
+        ):
+            references.append({"table": table, "column": column})
+    return {
+        "source": "sqlite_authorizer",
+        "status": "authorized_read_references",
+        "table_columns": references,
+        "actual_access": "not_observed",
+        "limitation": (
+            "SQLite authorizer callbacks occur while statements are prepared; "
+            "they do not prove which rows or columns were read."
+        ),
+    }
+
+
+def _safe_sensitive_check(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+    boundaries = {
+        "request_input",
+        "planner_input",
+        "planner_output",
+        "tool_arguments",
+        "tool_output",
+        "final_response",
+    }
+    statuses = {"pass", "violation", "not_checked", "unknown"}
+    sources = {"agent_controller", "secure_sql_tool.canary_check", "runtime.output_check"}
+    if (
+        not isinstance(value.get("boundary"), str)
+        or value["boundary"] not in boundaries
+        or not isinstance(value.get("status"), str)
+        or value["status"] not in statuses
+        or not isinstance(value.get("source"), str)
+        or value["source"] not in sources
+        or value.get("check") != "policy_canary_scan"
+    ):
+        return None
+    policy_id = value.get("policy_id")
+    if policy_id is not None and (not isinstance(policy_id, str) or len(policy_id) > 128):
+        return None
+    reasons = {
+        "boundary_not_scanned",
+        "check_completed",
+        "check_violation",
+        "no_canaries_configured",
+        "check_failed",
+    }
+    reason = value.get("reason")
+    if reason not in reasons:
+        reason = "check_failed" if value["status"] == "unknown" else "boundary_not_scanned"
+    return {
+        "boundary": value["boundary"],
+        "status": value["status"],
+        "source": value["source"],
+        "check": value["check"],
+        "policy_id": policy_id,
+        "reason": reason,
+        "redaction": "matched_values_not_recorded",
+    }
 
 
 def _sanitize_trace_data(data: dict[str, Any]) -> dict[str, Any]:
@@ -116,6 +198,10 @@ def _sanitize_trace_data(data: dict[str, Any]) -> dict[str, Any]:
             "gate_references_status",
             "database_execution",
             "execution_source",
+            "policy_id",
+            "check_enabled",
+            "value_handling",
+            "reason_code",
         } and isinstance(value, str | bool | int | float):
             safe[key] = value if not isinstance(value, str) else value[:128]
         elif key in {
@@ -126,6 +212,14 @@ def _sanitize_trace_data(data: dict[str, Any]) -> dict[str, Any]:
             "notices",
         }:
             safe[key] = _safe_identifiers(value) or []
+        elif key == "database_access_evidence":
+            access = _safe_database_access_evidence(value)
+            if access is not None:
+                safe[key] = access
+        elif key == "sensitive_data_check":
+            check = _safe_sensitive_check(value)
+            if check is not None:
+                safe[key] = check
     return safe
 
 
@@ -165,6 +259,15 @@ def _trace_evidence(
         }
         evidence["omitted_columns"] = data.get("removed_columns", [])
         evidence["notices"] = data.get("notices", [])
+        fields = data.get("removed_columns", [])
+        evidence["field_omission"] = {
+            "status": "omitted" if fields else "not_applicable",
+            "fields": fields,
+            "reason_code": "column_access_policy" if fields else None,
+            "policy_id": data.get("policy_version"),
+            "source": "security_gate_decision",
+            "value_handling": "not_collected",
+        }
     if event_type == "tool_call_started":
         evidence["tool_invocation"] = "started"
     if event_type == "execute_started":
@@ -190,10 +293,87 @@ def _trace_evidence(
         evidence["database_execution"] = (
             execution if execution in {"confirmed", "failed"} else "unknown"
         )
-        evidence["database_access"] = "unknown"
+        evidence["database_access"] = (
+            data["database_access_evidence"]
+            if isinstance(data.get("database_access_evidence"), dict)
+            else {"status": "not_observed", "actual_access": "not_observed"}
+        )
         evidence.setdefault(
             "execution_source", data.get("execution_source", "tool_registry_result")
         )
+    if event_type == "output_check_completed":
+        policy_id = data.get("policy_id")
+        enabled = data.get("check_enabled") is True
+        if data.get("check") == "policy_canary_scan" and isinstance(policy_id, str):
+            check_status = (
+                "violation"
+                if status == "blocked"
+                else "pass"
+                if status == "completed" and enabled
+                else "not_checked"
+                if status == "completed"
+                else "unknown"
+            )
+            check = _safe_sensitive_check(
+                {
+                    "boundary": "final_response",
+                    "status": check_status,
+                    "source": "runtime.output_check",
+                    "check": "policy_canary_scan",
+                    "policy_id": policy_id,
+                    "reason": (
+                        "check_violation"
+                        if check_status == "violation"
+                        else "check_completed"
+                        if check_status == "pass"
+                        else "no_canaries_configured"
+                        if check_status == "not_checked"
+                        else "check_failed"
+                    ),
+                }
+            )
+            if check is not None:
+                evidence["sensitive_data_check"] = check
+                evidence["sensitive_data_checks"] = {"final_response": check_status}
+        else:
+            evidence["sensitive_data_check"] = {
+                "boundary": "final_response",
+                "status": "not_checked",
+                "source": "agent_controller",
+                "check": "policy_canary_scan",
+                "policy_id": None,
+                "reason": "boundary_not_scanned",
+                "redaction": "matched_values_not_recorded",
+            }
+            evidence["sensitive_data_checks"] = {"final_response": "not_checked"}
+    sensitive_check = data.get("sensitive_data_check")
+    if isinstance(sensitive_check, dict):
+        evidence["sensitive_data_check"] = sensitive_check
+        evidence["sensitive_data_checks"] = {sensitive_check["boundary"]: sensitive_check["status"]}
+    elif event_type in {
+        "run_started",
+        "llm_call_started",
+        "plan_created",
+        "tool_call_started",
+        "tool_call_completed",
+    }:
+        boundary = {
+            "run_started": "request_input",
+            "llm_call_started": "planner_input",
+            "plan_created": "planner_output",
+            "tool_call_started": "tool_arguments",
+            "tool_call_completed": "tool_output",
+        }[event_type]
+        evidence["sensitive_data_check"] = {
+            "boundary": boundary,
+            "status": "not_checked",
+            "source": "agent_controller",
+            "check": "policy_canary_scan",
+            "policy_id": None,
+            "reason": "boundary_not_scanned",
+            "redaction": "matched_values_not_recorded",
+        }
+        evidence["sensitive_data_checks"] = {boundary: "not_checked"}
     if event_type == "fields_omitted":
         evidence["omission_source"] = "runtime_policy"
     return evidence
@@ -440,6 +620,7 @@ class AgentController:
                 duration_ms=(perf_counter() - gate_started) * 1000,
                 data={
                     "decision": "allow" if allowed else "deny",
+                    "kind": str(getattr(decision, "kind", "")),
                     "violations": _safe_violation_codes(decision),
                     "sql": _bounded_text(sql),
                     "policy_version": getattr(decision, "policy_version", None),
@@ -489,6 +670,7 @@ class AgentController:
             # Chỉ được gán khi gate ở ranh giới tool (SecureSqlTool) từ chối; mặc định là None
             # để các lỗi tool khác (timeout, db_*, canary_leak...) không đi vào đường repair.
             tool_denial: SecurityDecision | None = None
+            tool_error_data: dict[str, Any] = {}
             try:
                 timeout = min(
                     self._budget.query_timeout_seconds,
@@ -545,9 +727,13 @@ class AgentController:
                 retryable = error.retryable
                 # Gate ở ranh giới tool từ chối: vẫn phải qua kiểm tra repairable và budget.
                 tool_denial = error.decision if isinstance(error, SecurityToolError) else None
+                tool_error_data = (
+                    dict(error.evidence) if isinstance(error.evidence, Mapping) else {}
+                )
             except Exception:
                 category = "tool_exception"
                 retryable = False
+                tool_error_data = {}
             else:
                 execution_evidence = {}
                 if isinstance(output, ToolCallResult):
@@ -564,12 +750,28 @@ class AgentController:
                             "database_execution": "confirmed",
                             "execution_source": output.evidence["source"],
                         }
+                        if output.evidence["source"] == "secure_sql_tool.executor_result":
+                            access = _safe_database_access_evidence(
+                                output.evidence.get("database_access_evidence")
+                            )
+                            sensitive_check = _safe_sensitive_check(
+                                output.evidence.get("sensitive_data_check")
+                            )
+                            if access is not None:
+                                execution_evidence["database_access_evidence"] = access
+                            if sensitive_check is not None:
+                                execution_evidence["sensitive_data_check"] = sensitive_check
                     output = output.value
                 self._emit(
                     state,
                     "tool_call_completed",
                     status="completed",
                     duration_ms=(perf_counter() - tool_started) * 1000,
+                    data={
+                        key: value
+                        for key, value in execution_evidence.items()
+                        if key == "sensitive_data_check"
+                    },
                 )
                 self._emit(
                     state,
@@ -633,6 +835,7 @@ class AgentController:
                 status="failed",
                 error_category=category,
                 duration_ms=(perf_counter() - tool_started) * 1000,
+                data=tool_error_data,
             )
             self._emit(
                 state,
@@ -640,6 +843,7 @@ class AgentController:
                 status="failed",
                 error_category=category,
                 duration_ms=(perf_counter() - tool_started) * 1000,
+                data=tool_error_data,
             )
             # Gate của tool từ chối nhưng gate của controller đã cho qua (gate yếu hơn): vẫn phải
             # qua cùng kiểm tra repairable + ngân sách, không được lách bằng đường retry thường.
@@ -692,7 +896,11 @@ class AgentController:
                 status="failed",
                 error_category="output_check_error",
                 duration_ms=(perf_counter() - check_started) * 1000,
-                data={"check": "configured_output_check"},
+                data={
+                    "check": "policy_canary_scan",
+                    "policy_id": scope.output_check_policy_id,
+                    "check_enabled": scope.output_check_enabled,
+                },
             )
             raise ToolError("Output check failed", category="output_check_error") from None
         if leaked:
@@ -703,7 +911,11 @@ class AgentController:
                 status="blocked",
                 error_category="canary_leak",
                 duration_ms=(perf_counter() - check_started) * 1000,
-                data={"check": "configured_output_check"},
+                data={
+                    "check": "policy_canary_scan",
+                    "policy_id": scope.output_check_policy_id,
+                    "check_enabled": scope.output_check_enabled,
+                },
             )
             raise ToolError("Result withheld by output check", category="canary_leak")
         # Sạch: ghi nhận đã kiểm tra xong để event/audit phản ánh đúng diễn biến của run.
@@ -712,7 +924,11 @@ class AgentController:
             "output_check_completed",
             status="completed",
             duration_ms=(perf_counter() - check_started) * 1000,
-            data={"check": "configured_output_check"},
+            data={
+                "check": "policy_canary_scan",
+                "policy_id": scope.output_check_policy_id,
+                "check_enabled": scope.output_check_enabled,
+            },
         )
 
     async def _call_planner(
