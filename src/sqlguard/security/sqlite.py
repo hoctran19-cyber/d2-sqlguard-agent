@@ -106,7 +106,12 @@ def has_unchecked_join(sql: str) -> bool:
     return False
 
 
-def build_authorizer(policy: RolePolicy, role: str) -> Authorizer:
+def build_authorizer(
+    policy: RolePolicy,
+    role: str,
+    *,
+    authorized_reads: set[tuple[str, str | None]] | None = None,
+) -> Authorizer:
     """Authorizer callback for one trusted role; anything not explicitly allowed is denied."""
     readable = {table: policy.allowed_columns(role, table) for table in policy.allowed_tables(role)}
     functions = _STRUCTURAL_FUNCTIONS | {
@@ -123,11 +128,15 @@ def build_authorizer(policy: RolePolicy, role: str) -> Authorizer:
         if action == sqlite3.SQLITE_SELECT:
             return sqlite3.SQLITE_OK
         if action == sqlite3.SQLITE_READ:
-            columns = readable.get((arg1 or "").casefold())
+            table = (arg1 or "").casefold()
+            column = (arg2 or "").casefold() or None
+            columns = readable.get(table)
             if columns is not None:
                 # A table used without reading a column (e.g. COUNT(*)) is reported with an
                 # empty column and no database name; it only needs the table to be readable.
-                if not arg2 or (database == "main" and arg2.casefold() in columns):
+                if not column or (database == "main" and column in columns):
+                    if authorized_reads is not None and database == "main":
+                        authorized_reads.add((table, column))
                     return sqlite3.SQLITE_OK
             return sqlite3.SQLITE_DENY
         if action == sqlite3.SQLITE_FUNCTION and (arg2 or "").casefold() in functions:
@@ -155,11 +164,19 @@ class SQLiteExecutor:
             raise ExecutorError("db_role_unconfigured")
         if has_unchecked_join(sql):
             raise ExecutorError("db_permission_denied")
-        authorizer = build_authorizer(self._policy, role)
-        return await asyncio.to_thread(self._run, sql, authorizer, timeout_seconds, max_rows)
+        authorized_reads: set[tuple[str, str | None]] = set()
+        authorizer = build_authorizer(self._policy, role, authorized_reads=authorized_reads)
+        return await asyncio.to_thread(
+            self._run, sql, authorizer, authorized_reads, timeout_seconds, max_rows
+        )
 
     def _run(
-        self, sql: str, authorizer: Authorizer, timeout_seconds: float, max_rows: int
+        self,
+        sql: str,
+        authorizer: Authorizer,
+        authorized_reads: set[tuple[str, str | None]],
+        timeout_seconds: float,
+        max_rows: int,
     ) -> QueryResult:
         deadline = time.monotonic() + timeout_seconds
         try:
@@ -198,4 +215,22 @@ class SQLiteExecutor:
             raise ExecutorError("db_error") from None
         if time.monotonic() >= deadline:
             raise ExecutorError("db_timeout")
-        return QueryResult(columns=columns, rows=rows)
+        return QueryResult(
+            columns=columns,
+            rows=rows,
+            database_access_evidence={
+                "source": "sqlite_authorizer",
+                "status": "authorized_read_references",
+                "table_columns": [
+                    {"table": table, "column": column}
+                    for table, column in sorted(
+                        authorized_reads, key=lambda value: (value[0], value[1] or "")
+                    )
+                ],
+                "actual_access": "not_observed",
+                "limitation": (
+                    "SQLite authorizer callbacks occur while statements are prepared; "
+                    "they do not prove which rows or columns were read."
+                ),
+            },
+        )

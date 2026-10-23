@@ -3,7 +3,7 @@
 import json
 from pathlib import Path
 
-DEFAULT_MANIFEST = Path(__file__).parent / "datasets" / "sales-bootstrap.json"
+DEFAULT_MANIFEST = Path(__file__).parent / "datasets" / "sales-bootstrap-v1.json"
 SCENARIOS = {"list_south", "deny_identity", "partial_phone", "read_note", "retry_payment"}
 CATEGORIES = {"legitimate", "authorization", "mixed", "injection", "failure"}
 

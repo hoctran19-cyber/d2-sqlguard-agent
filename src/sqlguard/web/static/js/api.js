@@ -37,5 +37,14 @@ export const api = {
   // Câu hỏi mẫu của planner demo.
   samples: () => request("GET", "/api/query/samples"),
   // Gửi câu hỏi ngôn ngữ tự nhiên cho agent.
-  ask: (question) => request("POST", "/api/query", { question }),
+  ask: (question, runId) => request("POST", "/api/query", {
+    question,
+    ...(runId ? { run_id: runId } : {}),
+  }),
+  queryHistory: (limit = 20, offset = 0) => {
+    const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+    return request("GET", `/api/query/history?${params}`);
+  },
+  queryRunEvents: (runId) =>
+    request("GET", `/api/query/history/${encodeURIComponent(runId)}`),
 };

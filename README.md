@@ -196,6 +196,9 @@ export SQLGUARD_WEB_DEMO_SQLITE_PATH=/tmp/sqlguard-web-demo.sqlite
 export SQLGUARD_PLANNER=ollama
 export SQLGUARD_OLLAMA_MODEL=qwen3:8b
 export SQLGUARD_OLLAMA_TIMEOUT_SECONDS=60
+# Optional override; defaults to $XDG_STATE_HOME/sqlguard/events.sqlite3
+# or ~/.local/state/sqlguard/events.sqlite3
+# export SQLGUARD_EVENT_DB_PATH=/path/to/sqlguard/events.sqlite3
 python -m pip install -e ".[dev,web]"
 python -m sqlguard.web
 ```
@@ -235,7 +238,7 @@ Add approved benchmark inputs and expected behaviors under `evaluation/datasets/
 
 `ExecutionBudget` centralizes defaults: up to 3 tool retries, 6 planner calls, 8 tool calls, 3 seconds per query, and 60 seconds per run. `llm_call_count` and `max_llm_calls` retain their API names for compatibility, but currently count calls to the planner; the deterministic demo does not call an LLM. SQL validation/execution attempts are bounded by `max_sql_attempts`, which defaults to the configured tool-call limit. These values are defaults from the project brief, **not confirmed D2 requirements**; no D2 documents were present in the workspace. Tune them through `ExecutionBudget` when constructing the controller. `.env.example` contains illustrative names only and is not loaded by this demo.
 
-The controller reports security rejection as `RunStatus.REFUSED`. It records only coarse error/retry/status metadata in memory, not the request, generated SQL, or raw tool result. Event sink failures fail the run with `event_sink_error` and prevent further execution; a failed terminal event cannot be guaranteed to have reached the sink. The memory and event implementations remain process-local.
+The controller reports security rejection as `RunStatus.REFUSED`. It records only coarse error/retry/status metadata in memory, not the request, generated SQL, or raw tool result. Web Query events are written to the configured SQLite store as well as held in memory for the current API response. Event sink failures fail the run with `event_sink_error` and prevent further execution; a failed terminal event cannot be guaranteed to have reached the sink. Short-term memory remains process-local.
 
 ## Development status and next integration steps
 

@@ -2,6 +2,8 @@
 
 from collections import Counter
 
+from sqlguard.observability.trace import assess_trace
+
 
 def equal_rows(actual, expected, *, ordered=False):
     """Scalar rows after type normalization; preserve duplicates and NULLs."""
@@ -64,3 +66,19 @@ def score(case, actual):
         "unknown_reasons": unknown,
         "evidence_scope": actual.get("evidence_scope", "unknown"),
     }
+
+
+def score_trace(
+    trace,
+    *,
+    capture_status="unknown",
+    result_comparison=None,
+    result_record_ids=None,
+):
+    """Score trace assertions separately from benchmark utility/result correctness."""
+    return assess_trace(
+        trace,
+        capture_status=capture_status,
+        result_comparison=result_comparison,
+        result_record_ids=result_record_ids,
+    )

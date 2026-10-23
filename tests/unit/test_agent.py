@@ -1,5 +1,6 @@
 import asyncio
 from math import isfinite
+from types import SimpleNamespace
 
 from tests.conftest import make_controller
 
@@ -40,11 +41,58 @@ def test_valid_request_completes_demo_flow():
     assert result.state.sql_attempt_count == 1
     assert result.state.current_step == "completed"
     assert_single_terminal_event(events.events, "run_completed", "succeeded")
+    event_types = [event.event_type for event in events.events]
+    assert event_types.index("memory_state_persisted") < event_types.index("run_completed")
+    persisted = events.events[event_types.index("memory_state_persisted")]
+    assert persisted.status == "completed"
+    assert persisted.error_category is None
     assert all(event.run_id == result.state.run_id for event in events.events)
     assert all(
         event.duration_ms is None or (isfinite(event.duration_ms) and event.duration_ms >= 0)
         for event in events.events
     )
+
+
+def test_gate_omission_records_fields_policy_and_attempt_without_claiming_user_notice():
+    class PartialGate:
+        def check(self, sql):
+            del sql
+            return SimpleNamespace(
+                allowed=True,
+                kind="allow_partial",
+                policy_version="policy-v1",
+                referenced_tables=("customers",),
+                referenced_columns=("customers.full_name",),
+                removed_columns=("customers.identity_number",),
+                notices=("column_access_policy",),
+            )
+
+    class CapturingEventSink:
+        def __init__(self):
+            self.events = []
+
+        def emit(self, event):
+            self.events.append(event)
+
+    events = CapturingEventSink()
+    result = asyncio.run(
+        make_controller(events=events, gate=PartialGate()).run(AgentRequest("Show customer names"))
+    )
+    gate_event = next(
+        event for event in events.events if event.event_type == "security_check_completed"
+    )
+
+    assert gate_event.run_id == result.state.run_id
+    assert gate_event.attempt_id == "sql-1"
+    assert gate_event.evidence["field_omission"] == {
+        "status": "omitted",
+        "fields": ["customers.identity_number"],
+        "reason_code": "column_access_policy",
+        "policy_id": "policy-v1",
+        "source": "security_gate_decision",
+        "value_handling": "not_collected",
+    }
+    assert not any(event.event_type == "user_notice_sent" for event in events.events)
 
 
 def test_tool_error_is_reported_and_retried_within_budget():
@@ -343,7 +391,7 @@ def test_runtime_trace_covers_successful_agent_stages_with_metadata_only():
         assert event.run_id == result.state.run_id
         assert not hasattr(event, "question")
         assert not hasattr(event, "sql")
-        if event.event_type.endswith("_completed"):
+        if event.event_type.endswith("_completed") and event.status != "not_checked":
             assert event.duration_ms is not None
 
     dumped = repr(events.events)

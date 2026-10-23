@@ -10,7 +10,7 @@ import asyncio
 import json
 import os
 from collections.abc import Mapping
-from dataclasses import asdict
+from datetime import UTC
 from pathlib import Path
 from time import perf_counter
 from typing import Any
@@ -27,9 +27,15 @@ from sqlguard.agent.runtime import (
     create_planner_for_role,
 )
 from sqlguard.agent.sqlite_schema import SQLITE_PATH_ENV
-from sqlguard.mcp.tools import InProcessToolRegistry, ToolError, ToolRegistry
+from sqlguard.mcp.tools import InProcessToolRegistry, ToolCallResult, ToolError, ToolRegistry
 from sqlguard.memory.store import InMemoryMemory
-from sqlguard.observability.events import InMemoryEventSink
+from sqlguard.observability.events import (
+    CompositeEventSink,
+    Event,
+    EventSink,
+    InMemoryEventSink,
+    SQLiteEventStore,
+)
 from sqlguard.security.gate import PolicySQLGate, ReadOnlySQLGate, SecurityDecision
 from sqlguard.security.policy import RolePolicy, load_policy
 from sqlguard.web.database import (
@@ -65,6 +71,19 @@ class WebQueryConfigurationError(Exception):
     def __init__(self, category: str) -> None:
         super().__init__(category)
         self.category = category
+
+
+def _event_payload(event: Event) -> dict[str, Any]:
+    """Keep the synchronous Query response metadata-only; live artifacts use authenticated SSE."""
+    return {
+        "run_id": event.run_id,
+        "event_type": event.event_type,
+        "timestamp": event.timestamp.astimezone(UTC).isoformat(),
+        "status": event.status,
+        "duration_ms": event.duration_ms,
+        "error_category": event.error_category,
+        "type": event.event_type,
+    }
 
 
 def web_query_mode(env: Mapping[str, str] | None = None) -> str:
@@ -149,18 +168,32 @@ class FinancialQueryTool:
             raise ToolError("query failed", category="sql_error", retryable=False) from None
         except DatabaseUnavailable:
             raise ToolError("db unavailable", category="db_unavailable", retryable=False) from None
-        return json.dumps({"total_rows": self.last_result.total_rows})
+        return ToolCallResult(
+            value=json.dumps({"total_rows": self.last_result.total_rows}),
+            evidence={
+                "database_execution": "confirmed",
+                "source": "financial_database.run_page",
+            },
+        )
 
 
 async def answer_question(
     database: FinancialDatabase,
     question: str,
     env: Mapping[str, str] | None = None,
+    *,
+    run_id: str | None = None,
+    live_sink: EventSink | None = None,
 ) -> dict:
     """Trả về dict cho API /api/query. status: full | partial | refused | failed."""
     env = os.environ if env is None else env
     if web_query_mode(env) == SYNTHETIC_QUERY_MODE:
-        return await _answer_synthetic_question(question, env)
+        return await _answer_synthetic_question(
+            question,
+            env,
+            run_id=run_id,
+            live_sink=live_sink,
+        )
 
     started = perf_counter()
     planner = build_planner()
@@ -170,7 +203,7 @@ async def answer_question(
     if not planner.supports(question):
         return {
             **base,
-            "run_id": None,
+            "run_id": run_id,
             "status": "failed",
             "reason": "Chưa tích hợp LLM: planner demo chỉ trả lời được các câu hỏi mẫu.",
             "sql": None,
@@ -182,15 +215,19 @@ async def answer_question(
     gate = RecordingGate(build_gate(database.table_names()))
     tool = FinancialQueryTool(database)
     events = InMemoryEventSink()
+    sinks: tuple[EventSink, ...] = (events, SQLiteEventStore.from_env(env))
+    if live_sink is not None:
+        sinks += (live_sink,)
+    event_sink = CompositeEventSink(sinks)
     controller = AgentController(
         planner=planner,
         tools=InProcessToolRegistry([tool]),
         security_gate=gate,
         memory=InMemoryMemory(),
-        events=events,
+        events=event_sink,
         budget=ExecutionBudget(max_sql_attempts=1),  # Planner demo không có khả năng tự sửa SQL.
     )
-    state = (await controller.run(AgentRequest(question))).state
+    state = (await controller.run(AgentRequest(question, run_id=run_id))).state
 
     if state.status == RunStatus.SUCCEEDED and tool.last_result is not None:
         status, reason = "full", "Trả lời đầy đủ: câu SQL được phép và đã chạy thành công."
@@ -206,9 +243,7 @@ async def answer_question(
         "reason": reason,
         "sql": planner.last_sql,
         "result": tool.last_result.to_dict() if status == "full" else None,
-        "events": [
-            {"type": e["event_type"], "status": e["status"]} for e in map(asdict, events.events)
-        ],
+        "events": [_event_payload(event) for event in events.events],
         "duration_ms": (perf_counter() - started) * 1000,
     }
 
@@ -224,14 +259,27 @@ class _WebRecordingGate:
 
 
 class _WebRecordingRegistry:
-    def __init__(self, registry: ToolRegistry) -> None:
+    def __init__(self, registry: ToolRegistry, secure_tool) -> None:
         self._registry = registry
+        self._secure_tool = secure_tool
         self.result: dict[str, Any] | None = None
 
     async def call(self, name: str, arguments: dict[str, Any], *, timeout_seconds: float) -> Any:
         result = await self._registry.call(name, arguments, timeout_seconds=timeout_seconds)
         if name == "query" and isinstance(result, dict):
             self.result = result
+            if result.get("source") == "database" and isinstance(result.get("executed_sql"), str):
+                evidence = {
+                    "database_execution": "confirmed",
+                    "source": "secure_sql_tool.executor_result",
+                }
+                trace_evidence = getattr(self._secure_tool, "last_trace_evidence", None)
+                if isinstance(trace_evidence, Mapping):
+                    evidence.update(trace_evidence)
+                return ToolCallResult(
+                    value=result,
+                    evidence=evidence,
+                )
         return result
 
 
@@ -281,7 +329,13 @@ def _safe_runtime_reason(category: str | None) -> str:
     }.get(category or "", "Không thể hoàn tất lần chạy; không có kết quả được trả về.")
 
 
-async def _answer_synthetic_question(question: str, env: Mapping[str, str]) -> dict:
+async def _answer_synthetic_question(
+    question: str,
+    env: Mapping[str, str],
+    *,
+    run_id: str | None = None,
+    live_sink: EventSink | None = None,
+) -> dict:
     started = perf_counter()
     configured_path = env.get(WEB_QUERY_DB_ENV)
     if not configured_path or not configured_path.strip():
@@ -327,24 +381,36 @@ async def _answer_synthetic_question(question: str, env: Mapping[str, str]) -> d
     gate: _WebRecordingGate | None = None
     registry: _WebRecordingRegistry | None = None
     events = InMemoryEventSink()
+    sinks: tuple[EventSink, ...] = (events, SQLiteEventStore.from_env(env))
+    if live_sink is not None:
+        sinks += (live_sink,)
+    event_sink = CompositeEventSink(sinks)
 
     def scope_factory(run_id: str) -> RunScope:
         nonlocal gate, registry
         runtime = query_factory.for_run(run_id)
         gate = _WebRecordingGate(runtime.gate)
-        registry = _WebRecordingRegistry(InProcessToolRegistry([runtime.tool]))
-        return RunScope(gate, registry, output_check=runtime.output_check)
+        registry = _WebRecordingRegistry(InProcessToolRegistry([runtime.tool]), runtime.tool)
+        return RunScope(
+            gate,
+            registry,
+            output_check=runtime.output_check,
+            output_check_policy_id=runtime.policy.version if runtime.policy else None,
+            output_check_enabled=bool(
+                runtime.policy and runtime.policy.canaries_for(runtime.context.role)
+            ),
+        )
 
     controller = AgentController(
         planner=recording_planner,
         tools=InProcessToolRegistry([]),
         security_gate=ReadOnlySQLGate(),
         memory=InMemoryMemory(),
-        events=events,
+        events=event_sink,
         budget=ExecutionBudget(max_sql_attempts=1),
         run_scope_factory=scope_factory,
     )
-    state = (await controller.run(AgentRequest(question))).state
+    state = (await controller.run(AgentRequest(question, run_id=run_id))).state
     decision = gate.last_decision if gate else None
     result = registry.result if registry else None
     gate_status = "ALLOW" if decision and decision.allowed else "BLOCK" if decision else "NOT_RUN"
@@ -389,6 +455,6 @@ async def _answer_synthetic_question(question: str, env: Mapping[str, str]) -> d
         "result": page_result,
         "row_count": page_result["total_rows"] if page_result else 0,
         "truncated": page_result["truncated"] if page_result else False,
-        "events": [{"type": event.event_type, "status": event.status} for event in events.events],
+        "events": [_event_payload(event) for event in events.events],
         "duration_ms": (perf_counter() - started) * 1000,
     }

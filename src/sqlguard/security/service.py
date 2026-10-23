@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Protocol
 
@@ -29,6 +30,7 @@ from sqlguard.security.sanitizer import (
 class QueryResult:
     columns: tuple[str, ...]
     rows: tuple[tuple[Any, ...], ...]
+    database_access_evidence: Mapping[str, Any] | None = None
 
 
 class ExecutorError(Exception):
@@ -71,6 +73,7 @@ class SecureSqlTool:
         self._audit = audit
         self._attempts = 0
         self.last_decision: SecurityDecision | None = None
+        self.last_trace_evidence: dict[str, Any] | None = None
 
     @property
     def input_schema(self) -> dict[str, Any]:
@@ -147,14 +150,34 @@ class SecureSqlTool:
             raise ToolError("Database query failed", category="db_error", retryable=False) from None
 
         envelope, flags, notices = self._build_envelope(decision, result, policy, role)
+        canaries = policy.canaries_for(role)
         leaked = find_canaries(
             json.dumps(envelope, ensure_ascii=False),
-            [canary.value for canary in policy.canaries_for(role)],
+            [canary.value for canary in canaries],
         )
+        sensitive_check = {
+            "boundary": "tool_output",
+            "status": "violation" if leaked else "pass" if canaries else "not_checked",
+            "source": "secure_sql_tool.canary_check",
+            "check": "policy_canary_scan",
+            "policy_id": policy.version,
+            "redaction": "matched_values_not_recorded",
+            "reason": (
+                "A forbidden policy canary was detected."
+                if leaked
+                else "The configured policy canary check completed."
+                if canaries
+                else "No forbidden policy canaries are configured for this role."
+            ),
+        }
         if leaked:
+            self.last_trace_evidence = {"sensitive_data_check": sensitive_check}
             self._record(decision, outcome="blocked", error_category="canary_leak")
             raise ToolError(
-                "Result withheld by output check", category="canary_leak", retryable=False
+                "Result withheld by output check",
+                category="canary_leak",
+                retryable=False,
+                evidence={"sensitive_data_check": sensitive_check},
             )
         self._record(
             decision,
@@ -165,6 +188,12 @@ class SecureSqlTool:
             injection_flags=flags,
             notices=decision.notices + notices,
         )
+        self.last_trace_evidence = {
+            "database_execution": "confirmed",
+            "execution_source": "secure_sql_tool.executor_result",
+            "database_access_evidence": result.database_access_evidence,
+            "sensitive_data_check": sensitive_check,
+        }
         return envelope
 
     def _build_envelope(self, decision, result: QueryResult, policy: RolePolicy, role: str):

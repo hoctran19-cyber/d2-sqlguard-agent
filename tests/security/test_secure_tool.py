@@ -38,6 +38,11 @@ def test_allowed_query_executes_normalized_sql_and_returns_untrusted_envelope():
     assert envelope["trust"] == "untrusted" and envelope["source"] == "database"
     assert envelope["rows"] == [["Nguyen Van A"], ["Tran Thi B"], ["Le Van C"]]
     assert envelope["executed_sql"] == executor.executed[0]
+    check = tool.last_trace_evidence["sensitive_data_check"]
+    assert check["boundary"] == "tool_output"
+    assert check["status"] in {"pass", "not_checked"}
+    assert check["policy_id"] == POLICY.version
+    assert "CANARY" not in json.dumps(tool.last_trace_evidence)
     (record,) = audit.records
     assert record.phase == "execute" and record.outcome == "executed"
     assert record.run_id == "run-7" and record.user_id == "sales-demo"
@@ -115,6 +120,8 @@ def test_output_check_withholds_canaries_even_if_database_misbehaves():
 
     assert raised.value.category == "canary_leak"
     assert "CANARY" not in str(raised.value)
+    assert raised.value.evidence["sensitive_data_check"]["status"] == "violation"
+    assert "CANARY-ID-0001" not in json.dumps(raised.value.evidence)
     assert audit.records[0].outcome == "blocked"
 
 

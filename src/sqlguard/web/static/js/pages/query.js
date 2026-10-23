@@ -6,6 +6,7 @@
 import { api } from "../api.js";
 import { h, spinner } from "../dom.js";
 import { createSqlTable } from "../components/sql-table.js";
+import { createWorkflowVisualizer } from "../components/workflow-visualizer.js";
 
 // Nhãn và màu cho từng loại kết quả trả về từ backend.
 const STATUS_LABELS = {
@@ -17,6 +18,8 @@ const STATUS_LABELS = {
 
 // Giữ câu trả lời gần nhất để khi chuyển sang Database rồi quay lại vẫn còn.
 let lastAnswer = null;
+let activeEventSource = null;
+let playbackSettings = { mode: "step", delay: 800, detailLevel: "detailed" };
 
 export function renderQueryPage(container, user) {
   if (lastAnswer) showAnswer(container, user, lastAnswer);
@@ -29,6 +32,36 @@ function showAsk(container, user, previousQuestion = "") {
     class: "ask-input", rows: "3", placeholder: "Đặt câu hỏi về dữ liệu…", "aria-label": "Câu hỏi",
   });
   input.value = previousQuestion;
+  const modeSelect = h("select", { "aria-label": "Playback mode before submit" },
+    h("option", { value: "step" }, "Step-by-step"),
+    h("option", { value: "auto" }, "Auto-play"),
+    h("option", { value: "fast" }, "Fast mode"),
+  );
+  modeSelect.value = playbackSettings.mode;
+  modeSelect.addEventListener("change", () => {
+    playbackSettings = { ...playbackSettings, mode: modeSelect.value };
+  });
+  const delayInput = h("input", {
+    type: "range",
+    min: "0",
+    max: "3000",
+    step: "100",
+    value: String(playbackSettings.delay),
+    "aria-label": "Auto-play delay before submit in milliseconds",
+  });
+  const delayValue = h("span", { class: "workflow-delay-value" }, `${playbackSettings.delay} ms`);
+  delayInput.addEventListener("input", () => {
+    playbackSettings = { ...playbackSettings, delay: Number(delayInput.value) };
+    delayValue.textContent = `${delayInput.value} ms`;
+  });
+  const detailSelect = h("select", { "aria-label": "Information level before submit" },
+    h("option", { value: "basic" }, "Basic"),
+    h("option", { value: "detailed" }, "Detailed"),
+  );
+  detailSelect.value = playbackSettings.detailLevel;
+  detailSelect.addEventListener("change", () => {
+    playbackSettings = { ...playbackSettings, detailLevel: detailSelect.value };
+  });
   const sendButton = h("button", { class: "btn", onclick: () => send(input.value) }, "Gửi");
   // Vùng câu hỏi mẫu: tải từ backend (planner demo chưa có LLM chỉ hiểu các câu này).
   const samples = h("div", { class: "samples" });
@@ -55,7 +88,17 @@ function showAsk(container, user, previousQuestion = "") {
 
   container.replaceChildren(h("div", { class: "page ask-page" },
     h("h1", { class: "ask-title" }, `Ask me, ${user.username}`),
-    h("div", { class: "ask-box" }, input, h("div", { class: "ask-actions" }, sendButton)),
+    h("div", { class: "ask-box" },
+      input,
+      h("div", { class: "workflow-controls ask-playback-controls" },
+        h("label", {}, "Playback ", modeSelect),
+        h("label", { class: "workflow-delay" },
+          "Delay ", delayInput, delayValue),
+        h("label", {}, "Information ", detailSelect),
+      ),
+      h("p", { class: "muted small ask-playback-note" },
+        "Playback delay only affects how events are presented; it does not slow agent execution."),
+      h("div", { class: "ask-actions" }, sendButton)),
     samples,
   ));
   input.focus();
@@ -63,23 +106,130 @@ function showAsk(container, user, previousQuestion = "") {
 
 /** Phase chờ: gửi câu hỏi tới backend và hiện trạng thái đang xử lý. */
 async function ask(container, user, question) {
+  if (activeEventSource) activeEventSource.close();
+  const selectedPlayback = { ...playbackSettings };
+  const runId = crypto.randomUUID();
+  const visualizer = createWorkflowVisualizer(
+    { question, run_id: runId, events: [] },
+    {
+      live: true,
+      playback: selectedPlayback,
+      autoStart: selectedPlayback.mode !== "step",
+    },
+  );
+  let started = false;
+  let receivedLiveEvents = 0;
+  const receivedSequences = new Set();
+  let finalized = false;
+  const source = new EventSource(`/api/query/stream/${encodeURIComponent(runId)}`);
+  activeEventSource = source;
+
   container.replaceChildren(h("div", { class: "page" },
-    h("div", { class: "question-bubble" }, question),
-    h("div", { class: "waiting", role: "status" }, spinner(), " SQLGuard đang xử lý câu hỏi…"),
+    h("div", { class: "row space-between" },
+      h("div", { class: "question-bubble" }, question),
+      h("span", { class: "waiting", role: "status" }, spinner(), " Đang chạy agent…")),
+    visualizer.element,
   ));
-  let answer;
-  try {
-    answer = await api.ask(question);
-  } catch (error) {
-    // Lỗi hạ tầng (mất kết nối, 503...) cũng hiển thị như một câu trả lời thất bại.
-    answer = { question, status: "failed", reason: error.message, sql: null, result: null, omitted_fields: [] };
-  }
-  lastAnswer = answer;
-  showAnswer(container, user, answer);
+
+  const startRequest = async () => {
+    if (started) return;
+    started = true;
+    let answer;
+    try {
+      answer = await api.ask(question, runId);
+    } catch (error) {
+      answer = {
+        question,
+        run_id: runId,
+        status: "failed",
+        execution_status: "failed",
+        reason: error.message,
+        sql: null,
+        result: null,
+        omitted_fields: [],
+        events: [],
+      };
+      source.close();
+      visualizer.setConnectionState("error", "Query request failed.");
+    }
+    if (finalized) return;
+    finalized = true;
+    const traceEvents = Array.isArray(answer.trace_events) ? answer.trace_events : [];
+    if (traceEvents.length) {
+      let recovered = 0;
+      for (const event of traceEvents) {
+        const sequence = event.stream_sequence ?? event.sequence;
+        if (sequence && receivedSequences.has(sequence)) continue;
+        visualizer.appendLiveEvent({ ...event, stream_sequence: sequence });
+        if (sequence) receivedSequences.add(sequence);
+        recovered += 1;
+      }
+      if (!receivedLiveEvents && traceEvents.length) {
+        visualizer.setConnectionState(
+          "playback",
+          "Live stream unavailable; showing events collected by the completed run.",
+        );
+      } else if (recovered) {
+        visualizer.setConnectionState(
+          "completed",
+          `${recovered} missing event(s) restored from the completed run trace.`,
+        );
+      }
+    } else if (!receivedLiveEvents && Array.isArray(answer.events)) {
+      for (const event of answer.events) visualizer.appendLiveEvent(event);
+      if (answer.events.length) {
+        visualizer.setConnectionState(
+          "playback",
+          "Live stream unavailable; showing metadata collected by the completed run.",
+        );
+      }
+    }
+    lastAnswer = answer;
+    visualizer.setTraceAssessment(answer.trace_assessment);
+    visualizer.updateAnswer(answer);
+    showAnswer(container, user, answer, visualizer);
+  };
+
+  source.onopen = () => {
+    visualizer.setConnectionState("connected", "connected");
+    startRequest();
+  };
+  source.addEventListener("agent_event", (message) => {
+    try {
+      const event = JSON.parse(message.data);
+      event.stream_sequence = Number(message.lastEventId);
+      if (event.stream_sequence) receivedSequences.add(event.stream_sequence);
+      receivedLiveEvents += 1;
+      visualizer.appendLiveEvent(event);
+    } catch {
+      visualizer.setConnectionState("error", "Received an invalid live event.");
+    }
+  });
+  source.addEventListener("stream_gap", () => {
+    visualizer.setConnectionState("reconnecting", "some early events are outside the replay window.");
+  });
+  source.addEventListener("stream_complete", (message) => {
+    source.close();
+    try {
+      const completion = JSON.parse(message.data);
+      visualizer.setTraceAssessment(completion.trace_assessment);
+    } catch {
+      visualizer.setTraceAssessment(null);
+    }
+    visualizer.setConnectionState("completed", "run event stream completed");
+  });
+  source.onerror = () => {
+    if (!started) startRequest();
+    if (source.readyState === EventSource.CLOSED) {
+      visualizer.setConnectionState("error", "stream unavailable; reconnect was not possible.");
+    } else {
+      visualizer.setConnectionState("reconnecting", "connection interrupted; replay is being resumed.");
+    }
+  };
 }
 
 /** Phase 2: hiển thị kết quả. */
-function showAnswer(container, user, answer) {
+function showAnswer(container, user, answer, visualizer = null) {
   const label = STATUS_LABELS[answer.status] || STATUS_LABELS.failed;
 
   // Hộp trạng thái: loại câu trả lời + nguyên nhân (nếu từ chối hoặc trả lời một phần).
@@ -91,8 +241,10 @@ function showAnswer(container, user, answer) {
     answer.omitted_fields && answer.omitted_fields.length
       ? h("p", { class: "muted" }, "Phần bị bỏ: ", answer.omitted_fields.join(", "))
       : null,
-    answer.run_id ? h("p", { class: "muted small" },
-      `Run ${answer.run_id} · planner ${answer.planner}${answer.model ? ` · model ${answer.model}` : ""} · ${Math.round(answer.duration_ms)} ms`) : null,
+    answer.run_id ? h("details", { class: "query-run-details" },
+      h("summary", { class: "muted small" }, "Run details"),
+      h("p", { class: "muted small" },
+        `Run ID: ${answer.run_id} · planner ${answer.planner}${answer.model ? ` · model ${answer.model}` : ""} · ${Math.round(answer.duration_ms)} ms`)) : null,
     answer.execution_status
       ? h("p", { class: "muted small" },
         `Backend: SQLite tổng hợp · execution: ${answer.execution_status} · ${answer.row_count} dòng${answer.truncated ? " (đã giới hạn kết quả)" : ""}`)
@@ -127,12 +279,17 @@ function showAnswer(container, user, answer) {
       h("div", { class: "question-bubble" }, answer.question),
       h("button", {
         class: "btn secondary",
-        onclick: () => { lastAnswer = null; showAsk(container, user); },
+        onclick: () => {
+          if (activeEventSource) activeEventSource.close();
+          lastAnswer = null;
+          showAsk(container, user);
+        },
       }, "Đặt câu hỏi mới")),
     statusBox,
     gateArea,
     sqlArea,
     resultArea,
+    visualizer ? visualizer.element : createWorkflowVisualizer(answer).element,
   ));
 }
 

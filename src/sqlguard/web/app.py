@@ -13,11 +13,24 @@ from __future__ import annotations
 import asyncio
 import json
 from pathlib import Path
+from uuid import UUID
 
 from fastapi import Depends, FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
+from fastapi import Query as FastAPIQuery
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
+from sqlguard.observability.events import (
+    DEFAULT_HISTORY_LIMIT,
+    MAX_HISTORY_LIMIT,
+    MAX_HISTORY_OFFSET,
+    Event,
+    EventStoreError,
+    LiveEventHub,
+    LiveEventSink,
+    SQLiteEventStore,
+)
+from sqlguard.observability.trace import assess_trace, serialize_trace_event
 from sqlguard.web.auth import (
     ADMIN_ROLE,
     BUSINESS_ROLES,
@@ -50,11 +63,26 @@ MAX_BODY_BYTES = 64_000  # Câu hỏi/SQL đều ngắn; chặn body quá lớn.
 MAX_TEXT_LENGTH = 5_000
 
 
+def _sse_message(event_name: str, data: dict) -> str:
+    return f"event: {event_name}\ndata: {json.dumps(data, separators=(',', ':'))}\n\n"
+
+
+def _sse_event(sequence: int, event: Event) -> str:
+    data = serialize_trace_event(event, sequence)
+    data["stream_sequence"] = sequence
+    return (
+        f"id: {sequence}\nevent: agent_event\n"
+        f"data: {json.dumps(data, separators=(',', ':'), ensure_ascii=False)}\n\n"
+    )
+
+
 def create_app(db_path: Path | None = None) -> FastAPI:
     """Tạo app. Test truyền db_path riêng; khi chạy thật thì đọc từ biến môi trường."""
     app = FastAPI(title="SQLGuard", docs_url="/api/docs", redoc_url=None)
     sessions = SessionStore()
     database = FinancialDatabase(db_path or resolve_db_path())
+    live_events = LiveEventHub()
+    app.state.live_events = live_events
 
     # ---------- Hàm tiện ích dùng chung ----------
 
@@ -269,10 +297,10 @@ def create_app(db_path: Path | None = None) -> FastAPI:
             raise HTTPException(422, explain_denial(decision))
         try:
             result = await asyncio.to_thread(database_call, database.run_page, sql, page=page)
-        except QueryTimeout as error:
-            raise HTTPException(408, str(error)) from None
-        except QueryError as error:
-            raise HTTPException(400, f"Lỗi SQL: {error}") from None
+        except QueryTimeout:
+            raise HTTPException(408, "Truy vấn vượt quá thời gian cho phép.") from None
+        except QueryError:
+            raise HTTPException(400, "Database không thể hoàn tất truy vấn.") from None
         return result.to_dict()
 
     @app.get("/api/query/samples")
@@ -283,12 +311,155 @@ def create_app(db_path: Path | None = None) -> FastAPI:
         except WebQueryConfigurationError:
             raise HTTPException(503, "Cấu hình Query Web không hợp lệ") from None
 
+    @app.get("/api/query/history")
+    def query_history(
+        limit: int = FastAPIQuery(DEFAULT_HISTORY_LIMIT, ge=1, le=MAX_HISTORY_LIMIT),
+        offset: int = FastAPIQuery(0, ge=0, le=MAX_HISTORY_OFFSET),
+        user: User = Depends(require_admin),
+    ):
+        """Danh sách metadata các run Query; chỉ admin được truy cập."""
+        try:
+            return SQLiteEventStore.from_env().list_runs(limit=limit, offset=offset)
+        except EventStoreError:
+            raise HTTPException(503, "Không thể đọc lịch sử Query.") from None
+
+    @app.get("/api/query/history/{run_id}")
+    def query_history_run(run_id: str, user: User = Depends(require_admin)):
+        """Chuỗi event metadata của một run; không trả SQL, câu hỏi hay kết quả."""
+        if len(run_id) > 64:
+            raise HTTPException(404, "Không tìm thấy lần chạy.")
+        try:
+            normalized_run_id = str(UUID(run_id))
+        except ValueError:
+            raise HTTPException(404, "Không tìm thấy lần chạy.") from None
+        try:
+            events = SQLiteEventStore.from_env().events_for_run(normalized_run_id)
+        except EventStoreError:
+            raise HTTPException(503, "Không thể đọc lịch sử Query.") from None
+        if not events:
+            raise HTTPException(404, "Không tìm thấy lần chạy.")
+        return {
+            "run_id": normalized_run_id,
+            "events": [
+                {
+                    "run_id": event.run_id,
+                    "event_type": event.event_type,
+                    "timestamp": event.timestamp.isoformat(),
+                    "status": event.status,
+                    "duration_ms": event.duration_ms,
+                    "error_category": event.error_category,
+                }
+                for event in events
+            ],
+        }
+
+    @app.get("/api/query/stream/{run_id}")
+    async def query_event_stream(
+        run_id: str,
+        request: Request,
+        user: User = Depends(require_admin),
+    ):
+        """Stream authenticated, run-scoped events and replay them after reconnect."""
+        if len(run_id) > 64:
+            raise HTTPException(404, "Không tìm thấy lần chạy.")
+        try:
+            normalized_run_id = str(UUID(run_id))
+        except ValueError:
+            raise HTTPException(404, "Không tìm thấy lần chạy.") from None
+        raw_last_event_id = request.headers.get("last-event-id", "0")
+        try:
+            last_event_id = int(raw_last_event_id)
+        except ValueError:
+            raise HTTPException(400, "Event cursor không hợp lệ.") from None
+        if last_event_id < 0:
+            raise HTTPException(400, "Event cursor không hợp lệ.")
+
+        try:
+            subscription = live_events.subscribe(normalized_run_id, last_event_id)
+        except RuntimeError:
+            raise HTTPException(503, "Live event stream chưa sẵn sàng.") from None
+
+        async def stream():
+            def completion_message() -> str:
+                records, capture_status = live_events.snapshot(normalized_run_id)
+                trace = [serialize_trace_event(event, sequence) for sequence, event in records]
+                return _sse_message(
+                    "stream_complete",
+                    {
+                        "run_id": normalized_run_id,
+                        "trace_assessment": assess_trace(trace, capture_status=capture_status),
+                    },
+                )
+
+            try:
+                yield ": connected\n\n"
+                if subscription.replay_gap:
+                    yield _sse_message(
+                        "stream_gap",
+                        {"run_id": normalized_run_id, "reason": "replay_window_exceeded"},
+                    )
+                for sequence, event in subscription.replay:
+                    yield _sse_event(sequence, event)
+                if subscription.completed:
+                    yield completion_message()
+                    return
+                while not await request.is_disconnected():
+                    try:
+                        item = await asyncio.wait_for(subscription.queue.get(), timeout=15)
+                    except TimeoutError:
+                        yield ": keep-alive\n\n"
+                        continue
+                    if item is None:
+                        yield completion_message()
+                        return
+                    sequence, event = item
+                    yield _sse_event(sequence, event)
+            finally:
+                live_events.unsubscribe(normalized_run_id, subscription.subscriber_id)
+
+        return StreamingResponse(
+            stream(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache, no-transform", "X-Accel-Buffering": "no"},
+        )
+
     @app.post("/api/query")
     async def query(request: Request, user: User = Depends(require_admin)):
         """Câu hỏi ngôn ngữ tự nhiên -> AgentController -> kết quả cho trang Query."""
-        question = text_field(await read_json(request), "question")
+        payload = await read_json(request)
+        question = text_field(payload, "question")
+        run_id = payload.get("run_id")
+        live_sink = None
+        if run_id is not None:
+            if not isinstance(run_id, str) or len(run_id) > 64:
+                raise HTTPException(422, "run_id không hợp lệ")
+            try:
+                run_id = str(UUID(run_id))
+                live_events.prepare(run_id)
+            except ValueError:
+                raise HTTPException(422, "run_id không hợp lệ") from None
+            except RuntimeError:
+                raise HTTPException(503, "Live event stream chưa sẵn sàng.") from None
+            live_sink = LiveEventSink(live_events)
         try:
-            return await answer_question(database, question)
+            answer = await answer_question(
+                database,
+                question,
+                run_id=run_id,
+                live_sink=live_sink,
+            )
+            if run_id is not None:
+                records, capture_status = live_events.snapshot(run_id)
+                trace_events = [
+                    serialize_trace_event(event, sequence) for sequence, event in records
+                ]
+                answer["trace_events"] = trace_events
+                answer["trace_assessment"] = assess_trace(
+                    trace_events, capture_status=capture_status
+                )
+            return answer
+        except EventStoreError:
+            raise HTTPException(503, "Không thể khởi tạo event store.") from None
         except DatabaseUnavailable as error:
             raise HTTPException(503, str(error)) from None
         except WebQueryConfigurationError as error:
@@ -317,6 +488,9 @@ def create_app(db_path: Path | None = None) -> FastAPI:
                 "schema_unknown_role": "Role schema không được policy cho phép.",
             }.get(error.category, "Query Web chưa sẵn sàng theo cấu hình hiện tại.")
             raise HTTPException(503, safe_detail) from None
+        finally:
+            if run_id is not None:
+                live_events.complete(run_id)
 
     # ---------- Gắn console Evaluation đã có vào /evaluation/ ----------
 

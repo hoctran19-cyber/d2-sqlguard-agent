@@ -10,6 +10,7 @@ import { h, spinner } from "../dom.js";
 import { createSidebar } from "../components/sidebar.js";
 import { openInfoDialog } from "../components/info-dialog.js";
 import { renderDatabasePage } from "./database.js";
+import { renderHistoryPage } from "./history.js";
 import { renderQueryPage } from "./query.js";
 
 export async function renderHomePage(root) {
@@ -35,6 +36,9 @@ export async function renderHomePage(root) {
     } else if (hash === "/query") {
       sidebar.setActive("/query");
       renderQueryPage(content, user);
+    } else if (hash === "/history" && user.role === "admin") {
+      sidebar.setActive("/history");
+      renderHistoryPage(content);
     } else {
       // Không có hash hoặc hash lạ: chọn item đầu tiên (Query).
       window.location.replace("#/query");

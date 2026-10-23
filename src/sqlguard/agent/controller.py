@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from time import perf_counter
@@ -15,9 +15,10 @@ from sqlguard.agent.models import (
     RunStatus,
 )
 from sqlguard.agent.planning import Plan, Planner, RepairFeedback
-from sqlguard.mcp.tools import ToolError, ToolRegistry
+from sqlguard.mcp.tools import ToolCallResult, ToolError, ToolRegistry
 from sqlguard.memory.store import MemoryStore
-from sqlguard.observability.events import Event, EventSink
+from sqlguard.observability.events import EventSink, LiveEvent, safe_error_category
+from sqlguard.observability.trace import sql_artifact
 from sqlguard.security.gate import SecurityDecision, SecurityGate
 from sqlguard.security.prompting import render_denial
 from sqlguard.security.service import SecurityToolError
@@ -32,52 +33,13 @@ class RunScope:
     # Kiểm tra câu trả lời cuối; trả True nếu phải giữ lại vì rò rỉ. Do runtime tin cậy dựng sẵn
     # (role lấy từ SecurityContext), không bao giờ nhận role từ câu hỏi hay đầu ra của model.
     output_check: Callable[[str], bool] | None = None
+    output_check_policy_id: str | None = None
+    output_check_enabled: bool = False
 
 
 # Lỗi DB duy nhất được cho planner sửa (một lần/run); lỗi quyền, timeout, read-only, canary
 # và lỗi DB khác luôn kết thúc, không bao giờ chạy lại cùng SQL.
 _DB_REPAIRABLE = frozenset({"db_schema_error", "db_syntax_error"})
-# Chỉ các mã lỗi cố định, không chứa dữ liệu đầu vào, mới được phép đi vào event/state/memory.
-# Category do tool hoặc tích hợp bên ngoài cung cấp phải qua danh sách này trước khi ghi nhận.
-_SAFE_ERROR_CATEGORIES = frozenset(
-    {
-        "audit_error",
-        "budget_exhausted",
-        "cancelled",
-        "canary_leak",
-        "db_error",
-        "db_permission_denied",
-        "db_read_only_violation",
-        "db_role_unconfigured",
-        "db_schema_error",
-        "db_syntax_error",
-        "db_timeout",
-        "db_unavailable",
-        "event_sink_error",
-        "internal_error",
-        "invalid_request",
-        "invalid_tool_input",
-        "invalid_tool_output",
-        "memory_error",
-        "mcp_invalid_result",
-        "mcp_tool_error",
-        "mcp_transport_error",
-        "output_check_error",
-        "planner_call_budget_exhausted",
-        "planner_error",
-        "run_timeout",
-        "security_gate_error",
-        "security_rejection",
-        "sql_attempt_budget_exhausted",
-        "sql_error",
-        "tool_call_budget_exhausted",
-        "tool_error",
-        "tool_exception",
-        "tool_timeout",
-        "unknown_role",
-        "unknown_tool",
-    }
-)
 # Database tự từ chối vì quyền (authorizer SQLite/grants) dù gate đã cho qua: đó là một lần chặn
 # bảo mật nên run kết thúc REFUSED như khi gate từ chối, không retry/repair; failure_reason giữ
 # nguyên category để phân biệt lớp nào đã chặn.
@@ -89,6 +51,352 @@ _DB_REPAIR_GUIDANCE = (
 
 # Nhận run_id của AgentState và trả về gate/tool đã gắn với run_id đó.
 RunScopeFactory = Callable[[str], RunScope]
+
+
+def _bounded_text(value: str, limit: int = 4000) -> str:
+    return value[:limit]
+
+
+def _safe_violation_codes(decision: SecurityDecision) -> list[str]:
+    violations = getattr(decision, "violations", ())
+    return [
+        violation
+        for violation in violations
+        if isinstance(violation, str)
+        and len(violation) <= 64
+        and violation.isascii()
+        and violation.isidentifier()
+        and violation == violation.casefold()
+    ]
+
+
+def _safe_identifiers(values: Any) -> list[str] | None:
+    if not isinstance(values, tuple | list):
+        return None
+    safe_values = []
+    for value in values:
+        if not isinstance(value, str) or len(value) > 128:
+            continue
+        parts = value.split(".")
+        if len(parts) <= 2 and all(part.isidentifier() for part in parts):
+            safe_values.append(value)
+    return safe_values
+
+
+def _safe_database_access_evidence(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, dict) or value.get("source") != "sqlite_authorizer":
+        return None
+    reads = value.get("table_columns")
+    if not isinstance(reads, list):
+        return None
+    references = []
+    for item in reads:
+        if not isinstance(item, dict):
+            continue
+        table = item.get("table")
+        column = item.get("column")
+        if (
+            isinstance(table, str)
+            and table.isidentifier()
+            and (column is None or isinstance(column, str) and column.isidentifier())
+        ):
+            references.append({"table": table, "column": column})
+    return {
+        "source": "sqlite_authorizer",
+        "status": "authorized_read_references",
+        "table_columns": references,
+        "actual_access": "not_observed",
+        "limitation": (
+            "SQLite authorizer callbacks occur while statements are prepared; "
+            "they do not prove which rows or columns were read."
+        ),
+    }
+
+
+def _safe_sensitive_check(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+    boundaries = {
+        "request_input",
+        "planner_input",
+        "planner_output",
+        "tool_arguments",
+        "tool_output",
+        "final_response",
+    }
+    statuses = {"pass", "violation", "not_checked", "unknown"}
+    sources = {"agent_controller", "secure_sql_tool.canary_check", "runtime.output_check"}
+    if (
+        not isinstance(value.get("boundary"), str)
+        or value["boundary"] not in boundaries
+        or not isinstance(value.get("status"), str)
+        or value["status"] not in statuses
+        or not isinstance(value.get("source"), str)
+        or value["source"] not in sources
+        or value.get("check") != "policy_canary_scan"
+    ):
+        return None
+    policy_id = value.get("policy_id")
+    if policy_id is not None and (not isinstance(policy_id, str) or len(policy_id) > 128):
+        return None
+    reasons = {
+        "boundary_not_scanned",
+        "check_completed",
+        "check_violation",
+        "no_canaries_configured",
+        "check_failed",
+    }
+    reason = value.get("reason")
+    if reason not in reasons:
+        reason = "check_failed" if value["status"] == "unknown" else "boundary_not_scanned"
+    return {
+        "boundary": value["boundary"],
+        "status": value["status"],
+        "source": value["source"],
+        "check": value["check"],
+        "policy_id": policy_id,
+        "reason": reason,
+        "redaction": "matched_values_not_recorded",
+    }
+
+
+def _sanitize_trace_data(data: dict[str, Any]) -> dict[str, Any]:
+    safe: dict[str, Any] = {}
+    for key, value in data.items():
+        if key in {"counters", "budget", "request_parameters"} and isinstance(value, dict):
+            safe[key] = dict(value)
+        elif key == "model" and isinstance(value, str):
+            safe[key] = value[:128]
+        elif key in {"question", "entries", "result_preview", "value"}:
+            if key == "question" and isinstance(value, str):
+                safe["question"] = {"redacted": True, "characters": len(value)}
+            elif key == "entries" and isinstance(value, tuple | list):
+                safe["memory_entries"] = {"redacted": True, "count": len(value)}
+            elif key == "result_preview" and isinstance(value, str):
+                safe["result_preview"] = {"redacted": True, "characters": len(value)}
+            else:
+                safe[key] = {"redacted": True}
+        elif key == "sql" and isinstance(value, str):
+            safe["sql_artifact"] = sql_artifact(value, source="controller_event")
+        elif key == "parameters" and isinstance(value, dict):
+            parameters: dict[str, Any] = {}
+            for name, parameter in value.items():
+                if name == "sql" and isinstance(parameter, str):
+                    parameters["sql_artifact"] = sql_artifact(parameter, source="tool_arguments")
+                elif name in {"page", "limit", "offset"} and type(parameter) is int:
+                    parameters[name] = parameter
+            safe[key] = parameters
+        elif key in {
+            "sql_artifact",
+            "sql_truncated",
+            "result_truncated",
+            "tool_name",
+            "decision",
+            "check",
+            "kind",
+            "policy_version",
+            "gate_references_status",
+            "database_execution",
+            "execution_source",
+            "policy_id",
+            "check_enabled",
+            "value_handling",
+            "reason_code",
+        } and isinstance(value, str | bool | int | float):
+            safe[key] = value if not isinstance(value, str) else value[:128]
+        elif key in {
+            "violations",
+            "referenced_tables",
+            "referenced_columns",
+            "removed_columns",
+            "notices",
+        }:
+            safe[key] = _safe_identifiers(value) or []
+        elif key == "database_access_evidence":
+            access = _safe_database_access_evidence(value)
+            if access is not None:
+                safe[key] = access
+        elif key == "sensitive_data_check":
+            check = _safe_sensitive_check(value)
+            if check is not None:
+                safe[key] = check
+    return safe
+
+
+def _trace_io(
+    event_type: str, data: dict[str, Any]
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    if event_type.endswith("_started") or event_type == "run_started":
+        return data, None
+    if data:
+        return None, data
+    return None, None
+
+
+def _trace_evidence(
+    event_type: str,
+    status: str | None,
+    data: dict[str, Any],
+    error_category: str | None = None,
+) -> dict[str, Any]:
+    evidence: dict[str, Any] = {
+        "source": "agent_controller",
+        "redaction": "sql_literals_and_user_payloads_redacted",
+    }
+    artifact = data.get("sql_artifact")
+    if not artifact and isinstance(data.get("parameters"), dict):
+        artifact = data["parameters"].get("sql_artifact")
+    if isinstance(artifact, dict):
+        evidence["sql_artifact"] = artifact
+    if event_type == "security_check_completed":
+        evidence["gate_decision"] = status
+        evidence["policy_version"] = data.get("policy_version")
+        evidence["gate_references"] = {
+            "tables": data.get("referenced_tables"),
+            "columns": data.get("referenced_columns"),
+            "source": "security_gate_decision",
+            "status": data.get("gate_references_status", "unknown"),
+        }
+        evidence["omitted_columns"] = data.get("removed_columns", [])
+        evidence["notices"] = data.get("notices", [])
+        fields = data.get("removed_columns", [])
+        evidence["field_omission"] = {
+            "status": "omitted" if fields else "not_applicable",
+            "fields": fields,
+            "reason_code": "column_access_policy" if fields else None,
+            "policy_id": data.get("policy_version"),
+            "source": "security_gate_decision",
+            "value_handling": "not_collected",
+        }
+    if event_type == "tool_call_started":
+        evidence["tool_invocation"] = "started"
+    if event_type == "execute_started":
+        evidence["database_execution"] = "attempting"
+        evidence["database_access"] = "unknown"
+    if event_type == "execute_completed":
+        execution = data.get("database_execution")
+        if (
+            execution is None
+            and status == "failed"
+            and error_category
+            in {
+                "db_error",
+                "db_permission_denied",
+                "db_read_only_violation",
+                "db_schema_error",
+                "db_syntax_error",
+                "sql_error",
+            }
+        ):
+            execution = "failed"
+            evidence["execution_source"] = "database_error_category"
+        evidence["database_execution"] = (
+            execution if execution in {"confirmed", "failed"} else "unknown"
+        )
+        evidence["database_access"] = (
+            data["database_access_evidence"]
+            if isinstance(data.get("database_access_evidence"), dict)
+            else {"status": "not_observed", "actual_access": "not_observed"}
+        )
+        evidence.setdefault(
+            "execution_source", data.get("execution_source", "tool_registry_result")
+        )
+    if event_type == "output_check_completed":
+        policy_id = data.get("policy_id")
+        enabled = data.get("check_enabled") is True
+        if data.get("check") == "policy_canary_scan" and isinstance(policy_id, str):
+            check_status = (
+                "violation"
+                if status == "blocked"
+                else "pass"
+                if status == "completed" and enabled
+                else "not_checked"
+                if status == "completed"
+                else "unknown"
+            )
+            check = _safe_sensitive_check(
+                {
+                    "boundary": "final_response",
+                    "status": check_status,
+                    "source": "runtime.output_check",
+                    "check": "policy_canary_scan",
+                    "policy_id": policy_id,
+                    "reason": (
+                        "check_violation"
+                        if check_status == "violation"
+                        else "check_completed"
+                        if check_status == "pass"
+                        else "no_canaries_configured"
+                        if check_status == "not_checked"
+                        else "check_failed"
+                    ),
+                }
+            )
+            if check is not None:
+                evidence["sensitive_data_check"] = check
+                evidence["sensitive_data_checks"] = {"final_response": check_status}
+        else:
+            evidence["sensitive_data_check"] = {
+                "boundary": "final_response",
+                "status": "not_checked",
+                "source": "agent_controller",
+                "check": "policy_canary_scan",
+                "policy_id": None,
+                "reason": "boundary_not_scanned",
+                "redaction": "matched_values_not_recorded",
+            }
+            evidence["sensitive_data_checks"] = {"final_response": "not_checked"}
+    sensitive_check = data.get("sensitive_data_check")
+    if isinstance(sensitive_check, dict):
+        evidence["sensitive_data_check"] = sensitive_check
+        evidence["sensitive_data_checks"] = {sensitive_check["boundary"]: sensitive_check["status"]}
+    elif event_type in {
+        "run_started",
+        "llm_call_started",
+        "plan_created",
+        "tool_call_started",
+        "tool_call_completed",
+    }:
+        boundary = {
+            "run_started": "request_input",
+            "llm_call_started": "planner_input",
+            "plan_created": "planner_output",
+            "tool_call_started": "tool_arguments",
+            "tool_call_completed": "tool_output",
+        }[event_type]
+        evidence["sensitive_data_check"] = {
+            "boundary": boundary,
+            "status": "not_checked",
+            "source": "agent_controller",
+            "check": "policy_canary_scan",
+            "policy_id": None,
+            "reason": "boundary_not_scanned",
+            "redaction": "matched_values_not_recorded",
+        }
+        evidence["sensitive_data_checks"] = {boundary: "not_checked"}
+    if event_type == "fields_omitted":
+        evidence["omission_source"] = "runtime_policy"
+    return evidence
+
+
+def _event_module(event_type: str) -> str:
+    if event_type.startswith("context_retrieval_") or event_type.startswith("memory_"):
+        return "memory"
+    if (
+        event_type.startswith(("llm_call_", "sql_generation_", "repair_"))
+        or event_type == "schema_context_ready"
+        or event_type == "plan_created"
+    ):
+        return "planner"
+    if event_type.startswith("security_check_"):
+        return "security_gate"
+    if event_type.startswith("tool_call_"):
+        return "tool_registry"
+    if event_type.startswith("execute_"):
+        return "database"
+    if event_type.startswith(("observe_", "output_check_", "answer_", "run_", "budget_")):
+        return "controller"
+    return "observability"
 
 
 class AgentController:
@@ -116,7 +424,11 @@ class AgentController:
         started_at = perf_counter()
         deadline = asyncio.get_running_loop().time() + self._budget.run_timeout_seconds
         try:
-            self._emit(state, "run_started")
+            self._emit(
+                state,
+                "run_started",
+                data={"question": state.request.question},
+            )
             schema_context = getattr(self._planner, "schema_context", None)
             # Chỉ ghi nhận schema có được cấu hình hay không; tuyệt đối không ghi nội dung schema.
             self._emit(
@@ -175,13 +487,40 @@ class AgentController:
         finally:
             state.finished_at = datetime.now(UTC)
             self._set_terminal_step(state)
+            memory_started = perf_counter()
+            memory_status = "completed"
+            memory_error = None
             try:
                 self._memory.append(state.run_id, "state", state.status.value)
             except Exception:
+                memory_status = "failed"
+                memory_error = "memory_error"
                 state.status = RunStatus.FAILED
                 state.failure_reason = "memory_error"
                 state.errors.append(state.failure_reason)
                 self._set_terminal_step(state)
+            try:
+                self._emit(
+                    state,
+                    "memory_state_persisted",
+                    status=memory_status,
+                    error_category=memory_error,
+                    duration_ms=(perf_counter() - memory_started) * 1000,
+                    data=(
+                        {"kind": "state", "value": state.status.value}
+                        if memory_status == "completed"
+                        else {"kind": "state"}
+                    ),
+                )
+            except _EventSinkFailure:
+                state.status = RunStatus.FAILED
+                state.failure_reason = "event_sink_error"
+                state.errors.append(state.failure_reason)
+                self._set_terminal_step(state)
+                try:
+                    self._memory.append(state.run_id, "state", state.status.value)
+                except Exception:
+                    state.errors.append("memory_error")
             duration_ms = (perf_counter() - started_at) * 1000
             try:
                 self._emit(
@@ -225,6 +564,7 @@ class AgentController:
             "context_retrieval_completed",
             status="completed",
             duration_ms=(perf_counter() - retrieval_started) * 1000,
+            data={"entries": list(context)},
         )
 
         state.current_step = "planning"
@@ -249,8 +589,13 @@ class AgentController:
             )
             if state.sql_attempt_count >= sql_limit:
                 raise _BudgetExceeded("sql_attempt_budget_exhausted")
-            self._emit(state, "security_check_started")
-            # Event chỉ ghi trạng thái/kết quả và thời lượng; SQL không được đưa vào trace.
+            state.related_sql_attempt_id = state.active_sql_attempt_id
+            state.active_sql_attempt_id = f"sql-{state.sql_attempt_count + 1}"
+            self._emit(
+                state,
+                "security_check_started",
+                data={"sql": _bounded_text(sql), "sql_truncated": len(sql) > 4000},
+            )
             gate_started = perf_counter()
             state.sql_attempt_count += 1
             try:
@@ -273,6 +618,23 @@ class AgentController:
                 status="allowed" if allowed else "denied",
                 error_category=None if allowed else "security_rejection",
                 duration_ms=(perf_counter() - gate_started) * 1000,
+                data={
+                    "decision": "allow" if allowed else "deny",
+                    "kind": str(getattr(decision, "kind", "")),
+                    "violations": _safe_violation_codes(decision),
+                    "sql": _bounded_text(sql),
+                    "policy_version": getattr(decision, "policy_version", None),
+                    "referenced_tables": list(getattr(decision, "referenced_tables", ())),
+                    "referenced_columns": list(getattr(decision, "referenced_columns", ())),
+                    "gate_references_status": (
+                        "observed"
+                        if hasattr(decision, "referenced_tables")
+                        and hasattr(decision, "referenced_columns")
+                        else "unknown"
+                    ),
+                    "removed_columns": list(getattr(decision, "removed_columns", ())),
+                    "notices": list(getattr(decision, "notices", ())),
+                },
             )
             if not allowed:
                 # Bị gate từ chối: chỉ khi denial "repairable" và planner hỗ trợ mới được sửa.
@@ -288,14 +650,27 @@ class AgentController:
             if state.tool_call_count >= self._budget.max_tool_calls:
                 raise _BudgetExceeded("tool_call_budget_exhausted")
             self._ensure_before_deadline(deadline)
-            self._emit(state, "tool_call_started")
+            self._emit(
+                state,
+                "tool_call_started",
+                data={
+                    "tool_name": "query",
+                    "parameters": {"sql": _bounded_text(sql)},
+                    "sql_truncated": len(sql) > 4000,
+                },
+            )
             # Đo riêng bước thực thi để trace khi tool thành công, lỗi, timeout hoặc bị hủy.
-            self._emit(state, "execute_started")
+            self._emit(
+                state,
+                "execute_started",
+                data={"sql": _bounded_text(sql), "sql_truncated": len(sql) > 4000},
+            )
             state.tool_call_count += 1
             tool_started = perf_counter()
             # Chỉ được gán khi gate ở ranh giới tool (SecureSqlTool) từ chối; mặc định là None
             # để các lỗi tool khác (timeout, db_*, canary_leak...) không đi vào đường repair.
             tool_denial: SecurityDecision | None = None
+            tool_error_data: dict[str, Any] = {}
             try:
                 timeout = min(
                     self._budget.query_timeout_seconds,
@@ -352,21 +727,58 @@ class AgentController:
                 retryable = error.retryable
                 # Gate ở ranh giới tool từ chối: vẫn phải qua kiểm tra repairable và budget.
                 tool_denial = error.decision if isinstance(error, SecurityToolError) else None
+                tool_error_data = (
+                    dict(error.evidence) if isinstance(error.evidence, Mapping) else {}
+                )
             except Exception:
                 category = "tool_exception"
                 retryable = False
+                tool_error_data = {}
             else:
+                execution_evidence = {}
+                if isinstance(output, ToolCallResult):
+                    if (
+                        isinstance(output.evidence, Mapping)
+                        and output.evidence.get("database_execution") == "confirmed"
+                        and output.evidence.get("source")
+                        in {
+                            "financial_database.run_page",
+                            "secure_sql_tool.executor_result",
+                        }
+                    ):
+                        execution_evidence = {
+                            "database_execution": "confirmed",
+                            "execution_source": output.evidence["source"],
+                        }
+                        if output.evidence["source"] == "secure_sql_tool.executor_result":
+                            access = _safe_database_access_evidence(
+                                output.evidence.get("database_access_evidence")
+                            )
+                            sensitive_check = _safe_sensitive_check(
+                                output.evidence.get("sensitive_data_check")
+                            )
+                            if access is not None:
+                                execution_evidence["database_access_evidence"] = access
+                            if sensitive_check is not None:
+                                execution_evidence["sensitive_data_check"] = sensitive_check
+                    output = output.value
                 self._emit(
                     state,
                     "tool_call_completed",
                     status="completed",
                     duration_ms=(perf_counter() - tool_started) * 1000,
+                    data={
+                        key: value
+                        for key, value in execution_evidence.items()
+                        if key == "sensitive_data_check"
+                    },
                 )
                 self._emit(
                     state,
                     "execute_completed",
                     status="completed",
                     duration_ms=(perf_counter() - tool_started) * 1000,
+                    data=execution_evidence,
                 )
                 answer_started = perf_counter()
                 # Observe xử lý kết quả nhưng chỉ phát metadata, không phát nội dung kết quả.
@@ -408,6 +820,10 @@ class AgentController:
                     "answer_completed",
                     status="completed",
                     duration_ms=(perf_counter() - answer_started) * 1000,
+                    data={
+                        "result_preview": _bounded_text(answer, 2048),
+                        "result_truncated": len(answer) > 2048,
+                    },
                 )
                 return
 
@@ -419,6 +835,7 @@ class AgentController:
                 status="failed",
                 error_category=category,
                 duration_ms=(perf_counter() - tool_started) * 1000,
+                data=tool_error_data,
             )
             self._emit(
                 state,
@@ -426,6 +843,7 @@ class AgentController:
                 status="failed",
                 error_category=category,
                 duration_ms=(perf_counter() - tool_started) * 1000,
+                data=tool_error_data,
             )
             # Gate của tool từ chối nhưng gate của controller đã cho qua (gate yếu hơn): vẫn phải
             # qua cùng kiểm tra repairable + ngân sách, không được lách bằng đường retry thường.
@@ -459,8 +877,14 @@ class AgentController:
         """Chặn câu trả lời cuối nếu rò rỉ; mọi lỗi của bước kiểm tra cũng chặn (fail closed)."""
         check_started = perf_counter()
         check = scope.output_check
-        # Không có output_check (chế độ mock) thì giữ nguyên hành vi cũ.
+        # A missing checker is explicit evidence absence; result handling is unchanged.
         if check is None:
+            self._emit(
+                state,
+                "output_check_completed",
+                status="not_checked",
+                data={"check": "no_output_check_configured"},
+            )
             return
         try:
             leaked = check(answer)
@@ -472,6 +896,11 @@ class AgentController:
                 status="failed",
                 error_category="output_check_error",
                 duration_ms=(perf_counter() - check_started) * 1000,
+                data={
+                    "check": "policy_canary_scan",
+                    "policy_id": scope.output_check_policy_id,
+                    "check_enabled": scope.output_check_enabled,
+                },
             )
             raise ToolError("Output check failed", category="output_check_error") from None
         if leaked:
@@ -482,6 +911,11 @@ class AgentController:
                 status="blocked",
                 error_category="canary_leak",
                 duration_ms=(perf_counter() - check_started) * 1000,
+                data={
+                    "check": "policy_canary_scan",
+                    "policy_id": scope.output_check_policy_id,
+                    "check_enabled": scope.output_check_enabled,
+                },
             )
             raise ToolError("Result withheld by output check", category="canary_leak")
         # Sạch: ghi nhận đã kiểm tra xong để event/audit phản ánh đúng diễn biến của run.
@@ -490,6 +924,11 @@ class AgentController:
             "output_check_completed",
             status="completed",
             duration_ms=(perf_counter() - check_started) * 1000,
+            data={
+                "check": "policy_canary_scan",
+                "policy_id": scope.output_check_policy_id,
+                "check_enabled": scope.output_check_enabled,
+            },
         )
 
     async def _call_planner(
@@ -501,9 +940,17 @@ class AgentController:
         lệ, plan sai kiểu) đều đổi thành ``_PlannerFailure`` và không giữ lại thông điệp gốc, nên
         chi tiết lỗi nội bộ không lọt vào event hay state.
         """
-        self._emit(state, "llm_call_started")
-        # Một lời gọi planner tạo hoặc sửa SQL; chỉ ghi trạng thái/thời lượng, không ghi SQL.
-        self._emit(state, "sql_generation_started")
+        model = getattr(self._planner, "model", None)
+        planner_data = (
+            {
+                "model": model,
+                "request_parameters": {"stream": False, "think": False, "format": "json"},
+            }
+            if isinstance(model, str)
+            else {}
+        )
+        self._emit(state, "llm_call_started", data=planner_data)
+        self._emit(state, "sql_generation_started", data=planner_data)
         state.llm_call_count += 1
         planner_started = perf_counter()
         try:
@@ -546,7 +993,12 @@ class AgentController:
                 duration_ms=duration_ms,
             )
             raise
-        self._emit(state, "plan_created")
+        plan_data = {
+            **planner_data,
+            "sql": _bounded_text(sql),
+            "sql_truncated": len(sql) > 4000,
+        }
+        self._emit(state, "plan_created", data=plan_data)
         self._emit(
             state,
             "llm_call_completed",
@@ -558,6 +1010,7 @@ class AgentController:
             "sql_generation_completed",
             status="completed",
             duration_ms=(perf_counter() - planner_started) * 1000,
+            data=plan_data,
         )
         return sql
 
@@ -656,6 +1109,9 @@ class AgentController:
             "repair_started",
             status="repairing",
             error_category=_safe_error_category(category),
+            related_attempt_id=(
+                f"sql-{state.sql_attempt_count}" if state.sql_attempt_count else None
+            ),
         )
         try:
             sql = await self._call_planner(
@@ -693,7 +1149,81 @@ class AgentController:
             # Chặn category tùy ý ở ranh giới sink để không rò dữ liệu dù caller truyền nhầm.
             if details.get("error_category") is not None:
                 details["error_category"] = _safe_error_category(details["error_category"])
-            self._events.emit(Event(run_id=state.run_id, event_type=event_type, **details))
+            if details.get("status") is None:
+                if event_type == "run_started" or event_type.endswith("_started"):
+                    details["status"] = "running"
+                elif event_type == "plan_created":
+                    details["status"] = "completed"
+            data = dict(details.pop("data", {}) or {})
+            data.update(
+                {
+                    "counters": {
+                        "planner_calls": state.llm_call_count,
+                        "sql_attempts": state.sql_attempt_count,
+                        "tool_calls": state.tool_call_count,
+                    },
+                    "budget": {
+                        "planner_calls": self._budget.max_llm_calls,
+                        "sql_attempts": self._budget.max_sql_attempts,
+                        "tool_calls": self._budget.max_tool_calls,
+                        "retries": self._budget.max_retries,
+                    },
+                }
+            )
+            safe_data = _sanitize_trace_data(data)
+            input_data, output_data = _trace_io(event_type, safe_data)
+            evidence = _trace_evidence(
+                event_type,
+                details.get("status"),
+                safe_data,
+                details.get("error_category"),
+            )
+            if event_type == "run_started":
+                evidence["sensitive_data_checks"] = {"request_input": "not_checked"}
+            elif event_type == "llm_call_started":
+                evidence["sensitive_data_checks"] = {"planner_input": "not_checked"}
+            elif event_type == "plan_created":
+                evidence["sensitive_data_checks"] = {"planner_output": "not_checked"}
+            elif event_type == "tool_call_started":
+                evidence["sensitive_data_checks"] = {"tool_arguments": "not_checked"}
+            elif event_type == "tool_call_completed":
+                evidence["sensitive_data_checks"] = {"tool_output": "not_checked"}
+            elif event_type == "output_check_completed":
+                check_configured = safe_data.get("check") == "configured_output_check"
+                evidence["sensitive_data_checks"] = {
+                    "final_response": (
+                        "pass"
+                        if check_configured and details.get("status") == "completed"
+                        else "violation"
+                        if check_configured and details.get("status") == "blocked"
+                        else "not_checked"
+                    )
+                }
+            attempt_id = state.active_sql_attempt_id
+            if event_type.startswith(("llm_call_", "sql_generation_", "plan_created", "repair_")):
+                if state.current_step == "repair" or attempt_id is None:
+                    attempt_id = f"sql-{state.sql_attempt_count + 1}"
+            related_attempt_id = details.pop("related_attempt_id", None)
+            if related_attempt_id is None and attempt_id != state.active_sql_attempt_id:
+                related_attempt_id = state.active_sql_attempt_id
+            if related_attempt_id is None:
+                related_attempt_id = state.related_sql_attempt_id
+            self._events.emit(
+                LiveEvent(
+                    run_id=state.run_id,
+                    event_type=event_type,
+                    module=_event_module(event_type),
+                    step=state.current_step,
+                    attempt_id=attempt_id,
+                    related_attempt_id=related_attempt_id,
+                    retry_count=state.retry_count,
+                    data=safe_data,
+                    input=input_data,
+                    output=output_data,
+                    evidence=evidence,
+                    **details,
+                )
+            )
         except Exception:
             raise _EventSinkFailure from None
 
@@ -701,7 +1231,20 @@ class AgentController:
         try:
             self._memory.append(state.run_id, kind, value)
         except Exception:
+            self._emit(
+                state,
+                "memory_write_completed",
+                status="failed",
+                error_category="memory_error",
+                data={"kind": kind},
+            )
             raise _MemoryFailure from None
+        self._emit(
+            state,
+            "memory_write_completed",
+            status="completed",
+            data={"kind": kind, "value": value},
+        )
 
     @staticmethod
     def _ensure_before_deadline(deadline: float) -> None:
@@ -796,6 +1339,4 @@ def _error_category(error: Exception) -> str:
 
 def _safe_error_category(category: object) -> str:
     """Giữ nguyên category đã biết; thay category lạ bằng mã chung không nhạy cảm."""
-    if isinstance(category, str) and category in _SAFE_ERROR_CATEGORIES:
-        return category
-    return "tool_error"
+    return safe_error_category(category)

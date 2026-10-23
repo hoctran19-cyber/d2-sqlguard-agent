@@ -2,7 +2,7 @@
 
 This workflow audits local benchmark metadata and proposes a **provisional** Financial
 candidate shortlist. It does not run SQL, compare results, call an agent/model, or establish
-execution accuracy. The existing five-case `sales-bootstrap.json` remains a separate
+execution accuracy. The existing five-case `sales-bootstrap-v1.json` remains a separate
 `fixture_only` benchmark; do not combine its scores with BIRD results.
 
 ## Official sources and revision caution

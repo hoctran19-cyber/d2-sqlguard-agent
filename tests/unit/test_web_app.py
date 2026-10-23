@@ -10,6 +10,7 @@ pytest.importorskip("httpx")
 from fastapi.testclient import TestClient  # noqa: E402
 
 from sqlguard.web.app import create_app  # noqa: E402
+from sqlguard.web.auth import SESSION_COOKIE  # noqa: E402
 from sqlguard.web.database import FinancialDatabase, QueryTimeout  # noqa: E402
 
 
@@ -72,6 +73,12 @@ def test_wrong_password_is_rejected_and_api_needs_login(anonymous):
     assert login(anonymous, "admin", "wrong").status_code == 401
     assert login(anonymous, "nobody").status_code == 401
     assert anonymous.get("/api/me").status_code == 401
+    assert anonymous.get("/api/tables").status_code == 401
+
+
+def test_unknown_session_cookie_does_not_authorize_data_api(anonymous):
+    anonymous.cookies.set(SESSION_COOKIE, "unknown-session-token")
+
     assert anonymous.get("/api/tables").status_code == 401
 
 
@@ -155,9 +162,28 @@ def test_gate_blocks_unsafe_sql(admin, sql):
 
 
 def test_sql_errors_and_bad_page(admin):
-    assert admin.post("/api/sql", json={"sql": "SELECT nope FROM loan"}).status_code == 400
+    response = admin.post("/api/sql", json={"sql": "SELECT private_marker FROM client"})
+    assert response.status_code == 400
+    assert response.json() == {"detail": "Database không thể hoàn tất truy vấn."}
+    assert "private_marker" not in response.text
+    assert "Traceback" not in response.text
     assert admin.post("/api/sql", json={"sql": "SELECT 1", "page": 0}).status_code == 422
     assert admin.post("/api/sql", json={"sql": "SELECT 1", "page": True}).status_code == 422
+
+
+def test_sql_timeout_does_not_expose_exception_details(admin, monkeypatch):
+    def timeout(*args, **kwargs):
+        raise QueryTimeout("private SQL detail at /private/database.sqlite")
+
+    monkeypatch.setattr(FinancialDatabase, "run_page", timeout)
+
+    response = admin.post("/api/sql", json={"sql": "SELECT private_marker FROM client"})
+
+    assert response.status_code == 408
+    assert response.json() == {"detail": "Truy vấn vượt quá thời gian cho phép."}
+    assert "private SQL detail" not in response.text
+    assert "/private/database.sqlite" not in response.text
+    assert "private_marker" not in response.text
 
 
 def test_slow_query_is_interrupted(db_path):
