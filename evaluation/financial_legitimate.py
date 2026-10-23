@@ -30,7 +30,7 @@ MINIDEV_ENV = "SQLGUARD_MINIDEV_DIR"
 
 SCHEMA_VERSION = "financial-legitimate-draft-0.1"
 SUITE_ID = "financial-d2"
-# Stable selection agreed for D2: task ID -> (role, BIRD Financial question_id).
+# Legitimate task ID -> (role, BIRD Financial question_id).
 SELECTION = {
     "D2-L01": ("operator", 89),
     "D2-L02": ("operator", 119),
@@ -43,6 +43,14 @@ SELECTION = {
     "D2-L09": ("credit_officer", 99),
     "D2-L10": ("credit_officer", 136),
 }
+# Content hashes of the PostgreSQL Gold source (repo root) and the role-pool inputs
+# ($SQLGUARD_MINIDEV_DIR); the manifest no longer carries a sources block.
+POSTGRES_GOLD_SHA256 = "6dffd1fd01ec2820b97e6b28d556659057540f2f339e06cc61336f979f2bc6b4"
+ROLE_POOL_SHA256 = {
+    "operator": "7cbae0ce8cc46fa9cc0afeb036a33c2312410b6f75058bbc6754174a1690bd07",
+    "analyst": "b9ccdbe47c576f27c2ad42adeb76f2a9637fbb3c42ea6a19542c3831f3921077",
+    "credit_officer": "4aee952a013e42de56ad62299c1688541caccb5c6db2a88aa7509fc2915b35ff",
+}
 ROLE_POOL_FILES = {
     "operator": "financial-postgresql-legitimate.operator.vi.json",
     "analyst": "financial-postgresql-legitimate.analyst.vi.json",
@@ -50,7 +58,7 @@ ROLE_POOL_FILES = {
 }
 PLANNED_COMPOSITION = {
     "legitimate": 10,
-    "authorization": 2,
+    "authorization": 3,
     "mixed": 2,
     "injection": 4,
     "failure": 2,
@@ -177,29 +185,11 @@ def _check_suite(document: dict, errors: list[str]) -> None:
     if len(configs) != 2 or reps != 3:
         errors.append("run_plan must declare 2 configs x 3 repetitions")
     if plan.get("composition") != PLANNED_COMPOSITION:
-        errors.append("run_plan.composition must be 10/2/2/4/2 + 2 clean")
+        errors.append("run_plan.composition must be 10/3/2/4/2 + 2 clean")
     main = sum(v for k, v in PLANNED_COMPOSITION.items() if k != "clean")
     expected_runs = {"main": main * 2 * 3, "clean": 2 * 2 * 3}
     if plan.get("planned_runs") != expected_runs:
         errors.append(f"run_plan.planned_runs must be {expected_runs}")
-
-
-def _check_pending_slots(document: dict, errors: list[str]) -> None:
-    slots = document.get("pending_slots")
-    if not isinstance(slots, list):
-        errors.append("pending_slots must be a list")
-        return
-    counts: dict[str, int] = {}
-    for slot in slots:
-        counts[slot.get("category")] = counts.get(slot.get("category"), 0) + 1
-        if slot.get("status") != "pending_definition" or slot.get("runnable") is not False:
-            errors.append(f"slot {slot.get('id')} must be pending_definition and not runnable")
-        for forbidden in ("question", "expected", "gold_sql", "attack_payload"):
-            if slot.get(forbidden) is not None:
-                errors.append(f"slot {slot.get('id')} must not define {forbidden}")
-    wanted = {k: v for k, v in PLANNED_COMPOSITION.items() if k != "legitimate"}
-    if counts != wanted:
-        errors.append(f"pending slot counts {counts} != {wanted}")
 
 
 def _check_task(task: dict, document: dict, gold_source: dict, root: Path, errors: list[str]):
@@ -313,9 +303,8 @@ def validate_suite(document: dict, *, root: Path = SUITE_DIR, gold_source_path=N
         raise SuiteValidationError(["suite must be a JSON object"])
     _check_suite(document, errors)
     gold_source_path = Path(gold_source_path or POSTGRES_GOLD_SOURCE)
-    lock = document.get("sources", {}).get("postgresql_gold", {})
-    if sha256_file(gold_source_path) != lock.get("sha256"):
-        errors.append("PostgreSQL gold source hash differs from sources.postgresql_gold")
+    if sha256_file(gold_source_path) != POSTGRES_GOLD_SHA256:
+        errors.append("PostgreSQL gold source hash differs from POSTGRES_GOLD_SHA256")
     gold_source = {
         r["question_id"]: r for r in load_json(gold_source_path) if r["db_id"] == "financial"
     }
@@ -324,17 +313,13 @@ def validate_suite(document: dict, *, root: Path = SUITE_DIR, gold_source_path=N
         raise SuiteValidationError(errors + ["tasks must be a list"])
     ids = [t.get("id") for t in tasks]
     if sorted(ids) != sorted(SELECTION) or len(set(ids)) != len(ids):
-        errors.append(f"tasks must be exactly the selected IDs {sorted(SELECTION)}; got {ids}")
+        errors.append(f"tasks must be exactly the task IDs {sorted(SELECTION)}; got {ids}")
     pairs = [(t.get("role"), (t.get("source") or {}).get("question_id")) for t in tasks]
     if len(set(pairs)) != len(pairs):
         errors.append("duplicate (role, question_id) pair")
-    slot_ids = {s.get("id") for s in document.get("pending_slots") or []}
-    if slot_ids & set(ids):
-        errors.append("pending slot IDs collide with legitimate task IDs")
     for task in tasks:
         if task.get("id") in SELECTION:
             _check_task(task, document, gold_source, Path(root), errors)
-    _check_pending_slots(document, errors)
     for item in public_inputs(document) if not errors else []:
         if set(item) != set(MODEL_INPUT_FIELDS):
             errors.append("public input projection leaked extra fields")
@@ -355,12 +340,11 @@ def minidev_dir() -> Path:
 def check_role_pool_sources(document: dict, minidev: Path) -> list[str]:
     """Compare recorded role-pool prompts/hashes with the local (read-only) minidev inputs."""
     errors = []
-    recorded = document["sources"]["role_pools"]
     pools = {}
     for role, name in ROLE_POOL_FILES.items():
         path = minidev / name
-        if sha256_file(path) != recorded[role]["sha256"]:
-            errors.append(f"role pool {name} hash differs from manifest")
+        if sha256_file(path) != ROLE_POOL_SHA256[role]:
+            errors.append(f"role pool {name} hash differs from ROLE_POOL_SHA256")
         pools[role] = {r["question_id"]: r for r in load_json(path)}
     for task in document["tasks"]:
         pool = task["source"].get("role_pool") or {}

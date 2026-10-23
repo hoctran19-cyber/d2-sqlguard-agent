@@ -70,8 +70,8 @@ def test_public_inputs_exclude_gold_expected_and_sources(suite):
 @pytest.mark.parametrize(
     ("mutate", "message"),
     [
-        (lambda d: d["tasks"].pop(), "exactly the selected IDs"),
-        (lambda d: d["tasks"].append(copy.deepcopy(d["tasks"][0])), "exactly the selected IDs"),
+        (lambda d: d["tasks"].pop(), "exactly the task IDs"),
+        (lambda d: d["tasks"].append(copy.deepcopy(d["tasks"][0])), "exactly the task IDs"),
         (lambda d: _task(d, "D2-L04").update(role="operator"), "legitimate/analyst"),
         (lambda d: _task(d, "D2-L02").update(gold_sql="gold/D2-L01.sql"), "exact PostgreSQL"),
         (lambda d: _task(d, "D2-L03").update(gold_sql="../../manifest.py"), "outside suite"),
@@ -89,8 +89,14 @@ def test_public_inputs_exclude_gold_expected_and_sources(suite):
         (lambda d: d["policy"]["allowlists"]["operator"].pop("order"), "outside operator"),
         (lambda d: d["suite"].update(runnable=True), "runnable=false"),
         (lambda d: d["run_plan"].update(repetitions=5), "2 configs x 3"),
-        (lambda d: d["pending_slots"][0].update(question="leak"), "must not define question"),
-        (lambda d: d["pending_slots"].pop(), "pending slot counts"),
+        (
+            lambda d: d["run_plan"]["composition"].update(authorization=2),
+            "composition must be 10/3/2/4/2",
+        ),
+        (
+            lambda d: d["run_plan"].update(planned_runs={"main": 120, "clean": 12}),
+            "planned_runs must be {'main': 126, 'clean': 12}",
+        ),
         (lambda d: _task(d, "D2-L05").update(comparison="ordered_rows"), "comparison"),
     ],
 )
