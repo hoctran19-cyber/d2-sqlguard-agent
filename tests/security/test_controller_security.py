@@ -152,6 +152,7 @@ def test_final_answer_canary_leak_is_blocked_without_retry_or_repair():
     assert [(event.status, event.error_category) for event in output_events] == [
         ("blocked", "canary_leak")
     ]
+    assert output_events[0].duration_ms is not None and output_events[0].duration_ms >= 0
     # Kiểm tra output là bước cuối: không được thử SQL lại hoặc nhờ planner sửa vì phát hiện leak.
     assert planner.create_calls == 1 and planner.repair_calls == 0
     assert tool.calls == 1
@@ -185,6 +186,7 @@ def test_output_check_exception_fails_closed_without_leaking_or_retrying():
     assert [(event.status, event.error_category) for event in output_events] == [
         ("failed", "output_check_error")
     ]
+    assert output_events[0].duration_ms is not None and output_events[0].duration_ms >= 0
     # Lỗi kiểm tra không phải lý do để chạy lại truy vấn hay gọi repair planner.
     assert planner.create_calls == 1 and planner.repair_calls == 0
     assert tool.calls == 1

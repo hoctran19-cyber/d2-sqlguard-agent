@@ -1,1 +1,1 @@
-"""Per-run short-term context storage."""
+"""Short-term run context and immutable semantic reference memory."""

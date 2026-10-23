@@ -370,6 +370,11 @@ def test_clean_answer_passes_output_check():
     assert result.succeeded
     statuses = [e.status for e in events.events if e.event_type == "output_check_completed"]
     assert statuses == ["completed"]
+    output_check_events = [
+        event for event in events.events if event.event_type == "output_check_completed"
+    ]
+    assert output_check_events[0].duration_ms is not None
+    assert output_check_events[0].duration_ms >= 0
     assert not [r for r in audit.records if r.phase == "output"]
 
 

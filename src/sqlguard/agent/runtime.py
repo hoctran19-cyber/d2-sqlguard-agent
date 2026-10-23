@@ -30,6 +30,7 @@ from sqlguard.agent.planning import OllamaPlanner, Planner, PlannerConfigError, 
 from sqlguard.agent.postgres_schema import PostgresSchemaAdapter, SchemaAdapterError
 from sqlguard.agent.schema import SchemaContext
 from sqlguard.agent.sqlite_schema import SQLITE_PATH_ENV, SQLiteSchemaAdapter
+from sqlguard.memory.semantic import DEFAULT_SEMANTIC_MEMORY
 from sqlguard.security.audit import AuditSink, InMemoryAuditSink, JsonlAuditSink
 from sqlguard.security.gate import PolicySQLGate, SecurityContext
 from sqlguard.security.policy import RolePolicy, load_default_policy
@@ -79,6 +80,8 @@ async def create_planner_for_role(
         policy = policy or load_default_policy()
         if not policy.has_role(role):
             raise SchemaAdapterError("schema_unknown_role")
+        if policy.version != DEFAULT_SEMANTIC_MEMORY.policy_version:
+            raise PlannerConfigError("Semantic memory is incompatible with the role policy")
         return OllamaPlanner.from_env(env, role=role, policy=policy)
     # Từ đây phải nạp schema: thiếu role thì từ chối, tuyệt đối không dùng schema không lọc.
     if not role or not role.strip():
@@ -87,6 +90,8 @@ async def create_planner_for_role(
     policy = policy or load_default_policy()
     if not policy.has_role(role):
         raise SchemaAdapterError("schema_unknown_role")
+    if policy.version != DEFAULT_SEMANTIC_MEMORY.policy_version:
+        raise PlannerConfigError("Semantic memory is incompatible with the role policy")
     # Adapter tự kiểm tra role có trong policy, lấy DSN theo role và lọc schema theo RolePolicy.
     if schema_loader is not None:
         loader = schema_loader

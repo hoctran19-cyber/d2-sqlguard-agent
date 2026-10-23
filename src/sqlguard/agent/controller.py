@@ -37,6 +37,47 @@ class RunScope:
 # Lỗi DB duy nhất được cho planner sửa (một lần/run); lỗi quyền, timeout, read-only, canary
 # và lỗi DB khác luôn kết thúc, không bao giờ chạy lại cùng SQL.
 _DB_REPAIRABLE = frozenset({"db_schema_error", "db_syntax_error"})
+# Chỉ các mã lỗi cố định, không chứa dữ liệu đầu vào, mới được phép đi vào event/state/memory.
+# Category do tool hoặc tích hợp bên ngoài cung cấp phải qua danh sách này trước khi ghi nhận.
+_SAFE_ERROR_CATEGORIES = frozenset(
+    {
+        "audit_error",
+        "budget_exhausted",
+        "cancelled",
+        "canary_leak",
+        "db_error",
+        "db_permission_denied",
+        "db_read_only_violation",
+        "db_role_unconfigured",
+        "db_schema_error",
+        "db_syntax_error",
+        "db_timeout",
+        "db_unavailable",
+        "event_sink_error",
+        "internal_error",
+        "invalid_request",
+        "invalid_tool_input",
+        "invalid_tool_output",
+        "memory_error",
+        "mcp_invalid_result",
+        "mcp_tool_error",
+        "mcp_transport_error",
+        "output_check_error",
+        "planner_call_budget_exhausted",
+        "planner_error",
+        "run_timeout",
+        "security_gate_error",
+        "security_rejection",
+        "sql_attempt_budget_exhausted",
+        "sql_error",
+        "tool_call_budget_exhausted",
+        "tool_error",
+        "tool_exception",
+        "tool_timeout",
+        "unknown_role",
+        "unknown_tool",
+    }
+)
 # Database tự từ chối vì quyền (authorizer SQLite/grants) dù gate đã cho qua: đó là một lần chặn
 # bảo mật nên run kết thúc REFUSED như khi gate từ chối, không retry/repair; failure_reason giữ
 # nguyên category để phân biệt lớp nào đã chặn.
@@ -76,6 +117,13 @@ class AgentController:
         deadline = asyncio.get_running_loop().time() + self._budget.run_timeout_seconds
         try:
             self._emit(state, "run_started")
+            schema_context = getattr(self._planner, "schema_context", None)
+            # Chỉ ghi nhận schema có được cấu hình hay không; tuyệt đối không ghi nội dung schema.
+            self._emit(
+                state,
+                "schema_context_ready",
+                status="available" if schema_context is not None else "not_configured",
+            )
             # Kiểm tra câu hỏi trước để request rỗng không tạo gate/tool/kết nối nào.
             if not request.question.strip():
                 raise ValueError("Question must not be empty")
@@ -159,6 +207,8 @@ class AgentController:
         self._ensure_before_deadline(deadline)
         state.current_step = "context_retrieval"
         self._emit(state, "context_retrieval_started")
+        # Dùng đồng hồ thời gian thực để đo riêng bước đọc memory, không phụ thuộc đồng hồ hệ thống.
+        retrieval_started = perf_counter()
         try:
             context = self._memory.get(state.run_id)
         except Exception:
@@ -167,9 +217,15 @@ class AgentController:
                 "context_retrieval_completed",
                 status="failed",
                 error_category="memory_error",
+                duration_ms=(perf_counter() - retrieval_started) * 1000,
             )
             raise _MemoryFailure from None
-        self._emit(state, "context_retrieval_completed", status="completed")
+        self._emit(
+            state,
+            "context_retrieval_completed",
+            status="completed",
+            duration_ms=(perf_counter() - retrieval_started) * 1000,
+        )
 
         state.current_step = "planning"
         self._ensure_before_deadline(deadline)
@@ -178,7 +234,7 @@ class AgentController:
         # Lần gọi planner đầu tiên: dùng chung helper với các lần repair để cùng một cách đếm
         # ngân sách, phát event và xử lý lỗi (planner lỗi luôn thành _PlannerFailure).
         sql = await self._call_planner(
-            state, lambda: self._planner.create_plan(state.request.question, context)
+            state, lambda: self._planner.create_plan(state.request.question, context), deadline
         )
 
         # Cờ đảm bảo lỗi schema/cú pháp của DB chỉ được sửa tối đa MỘT lần trong mỗi run.
@@ -194,6 +250,8 @@ class AgentController:
             if state.sql_attempt_count >= sql_limit:
                 raise _BudgetExceeded("sql_attempt_budget_exhausted")
             self._emit(state, "security_check_started")
+            # Event chỉ ghi trạng thái/kết quả và thời lượng; SQL không được đưa vào trace.
+            gate_started = perf_counter()
             state.sql_attempt_count += 1
             try:
                 decision = scope.security_gate.check(sql)
@@ -206,6 +264,7 @@ class AgentController:
                     "security_check_completed",
                     status="failed",
                     error_category="security_gate_error",
+                    duration_ms=(perf_counter() - gate_started) * 1000,
                 )
                 raise _SecurityGateFailure from None
             self._emit(
@@ -213,6 +272,7 @@ class AgentController:
                 "security_check_completed",
                 status="allowed" if allowed else "denied",
                 error_category=None if allowed else "security_rejection",
+                duration_ms=(perf_counter() - gate_started) * 1000,
             )
             if not allowed:
                 # Bị gate từ chối: chỉ khi denial "repairable" và planner hỗ trợ mới được sửa.
@@ -229,6 +289,8 @@ class AgentController:
                 raise _BudgetExceeded("tool_call_budget_exhausted")
             self._ensure_before_deadline(deadline)
             self._emit(state, "tool_call_started")
+            # Đo riêng bước thực thi để trace khi tool thành công, lỗi, timeout hoặc bị hủy.
+            self._emit(state, "execute_started")
             state.tool_call_count += 1
             tool_started = perf_counter()
             # Chỉ được gán khi gate ở ranh giới tool (SecureSqlTool) từ chối; mặc định là None
@@ -249,11 +311,44 @@ class AgentController:
                 )
             except TimeoutError:
                 if asyncio.get_running_loop().time() >= deadline:
+                    duration_ms = (perf_counter() - tool_started) * 1000
+                    self._emit(
+                        state,
+                        "tool_call_completed",
+                        status="failed",
+                        error_category="run_timeout",
+                        duration_ms=duration_ms,
+                    )
+                    self._emit(
+                        state,
+                        "execute_completed",
+                        status="failed",
+                        error_category="run_timeout",
+                        duration_ms=duration_ms,
+                    )
                     raise TimeoutError
                 category = "tool_timeout"
                 retryable = True
+            except asyncio.CancelledError:
+                duration_ms = (perf_counter() - tool_started) * 1000
+                error_category = self._cancellation_category(deadline)
+                self._emit(
+                    state,
+                    "tool_call_completed",
+                    status="failed",
+                    error_category=error_category,
+                    duration_ms=duration_ms,
+                )
+                self._emit(
+                    state,
+                    "execute_completed",
+                    status="failed",
+                    error_category=error_category,
+                    duration_ms=duration_ms,
+                )
+                raise
             except ToolError as error:
-                category = error.category
+                category = _safe_error_category(error.category)
                 retryable = error.retryable
                 # Gate ở ranh giới tool từ chối: vẫn phải qua kiểm tra repairable và budget.
                 tool_denial = error.decision if isinstance(error, SecurityToolError) else None
@@ -267,14 +362,53 @@ class AgentController:
                     status="completed",
                     duration_ms=(perf_counter() - tool_started) * 1000,
                 )
+                self._emit(
+                    state,
+                    "execute_completed",
+                    status="completed",
+                    duration_ms=(perf_counter() - tool_started) * 1000,
+                )
+                answer_started = perf_counter()
+                # Observe xử lý kết quả nhưng chỉ phát metadata, không phát nội dung kết quả.
+                self._emit(state, "observe_started")
                 try:
                     answer = _format_result(output)
                 except Exception:
+                    self._emit(
+                        state,
+                        "observe_completed",
+                        status="failed",
+                        error_category="invalid_tool_output",
+                        duration_ms=(perf_counter() - answer_started) * 1000,
+                    )
                     raise _InvalidToolOutput from None
                 # Kiểm tra rò rỉ TRƯỚC khi gán final_answer: bị chặn thì không trả gì về.
-                self._check_output(state, scope, answer)
+                try:
+                    self._check_output(state, scope, answer)
+                except ToolError as error:
+                    self._emit(
+                        state,
+                        "observe_completed",
+                        status="failed",
+                        error_category=_safe_error_category(error.category),
+                        duration_ms=(perf_counter() - answer_started) * 1000,
+                    )
+                    raise
+                self._emit(
+                    state,
+                    "observe_completed",
+                    status="completed",
+                    duration_ms=(perf_counter() - answer_started) * 1000,
+                )
                 state.final_answer = answer
                 state.status = RunStatus.SUCCEEDED
+                # Chỉ đánh dấu Answer hoàn tất sau khi kết quả đã qua bước kiểm tra đầu ra.
+                self._emit(
+                    state,
+                    "answer_completed",
+                    status="completed",
+                    duration_ms=(perf_counter() - answer_started) * 1000,
+                )
                 return
 
             state.errors.append(category)
@@ -282,6 +416,13 @@ class AgentController:
             self._emit(
                 state,
                 "tool_call_completed",
+                status="failed",
+                error_category=category,
+                duration_ms=(perf_counter() - tool_started) * 1000,
+            )
+            self._emit(
+                state,
+                "execute_completed",
                 status="failed",
                 error_category=category,
                 duration_ms=(perf_counter() - tool_started) * 1000,
@@ -316,6 +457,7 @@ class AgentController:
 
     def _check_output(self, state: AgentState, scope: RunScope, answer: str) -> None:
         """Chặn câu trả lời cuối nếu rò rỉ; mọi lỗi của bước kiểm tra cũng chặn (fail closed)."""
+        check_started = perf_counter()
         check = scope.output_check
         # Không có output_check (chế độ mock) thì giữ nguyên hành vi cũ.
         if check is None:
@@ -329,18 +471,30 @@ class AgentController:
                 "output_check_completed",
                 status="failed",
                 error_category="output_check_error",
+                duration_ms=(perf_counter() - check_started) * 1000,
             )
             raise ToolError("Output check failed", category="output_check_error") from None
         if leaked:
             # Event chỉ nêu danh mục; tuyệt đối không đưa câu trả lời hay giá trị bị rò vào.
             self._emit(
-                state, "output_check_completed", status="blocked", error_category="canary_leak"
+                state,
+                "output_check_completed",
+                status="blocked",
+                error_category="canary_leak",
+                duration_ms=(perf_counter() - check_started) * 1000,
             )
             raise ToolError("Result withheld by output check", category="canary_leak")
         # Sạch: ghi nhận đã kiểm tra xong để event/audit phản ánh đúng diễn biến của run.
-        self._emit(state, "output_check_completed", status="completed")
+        self._emit(
+            state,
+            "output_check_completed",
+            status="completed",
+            duration_ms=(perf_counter() - check_started) * 1000,
+        )
 
-    async def _call_planner(self, state: AgentState, make_call: Callable[[], Any]) -> str:
+    async def _call_planner(
+        self, state: AgentState, make_call: Callable[[], Any], deadline: float
+    ) -> str:
         """Gọi planner một lần, tính vào ngân sách planner và phát event; trả về SQL đề xuất.
 
         ``make_call`` trả về coroutine của ``create_plan`` hoặc ``repair_plan``. Mọi lỗi (ngoại
@@ -348,6 +502,8 @@ class AgentController:
         chi tiết lỗi nội bộ không lọt vào event hay state.
         """
         self._emit(state, "llm_call_started")
+        # Một lời gọi planner tạo hoặc sửa SQL; chỉ ghi trạng thái/thời lượng, không ghi SQL.
+        self._emit(state, "sql_generation_started")
         state.llm_call_count += 1
         planner_started = perf_counter()
         try:
@@ -364,11 +520,42 @@ class AgentController:
                 error_category="planner_error",
                 duration_ms=(perf_counter() - planner_started) * 1000,
             )
+            self._emit(
+                state,
+                "sql_generation_completed",
+                status="failed",
+                error_category="planner_error",
+                duration_ms=(perf_counter() - planner_started) * 1000,
+            )
             raise _PlannerFailure from None
+        except asyncio.CancelledError:
+            duration_ms = (perf_counter() - planner_started) * 1000
+            error_category = self._cancellation_category(deadline)
+            self._emit(
+                state,
+                "llm_call_completed",
+                status="failed",
+                error_category=error_category,
+                duration_ms=duration_ms,
+            )
+            self._emit(
+                state,
+                "sql_generation_completed",
+                status="failed",
+                error_category=error_category,
+                duration_ms=duration_ms,
+            )
+            raise
         self._emit(state, "plan_created")
         self._emit(
             state,
             "llm_call_completed",
+            status="completed",
+            duration_ms=(perf_counter() - planner_started) * 1000,
+        )
+        self._emit(
+            state,
+            "sql_generation_completed",
             status="completed",
             duration_ms=(perf_counter() - planner_started) * 1000,
         )
@@ -463,19 +650,49 @@ class AgentController:
             raise _BudgetExceeded("tool_call_budget_exhausted")
         state.current_step = "repair"
         # Event repair chỉ mang metadata (trạng thái, nhóm lỗi), không chứa SQL hay câu hỏi.
-        self._emit(state, "repair_started", status="repairing", error_category=category)
+        repair_started = perf_counter()
+        self._emit(
+            state,
+            "repair_started",
+            status="repairing",
+            error_category=_safe_error_category(category),
+        )
         try:
             sql = await self._call_planner(
-                state, lambda: repair(state.request.question, context, feedback)
+                state, lambda: repair(state.request.question, context, feedback), deadline
             )
         except _PlannerFailure:
-            self._emit(state, "repair_completed", status="failed", error_category="planner_error")
+            self._emit(
+                state,
+                "repair_completed",
+                status="failed",
+                error_category="planner_error",
+                duration_ms=(perf_counter() - repair_started) * 1000,
+            )
             raise
-        self._emit(state, "repair_completed", status="completed")
+        except asyncio.CancelledError:
+            error_category = self._cancellation_category(deadline)
+            self._emit(
+                state,
+                "repair_completed",
+                status="failed",
+                error_category=error_category,
+                duration_ms=(perf_counter() - repair_started) * 1000,
+            )
+            raise
+        self._emit(
+            state,
+            "repair_completed",
+            status="completed",
+            duration_ms=(perf_counter() - repair_started) * 1000,
+        )
         return sql
 
     def _emit(self, state: AgentState, event_type: str, **details: Any) -> None:
         try:
+            # Chặn category tùy ý ở ranh giới sink để không rò dữ liệu dù caller truyền nhầm.
+            if details.get("error_category") is not None:
+                details["error_category"] = _safe_error_category(details["error_category"])
             self._events.emit(Event(run_id=state.run_id, event_type=event_type, **details))
         except Exception:
             raise _EventSinkFailure from None
@@ -497,6 +714,13 @@ class AgentController:
         if remaining <= 0:
             raise TimeoutError
         return remaining
+
+    @staticmethod
+    def _cancellation_category(deadline: float) -> str:
+        """Phân biệt timeout của run với việc tác vụ bị caller hủy chủ động."""
+        if asyncio.get_running_loop().time() >= deadline:
+            return "run_timeout"
+        return "cancelled"
 
     @staticmethod
     def _set_terminal_step(state: AgentState) -> None:
@@ -559,10 +783,19 @@ def _format_result(output: Any) -> str:
 
 
 def _error_category(error: Exception) -> str:
+    """Đổi ngoại lệ thành mã an toàn trước khi ghi vào trạng thái run."""
     if isinstance(error, _InvalidToolOutput):
         return "invalid_tool_output"
     if isinstance(error, ToolError):
-        return error.category
+        # ToolError có thể đến từ tích hợp ngoài nên category không mặc nhiên được tin cậy.
+        return _safe_error_category(error.category)
     if isinstance(error, ValueError):
         return "invalid_request"
     return "internal_error"
+
+
+def _safe_error_category(category: object) -> str:
+    """Giữ nguyên category đã biết; thay category lạ bằng mã chung không nhạy cảm."""
+    if isinstance(category, str) and category in _SAFE_ERROR_CATEGORIES:
+        return category
+    return "tool_error"
