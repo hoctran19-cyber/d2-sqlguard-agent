@@ -26,7 +26,7 @@ export function renderQueryPage(container, user) {
 /** Phase 1: ô nhập câu hỏi. */
 function showAsk(container, user, previousQuestion = "") {
   const input = h("textarea", {
-    class: "ask-input", rows: "3", placeholder: "Đặt câu hỏi về dữ liệu financial…", "aria-label": "Câu hỏi",
+    class: "ask-input", rows: "3", placeholder: "Đặt câu hỏi về dữ liệu…", "aria-label": "Câu hỏi",
   });
   input.value = previousQuestion;
   const sendButton = h("button", { class: "btn", onclick: () => send(input.value) }, "Gửi");
@@ -34,7 +34,9 @@ function showAsk(container, user, previousQuestion = "") {
   const samples = h("div", { class: "samples" });
   api.samples().then((data) => samples.replaceChildren(
     h("p", { class: "muted small" },
-      `Planner ${data.planner} (chưa tích hợp LLM) chỉ hiểu các câu hỏi mẫu dưới đây:`),
+      data.mode === "synthetic_sqlite"
+        ? `SQLite tổng hợp · planner ${data.planner} (model ${data.model}) — câu hỏi gợi ý:`
+        : `Planner ${data.planner} (chưa tích hợp LLM) chỉ hiểu các câu hỏi mẫu dưới đây:`),
     // replaceChildren không tự trải mảng nên dùng "..." để thêm từng nút.
     ...data.questions.map((question) =>
       h("button", { class: "chip", onclick: () => send(question) }, question)),
@@ -90,18 +92,32 @@ function showAnswer(container, user, answer) {
       ? h("p", { class: "muted" }, "Phần bị bỏ: ", answer.omitted_fields.join(", "))
       : null,
     answer.run_id ? h("p", { class: "muted small" },
-      `Run ${answer.run_id} · planner ${answer.planner} · ${Math.round(answer.duration_ms)} ms`) : null,
+      `Run ${answer.run_id} · planner ${answer.planner}${answer.model ? ` · model ${answer.model}` : ""} · ${Math.round(answer.duration_ms)} ms`) : null,
+    answer.execution_status
+      ? h("p", { class: "muted small" },
+        `Backend: SQLite tổng hợp · execution: ${answer.execution_status} · ${answer.row_count} dòng${answer.truncated ? " (đã giới hạn kết quả)" : ""}`)
+      : null,
   );
 
-  // Có bảng dữ liệu: dùng lại component SQL + bảng phân trang (SQL hiển thị trong ô của nó).
-  // Bị từ chối/lỗi: chỉ hiển thị câu SQL đã sinh (nếu có), không có bảng.
+  const synthetic = answer.backend === "synthetic_sqlite";
+  const gateArea = answer.gate
+    ? h("div", { class: `gate-result ${answer.gate.status === "ALLOW" ? "allowed" : "blocked"}` },
+      h("strong", {}, `Security Gate: ${answer.gate.status}`),
+      h("span", {}, answer.gate.reason))
+    : null;
+  let sqlArea = null;
   let resultArea = null;
-  if (answer.result) {
+  if (answer.sql && synthetic) {
+    sqlArea = h("div", {},
+      h("label", { class: "field-label" }, "SQL do planner đề xuất"),
+      h("pre", { class: "sql-box" }, answer.sql));
+    if (answer.result) resultArea = renderStaticResult(answer.result);
+  } else if (answer.result) {
     resultArea = createSqlTable({
       sql: answer.sql, initialResult: answer.result, label: "Câu SQL được sinh ra",
     }).element;
   } else if (answer.sql) {
-    resultArea = h("div", {},
+    sqlArea = h("div", {},
       h("label", { class: "field-label" }, "Câu SQL được sinh ra (không được thực thi)"),
       h("pre", { class: "sql-box" }, answer.sql));
   }
@@ -114,6 +130,25 @@ function showAnswer(container, user, answer) {
         onclick: () => { lastAnswer = null; showAsk(container, user); },
       }, "Đặt câu hỏi mới")),
     statusBox,
+    gateArea,
+    sqlArea,
     resultArea,
   ));
+}
+
+/** Synthetic runtime results are display-only; never route them to the legacy /api/sql API. */
+function renderStaticResult(result) {
+  const rows = result.rows.length
+    ? result.rows.map((row) => h("tr", {}, row.map((cell) =>
+      h("td", { class: cell === null ? "null" : "" }, cell === null ? "NULL" : cell)))
+    : [h("tr", {}, h("td", {
+      colspan: String(result.columns.length || 1), class: "muted",
+    }, "0 dòng"))];
+  return h("section", {},
+    h("label", { class: "field-label" }, "Kết quả SQLite (chỉ đọc)"),
+    h("div", { class: "table-wrap" },
+      h("table", {},
+        h("thead", {}, h("tr", {}, result.columns.map((name) => h("th", {}, name)))),
+        h("tbody", {}, rows))),
+  );
 }

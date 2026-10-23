@@ -166,6 +166,55 @@ The Query page runs the real `AgentController`, but **its planner is a no-LLM de
 maps a few sample questions to SQL (`src/sqlguard/web/demo_planner.py`); replace it in
 `build_planner()` once the LLM planner exists. Sessions are in memory and reset on restart.
 
+### Optional: Web Query with Ollama + synthetic SQLite
+
+The default Web Query and Database pages continue using the legacy financial database path and
+demo planner. To opt only the natural-language Query endpoint into the synthetic demo, create a
+synthetic fixture (the command refuses to overwrite an existing file):
+
+```bash
+python -m sqlguard.demo_fixture --output /tmp/sqlguard-web-demo.sqlite
+```
+
+Install the Ollama model and configure the dedicated Web mode and database path. The Web path is
+not inferred from `SQLGUARD_FINANCIAL_DB`, `SQLGUARD_SQLITE_PATH`, or the legacy default; it must
+be explicitly configured. It uses the fixed `d2_synthetic_v1` policy and trusted `sales` demo role.
+This is a controlled demo configuration, not a business-role grant.
+
+```bash
+ollama serve                         # terminal 1; skip if already running
+```
+
+In a second terminal:
+
+```bash
+ollama pull qwen3:8b
+curl http://localhost:11434/api/tags # verify Ollama and model
+
+export SQLGUARD_WEB_QUERY_MODE=synthetic_sqlite
+export SQLGUARD_WEB_DEMO_SQLITE_PATH=/tmp/sqlguard-web-demo.sqlite
+export SQLGUARD_PLANNER=ollama
+export SQLGUARD_OLLAMA_MODEL=qwen3:8b
+export SQLGUARD_OLLAMA_TIMEOUT_SECONDS=60
+python -m pip install -e ".[dev,web]"
+python -m sqlguard.web
+```
+
+Log in with the local demo admin account and open Query. For example, ask `List order IDs and
+total amounts`; the generated SQL goes through the policy gate and shared
+`SecureSqlTool`/read-only SQLite executor. The page shows the configured planner/model, proposed
+SQL, gate verdict, execution status, run ID, duration, row count, and a display-only result table.
+The Query page does not resubmit synthetic SQL to the legacy `/api/sql` endpoint. Missing or
+invalid database/schema configuration returns a safe error; unavailable Ollama returns a failed
+run without switching to the demo planner. Run `curl http://localhost:11434/api/tags` to confirm
+the service/model before retrying. The Database page and `SQLGUARD_FINANCIAL_DB` behavior remain
+unchanged.
+
+Automatic tests mock Ollama and use a temporary SQLite fixture; they do not require a running
+model. A manual smoke check can start Ollama, follow the commands above, submit the sample
+question, and verify that the displayed result comes from SQLite. Automated tests cover denied
+SQL and confirm it never reaches the executor.
+
 ## Tests, lint, and evaluation
 
 ```bash

@@ -36,8 +36,13 @@ from sqlguard.web.database import (
     QueryTimeout,
     resolve_db_path,
 )
-from sqlguard.web.demo_planner import PLANNER_NAME, SAMPLE_QUESTIONS
-from sqlguard.web.query_service import answer_question, build_gate, explain_denial
+from sqlguard.web.query_service import (
+    WebQueryConfigurationError,
+    answer_question,
+    build_gate,
+    explain_denial,
+    query_sample_payload,
+)
 from sqlguard.web.role_reference import role_reference
 
 STATIC_DIR = Path(__file__).parent / "static"
@@ -272,8 +277,11 @@ def create_app(db_path: Path | None = None) -> FastAPI:
 
     @app.get("/api/query/samples")
     def query_samples(user: User = Depends(require_admin)):
-        """Câu hỏi mẫu mà planner demo hiểu được (khi có LLM thì danh sách này chỉ để gợi ý)."""
-        return {"planner": PLANNER_NAME, "questions": list(SAMPLE_QUESTIONS)}
+        """Câu hỏi mẫu cho chế độ Query đang cấu hình; không khẳng định planner đã chạy."""
+        try:
+            return query_sample_payload()
+        except WebQueryConfigurationError:
+            raise HTTPException(503, "Cấu hình Query Web không hợp lệ") from None
 
     @app.post("/api/query")
     async def query(request: Request, user: User = Depends(require_admin)):
@@ -283,6 +291,32 @@ def create_app(db_path: Path | None = None) -> FastAPI:
             return await answer_question(database, question)
         except DatabaseUnavailable as error:
             raise HTTPException(503, str(error)) from None
+        except WebQueryConfigurationError as error:
+            safe_detail = {
+                "synthetic_database_path_missing": (
+                    "Chưa cấu hình database SQLite tổng hợp cho Query Web."
+                ),
+                "synthetic_database_missing": (
+                    "Không tìm thấy database SQLite tổng hợp đã cấu hình."
+                ),
+                "synthetic_mode_requires_ollama": (
+                    "Chế độ SQLite tổng hợp yêu cầu SQLGUARD_PLANNER=ollama."
+                ),
+                "planner_configuration_invalid": "Cấu hình Ollama không hợp lệ.",
+                "query_runtime_unavailable": "Query runtime chưa sẵn sàng.",
+                "query_role_missing": "Query runtime thiếu role tin cậy.",
+                "query_unknown_role": "Role runtime không được policy cho phép.",
+                "query_sqlite_path_missing": "Query runtime thiếu đường dẫn SQLite.",
+                "query_sqlite_db_missing": "Không tìm thấy SQLite database đã cấu hình.",
+                "query_sqlite_db_unavailable": "Không thể mở SQLite database đã cấu hình.",
+                "schema_sqlite_path_missing": "Schema runtime thiếu đường dẫn SQLite.",
+                "schema_sqlite_db_missing": "Không tìm thấy SQLite database cho schema.",
+                "schema_sqlite_db_unavailable": "Không thể mở SQLite database cho schema.",
+                "schema_sqlite_error": "Không thể đọc schema SQLite đã cấu hình.",
+                "schema_empty": "SQLite database không có schema được policy hỗ trợ.",
+                "schema_unknown_role": "Role schema không được policy cho phép.",
+            }.get(error.category, "Query Web chưa sẵn sàng theo cấu hình hiện tại.")
+            raise HTTPException(503, safe_detail) from None
 
     # ---------- Gắn console Evaluation đã có vào /evaluation/ ----------
 
