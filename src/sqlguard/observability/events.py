@@ -225,9 +225,7 @@ class SQLiteEventStore:
         except (OSError, sqlite3.Error, OverflowError, ValueError):
             raise EventStoreError("event_store_read_failed") from None
 
-    def list_runs(
-        self, limit: int = DEFAULT_HISTORY_LIMIT, offset: int = 0
-    ) -> dict[str, object]:
+    def list_runs(self, limit: int = DEFAULT_HISTORY_LIMIT, offset: int = 0) -> dict[str, object]:
         if type(limit) is not int or not 1 <= limit <= MAX_HISTORY_LIMIT:
             raise ValueError("limit is outside the allowed range")
         if type(offset) is not int or not 0 <= offset <= MAX_HISTORY_OFFSET:
@@ -247,7 +245,7 @@ class SQLiteEventStore:
                             MIN(CASE WHEN event_type = 'run_started' THEN timestamp END)
                                 AS started_at,
                             COUNT(*) AS event_count,
-                            MAX(timestamp) AS latest_timestamp,
+                            MAX(julianday(timestamp)) AS latest_time,
                             MAX(sequence) AS latest_sequence
                         FROM observability_events
                         GROUP BY run_id
@@ -281,7 +279,7 @@ class SQLiteEventStore:
                             ORDER BY terminal.sequence DESC LIMIT 1
                         ) AS error_category
                     FROM run_summary AS summary
-                    ORDER BY summary.latest_timestamp DESC,
+                    ORDER BY summary.latest_time DESC,
                         summary.latest_sequence DESC, summary.run_id ASC
                     LIMIT ? OFFSET ?
                     """,

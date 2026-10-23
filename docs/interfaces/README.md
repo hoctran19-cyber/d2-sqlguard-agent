@@ -15,6 +15,23 @@ The current contracts are Python `Protocol`s and dataclasses. Implementations ar
 | Events | `EventSink.emit(Event)` | In-memory sink and SQLite persistent sink; configure `SQLGUARD_EVENT_DB_PATH` (default: `$XDG_STATE_HOME/sqlguard/events.sqlite3` or `~/.local/state/sqlguard/events.sqlite3`) |
 | Evaluation | `BenchmarkCase`, `EvaluationResult`, `evaluate(...)` | Offline runner; no official dataset or metric claims |
 
+## Query history API
+
+The admin-only Query History UI uses these endpoints:
+
+- `GET /api/query/history?limit=20&offset=0` returns `{items, total, limit, offset}`.
+  Each item contains `run_id`, `started_at`, `ended_at`, `event_count`, terminal `status`,
+  terminal `duration_ms`, and a safe `error_category` when a terminal event provides one.
+  Runs are ordered newest first; `limit` is 1–100 and `offset` is 0–1,000,000.
+- `GET /api/query/history/{run_id}` returns the run ID and its persisted event metadata in
+  insertion order. Unknown or malformed run IDs return 404.
+
+Both endpoints require the existing admin session and return 401 when unauthenticated or 403
+for business and evaluator roles. This is the project's existing local demo authentication,
+not a production authentication or authorization claim. The history store persists only
+observability events; it does not retain question text, SQL, query results, or conversation
+content for replay.
+
 ## Adapter requirements
 
 - A planner adapter must declare provider/configuration errors explicitly, respect the controller's call budget, and avoid returning hidden side effects.

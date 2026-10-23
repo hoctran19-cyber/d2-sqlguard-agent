@@ -15,7 +15,8 @@ import json
 from pathlib import Path
 from uuid import UUID
 
-from fastapi import Depends, FastAPI, HTTPException, Query as FastAPIQuery, Request
+from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi import Query as FastAPIQuery
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
