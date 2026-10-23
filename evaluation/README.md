@@ -54,7 +54,7 @@ does not turn fixture checks into an LLM benchmark. API docs: `/api/docs`.
 | `web/app.py`, `web/static/index.html` | Localhost API + single-page console over the runner |
 | `../tests/unit/test_evaluation_web.py` | API tests; skipped unless the `web` extra is installed |
 | `../tests/unit/test_evaluation_bootstrap.py` | Comparator, fixtures, gold, artifact and error checks |
-| `datasets/financial/` | Financial D2 task definitions (SQLite): legitimate, auth, mixed; see its README |
+| `datasets/financial/` | Financial D2 task definitions (SQLite): legitimate, auth, mixed, injection, clean; see its README |
 
 The original `src/sqlguard/evaluation.py` and its public interfaces remain intact.
 This provisional workspace isolates richer experiment contracts while A/B settle the real
