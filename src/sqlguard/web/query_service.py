@@ -30,7 +30,12 @@ from sqlguard.agent.runtime import (
 from sqlguard.agent.sqlite_schema import SQLITE_PATH_ENV
 from sqlguard.mcp.tools import InProcessToolRegistry, ToolError, ToolRegistry
 from sqlguard.memory.store import InMemoryMemory
-from sqlguard.observability.events import Event, InMemoryEventSink
+from sqlguard.observability.events import (
+    CompositeEventSink,
+    Event,
+    InMemoryEventSink,
+    SQLiteEventStore,
+)
 from sqlguard.security.gate import PolicySQLGate, ReadOnlySQLGate, SecurityDecision
 from sqlguard.security.policy import RolePolicy, load_policy
 from sqlguard.web.database import (
@@ -192,12 +197,13 @@ async def answer_question(
     gate = RecordingGate(build_gate(database.table_names()))
     tool = FinancialQueryTool(database)
     events = InMemoryEventSink()
+    event_sink = CompositeEventSink((events, SQLiteEventStore.from_env(env)))
     controller = AgentController(
         planner=planner,
         tools=InProcessToolRegistry([tool]),
         security_gate=gate,
         memory=InMemoryMemory(),
-        events=events,
+        events=event_sink,
         budget=ExecutionBudget(max_sql_attempts=1),  # Planner demo không có khả năng tự sửa SQL.
     )
     state = (await controller.run(AgentRequest(question))).state
@@ -335,6 +341,7 @@ async def _answer_synthetic_question(question: str, env: Mapping[str, str]) -> d
     gate: _WebRecordingGate | None = None
     registry: _WebRecordingRegistry | None = None
     events = InMemoryEventSink()
+    event_sink = CompositeEventSink((events, SQLiteEventStore.from_env(env)))
 
     def scope_factory(run_id: str) -> RunScope:
         nonlocal gate, registry
@@ -348,7 +355,7 @@ async def _answer_synthetic_question(question: str, env: Mapping[str, str]) -> d
         tools=InProcessToolRegistry([]),
         security_gate=ReadOnlySQLGate(),
         memory=InMemoryMemory(),
-        events=events,
+        events=event_sink,
         budget=ExecutionBudget(max_sql_attempts=1),
         run_scope_factory=scope_factory,
     )

@@ -15,6 +15,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 from sqlguard.agent.runtime import build_query_runtime  # noqa: E402
 from sqlguard.agent.sqlite_schema import SQLiteSchemaAdapter  # noqa: E402
 from sqlguard.demo_fixture import create_demo_database  # noqa: E402
+from sqlguard.observability.events import EVENT_DB_PATH_ENV, SQLiteEventStore  # noqa: E402
 from sqlguard.security.policy import load_policy  # noqa: E402
 from sqlguard.security.service import (  # noqa: E402
     ExecutorError,
@@ -86,6 +87,7 @@ def web_client(web_db, monkeypatch):
     monkeypatch.setenv("SQLGUARD_PLANNER", "ollama")
     monkeypatch.setenv("SQLGUARD_OLLAMA_MODEL", "qwen3:1.7b")
     monkeypatch.setenv("SQLGUARD_OLLAMA_TIMEOUT_SECONDS", "4")
+    monkeypatch.setenv(EVENT_DB_PATH_ENV, str(web_db.parent / "events.sqlite3"))
     client = TestClient(create_app(web_db))
     assert (
         client.post("/api/login", json={"username": "admin", "password": "123456"}).status_code
@@ -151,6 +153,11 @@ def test_synthetic_query_uses_ollama_policy_gate_and_real_sqlite(web_client, mon
     prompt = requests[0][0]["messages"][1]["content"]
     assert "Table: orders" in prompt
     assert "identity_number" not in prompt
+    persistent_events = SQLiteEventStore.from_env().events_for_run(body["run_id"])
+    assert [event.event_type for event in persistent_events] == [
+        event["event_type"] for event in body["events"]
+    ]
+    assert persistent_events[-1].status == "succeeded"
 
 
 def test_schema_and_query_use_the_same_configured_sqlite_path(web_client, monkeypatch, web_db):
@@ -274,6 +281,8 @@ def test_secure_tool_rechecks_policy_when_called_directly(web_db, sql, violation
 
 def test_synthetic_mode_does_not_change_legacy_demo_planner(legacy_db, monkeypatch):
     monkeypatch.setenv("SQLGUARD_WEB_QUERY_MODE", "financial")
+    event_path = legacy_db.parent / "events.sqlite3"
+    monkeypatch.setenv(EVENT_DB_PATH_ENV, str(event_path))
     client = TestClient(create_app(legacy_db))
     assert (
         client.post("/api/login", json={"username": "admin", "password": "123456"}).status_code
@@ -287,6 +296,43 @@ def test_synthetic_mode_does_not_change_legacy_demo_planner(legacy_db, monkeypat
     body = response.json()
     assert body["planner"] == "demo-no-llm"
     assert body["result"]["rows"] == [[2]]
+    assert SQLiteEventStore(event_path).events_for_run(body["run_id"])
+
+
+def test_persistence_failure_does_not_turn_allowed_query_into_success(web_client, monkeypatch):
+    from sqlguard.observability.events import EventStoreError
+
+    failing_event_types = set()
+    original_emit = SQLiteEventStore.emit
+
+    def failing_emit(store, event):
+        if event.event_type == "tool_call_started":
+            failing_event_types.add(event.event_type)
+            raise EventStoreError("event_store_write_failed")
+        original_emit(store, event)
+
+    monkeypatch.setattr(SQLiteEventStore, "emit", failing_emit)
+    install_ollama(monkeypatch)
+
+    body = web_client.post("/api/query", json={"question": SYNTHETIC_QUESTION}).json()
+
+    assert failing_event_types == {"tool_call_started"}
+    assert body["status"] == "failed"
+    assert body["execution_status"] == "failed"
+    assert body["gate"]["status"] == "ALLOW"
+    assert body["result"] is None
+    assert body["events"][-1]["event_type"] == "run_failed"
+    assert body["events"][-1]["error_category"] == "event_sink_error"
+    assert not any(
+        event["event_type"] == "execute_completed" and event["status"] == "completed"
+        for event in body["events"]
+    )
+    persisted_events = SQLiteEventStore.from_env().events_for_run(body["run_id"])
+    persisted_types = [event.event_type for event in persisted_events]
+    assert "security_check_completed" in persisted_types
+    assert persisted_types[-1] == "run_failed"
+    assert persisted_events[-1].error_category == "event_sink_error"
+    assert "tool_call_started" not in persisted_types
 
 
 def test_ollama_failure_is_reported_without_demo_fallback(web_client, monkeypatch):

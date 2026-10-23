@@ -18,6 +18,7 @@ from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
+from sqlguard.observability.events import EventStoreError
 from sqlguard.web.auth import (
     ADMIN_ROLE,
     BUSINESS_ROLES,
@@ -289,6 +290,8 @@ def create_app(db_path: Path | None = None) -> FastAPI:
         question = text_field(await read_json(request), "question")
         try:
             return await answer_question(database, question)
+        except EventStoreError:
+            raise HTTPException(503, "Không thể khởi tạo event store.") from None
         except DatabaseUnavailable as error:
             raise HTTPException(503, str(error)) from None
         except WebQueryConfigurationError as error:

@@ -13,7 +13,7 @@ flowchart TD
     S -- allow --> T[ToolRegistry interface<br/>in-process mock only]
     T --> R[Result processing<br/>string formatting]
     R --> A[AgentResult]
-    C --> E[Structured event sink<br/>in-memory implementation]
+    C --> E[Structured event sink<br/>in-memory + SQLite persistence]
     C --> B[Retry and execution budgets<br/>implemented]
     T -. future adapter .-> MCP[MCP client/server<br/>design only]
     P -. future provider .-> LLM[LLM provider<br/>design only]
@@ -25,7 +25,7 @@ flowchart TD
 
 Each run creates an independent `AgentState`, retrieves run-scoped context, calls a planner once, and checks the returned SQL before each tool attempt. Only an allowed query reaches the tool registry. Retry is limited to retryable tool errors/timeouts and consumes retry, SQL-attempt, and tool-call budgets; a security rejection is never retried. Security rejection returns `refused`, while planner failures and exhausted retries return a failure. Run timeout cancels the active coroutine and returns `timed_out`.
 
-The in-memory event sink records lifecycle events with run ID, timestamp, status, and coarse error category. It deliberately does not carry question, SQL, or result payloads. Memory stores only terminal status, retry counts, and coarse error categories; it does not persist request text, generated SQL, plans, or raw tool results. A memory retrieval failure stops the run before planning. An event sink exception fails the run and prevents subsequent work; terminal event delivery cannot be guaranteed if the sink itself raises. Both implementations are process-local and should be scoped/cleared appropriately before long-lived deployments.
+The event sinks record lifecycle metadata with run ID, UTC timestamp, status, duration, and coarse error category. The Web Query composes the in-memory sink (for its current response) with a SQLite sink (for persistence); configure `SQLGUARD_EVENT_DB_PATH`, which defaults outside the repository to `$XDG_STATE_HOME/sqlguard/events.sqlite3` or `~/.local/state/sqlguard/events.sqlite3`. Events deliberately exclude question, SQL, database path, and result payloads. Memory stores only terminal status, retry counts, and coarse error categories; it does not persist request text, generated SQL, plans, or raw tool results. A memory retrieval failure stops the run before planning. An event sink exception fails the run and prevents subsequent work; terminal event delivery cannot be guaranteed if the sink itself raises.
 
 Semantic Memory is a separate immutable catalog, not part of per-run short-term memory. Its
 `d2-semantic-v1` definitions cite the current policy or domain-document references and are

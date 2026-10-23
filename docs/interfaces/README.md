@@ -12,7 +12,7 @@ The current contracts are Python `Protocol`s and dataclasses. Implementations ar
 | Schema / prompt | `SchemaTool(context)` (`get_schema`), `build_system_prompt`, `render_tool_result`, `render_denial` | Role-filtered schema from the reviewed policy; fixed system prompt and nonce-fenced untrusted blocks. Integration guide: [`SECURITY_INTEGRATION.md`](SECURITY_INTEGRATION.md) |
 | Attack Lab | `AttackLab(PostgresNoteWriter(dsn), enabled=...)` | Demo-only note save/restore with revisions, active-run lock and audit; not an agent tool |
 | Memory | Short-term: `MemoryStore.append(run_id, kind, value)` / `get(run_id, kind)`; semantic: `SemanticMemory.render_for_role(role, policy, schema_context)` | Short-term memory is process-local and TTL-bound; semantic definitions are immutable, versioned, source-linked, and filtered against trusted role grants and available schema |
-| Events | `EventSink.emit(Event)` | Interface and in-memory structured event sink |
+| Events | `EventSink.emit(Event)` | In-memory sink and SQLite persistent sink; configure `SQLGUARD_EVENT_DB_PATH` (default: `$XDG_STATE_HOME/sqlguard/events.sqlite3` or `~/.local/state/sqlguard/events.sqlite3`) |
 | Evaluation | `BenchmarkCase`, `EvaluationResult`, `evaluate(...)` | Offline runner; no official dataset or metric claims |
 
 ## Adapter requirements

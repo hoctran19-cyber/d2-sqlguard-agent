@@ -17,7 +17,7 @@ from sqlguard.agent.models import (
 from sqlguard.agent.planning import Plan, Planner, RepairFeedback
 from sqlguard.mcp.tools import ToolError, ToolRegistry
 from sqlguard.memory.store import MemoryStore
-from sqlguard.observability.events import Event, EventSink
+from sqlguard.observability.events import Event, EventSink, safe_error_category
 from sqlguard.security.gate import SecurityDecision, SecurityGate
 from sqlguard.security.prompting import render_denial
 from sqlguard.security.service import SecurityToolError
@@ -37,47 +37,6 @@ class RunScope:
 # Lỗi DB duy nhất được cho planner sửa (một lần/run); lỗi quyền, timeout, read-only, canary
 # và lỗi DB khác luôn kết thúc, không bao giờ chạy lại cùng SQL.
 _DB_REPAIRABLE = frozenset({"db_schema_error", "db_syntax_error"})
-# Chỉ các mã lỗi cố định, không chứa dữ liệu đầu vào, mới được phép đi vào event/state/memory.
-# Category do tool hoặc tích hợp bên ngoài cung cấp phải qua danh sách này trước khi ghi nhận.
-_SAFE_ERROR_CATEGORIES = frozenset(
-    {
-        "audit_error",
-        "budget_exhausted",
-        "cancelled",
-        "canary_leak",
-        "db_error",
-        "db_permission_denied",
-        "db_read_only_violation",
-        "db_role_unconfigured",
-        "db_schema_error",
-        "db_syntax_error",
-        "db_timeout",
-        "db_unavailable",
-        "event_sink_error",
-        "internal_error",
-        "invalid_request",
-        "invalid_tool_input",
-        "invalid_tool_output",
-        "memory_error",
-        "mcp_invalid_result",
-        "mcp_tool_error",
-        "mcp_transport_error",
-        "output_check_error",
-        "planner_call_budget_exhausted",
-        "planner_error",
-        "run_timeout",
-        "security_gate_error",
-        "security_rejection",
-        "sql_attempt_budget_exhausted",
-        "sql_error",
-        "tool_call_budget_exhausted",
-        "tool_error",
-        "tool_exception",
-        "tool_timeout",
-        "unknown_role",
-        "unknown_tool",
-    }
-)
 # Database tự từ chối vì quyền (authorizer SQLite/grants) dù gate đã cho qua: đó là một lần chặn
 # bảo mật nên run kết thúc REFUSED như khi gate từ chối, không retry/repair; failure_reason giữ
 # nguyên category để phân biệt lớp nào đã chặn.
@@ -796,6 +755,4 @@ def _error_category(error: Exception) -> str:
 
 def _safe_error_category(category: object) -> str:
     """Giữ nguyên category đã biết; thay category lạ bằng mã chung không nhạy cảm."""
-    if isinstance(category, str) and category in _SAFE_ERROR_CATEGORIES:
-        return category
-    return "tool_error"
+    return safe_error_category(category)
