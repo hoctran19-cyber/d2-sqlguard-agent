@@ -139,6 +139,15 @@ def test_session_store_rejects_unknown_and_malformed_roles():
     assert sessions.get(None) is None
 
 
+def test_expired_session_is_removed_and_rejected():
+    sessions = SessionStore()
+    token = "expired-session"
+    sessions._sessions[token] = (User("admin", "admin", "/home"), 0)
+
+    assert sessions.get(token) is None
+    assert token not in sessions._sessions
+
+
 def test_business_role_names_are_not_implicitly_mapped_to_bird_roles():
     policy = load_policy("bird_financial_v1")
     assert {role for role in ("teller", "credit", "risk") if policy.has_role(role)} == {
