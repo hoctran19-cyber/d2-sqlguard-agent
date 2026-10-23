@@ -1,25 +1,21 @@
 # Thiết kế policy và thống nhất schema cho business role
 
-**Trạng thái: đang review thiết kế; chưa được phê duyệt và chưa được thực thi.** Tài liệu này
-ghi lại bằng chứng trong repository và các quyết định cần có trước khi triển khai. Tài liệu
-không cấp quyền SQL cho `operator`, `analyst` hoặc `credit_officer`, cũng không phê duyệt
-matrix tham chiếu hiện có trên web làm policy production.
+**Trạng thái: tài liệu phân tích trước đó; đã được thay thế về quyết định schema bởi
+`BUSINESS_ROLE_POLICY_MATRIX_PROPOSAL.md`.** Theo quyết định người dùng mới, schema chuẩn của
+proposal hiện tại là file `financial.sqlite` trong workspace, không phải BIRD Mini-Dev
+Financial theo giả định trước đó. Tài liệu này được giữ làm lịch sử so sánh giữa policy BIRD
+và matrix web; không cấp quyền SQL, không phê duyệt matrix và không được dùng làm schema
+chuẩn hiện hành.
 
-## Khuyến nghị tổng quan
+## Quyết định hiện tại
 
-Ưu tiên **BIRD Mini-Dev Financial trên SQLite (Phương án A)** làm ứng viên schema chuẩn của
-dự án, với điều kiện nhóm xác nhận quyết định dự án trước đó và kiểm tra database thực tế.
-Căn cứ gồm quyết định Q1 tại §12.1 của workplan về BIRD Financial SQLite, schema/policy hướng
-theo BIRD `bird_financial_v1`, cùng benchmark và pilot BIRD Financial. Đây là khuyến nghị,
-**không phải quyết định schema cuối cùng**: checkout này không có `financial.sqlite`, và
-workplan cho biết chỉ có file thực tế trên máy một thành viên trong nhóm.
-
-Không ánh xạ ba định danh business role sang `teller`, `credit` hoặc `risk`. Repository không
-có bằng chứng phê duyệt các tương đương đó. Matrix web là một matrix riêng, mô tả schema
-SQLite có cột synthetic; các tài liệu Vault mà matrix viện dẫn không có trong repository và
-database thực tế chưa được kiểm tra. Nhóm cần chọn schema chuẩn, xác nhận nguồn gốc/phiên bản
-và duyệt matrix role dựa trên đúng schema đó trước khi bật SQL cho business role. Cho tới khi
-các việc này hoàn tất, tiếp tục từ chối API dữ liệu của business role.
+Người dùng chọn `financial.sqlite` làm schema chuẩn cho thiết kế mới. File có trong workspace
+đã được kiểm tra trực tiếp ở chế độ chỉ đọc; kết quả, giới hạn provenance, matrix đề xuất cho
+ba business role và các quyết định cần duyệt được ghi tại
+[`BUSINESS_ROLE_POLICY_MATRIX_PROPOSAL.md`](./BUSINESS_ROLE_POLICY_MATRIX_PROPOSAL.md).
+Provenance, license và nguồn gốc các cột bổ sung vẫn chưa xác minh. Không ánh xạ
+`operator`/`analyst`/`credit_officer` sang `teller`/`risk`/`credit`; business SQL vẫn bị khóa
+cho đến khi policy và điều kiện nghiệp vụ được phê duyệt, triển khai và review.
 
 ## Bằng chứng đã kiểm tra và giới hạn
 
@@ -28,19 +24,16 @@ các việc này hoàn tất, tiếp tục từ chối API dữ liệu của bus
 | `docs/threat-model/SECURITY_WORKPLAN.md` §12 | §12.1 ghi Q1 “BIRD Mini-Dev Financial dạng SQLite” được chốt ngày 21/10; Q2/Q3 được đánh dấu rõ là lệch với matrix web xuất hiện sau đó. §12.2 mô tả policy `teller`/`credit`/`risk` ngày 19/10. §12.3 N-e yêu cầu thống nhất hai matrix và database, đồng thời đặt câu hỏi file SQLite nội bộ là BIRD gốc hay bản dẫn xuất có sáu cột synthetic. | Không chứng minh nội dung hoặc provenance của database cài trên máy một thành viên. |
 | `src/sqlguard/security/policies/bird_financial_v1.json` và `src/sqlguard/security/policy.py` | Có schema hướng BIRD theo phiên bản, grant cột cụ thể cho `teller`, `credit`, `risk`, khóa ngoại, hàm SQL, giới hạn và ba canary `client.national_id`. `RolePolicy` kiểm tra grant role và khóa ngoại theo schema khai báo. | Không có `operator`, `analyst`, `credit_officer`; schema có overlay và chưa được xác minh với database web nội bộ. Đây cũng không phải policy mặc định: `DEFAULT_POLICY` là `d2_synthetic_v1`. |
 | `src/sqlguard/web/role_reference.py` và `tests/unit/test_web_roles.py` | Có matrix tham chiếu riêng gồm 8 bảng/61 cột cho `operator`, `analyst`, `credit_officer`; test kiểm độc lập allowlist và số lượng. Module ghi rõ matrix chỉ để hiển thị, chưa được thực thi. | Các tài liệu Vault “2026-10-20” và “2026-10-22” được viện dẫn không có trong repository. Test chỉ chứng minh code và reference khớp nhau, không chứng minh grant nghiệp vụ đã được duyệt hoặc khớp database đang dùng. |
-| `src/sqlguard/web/database.py`, `src/sqlguard/web/query_service.py` | Web dùng `SQLGUARD_FINANCIAL_DB` hoặc mặc định `data/bird/financial.sqlite`; mở database chỉ đọc và bật `query_only`. Schema bảng/cột được introspect từ file. | File database không có trong checkout nên chưa thể xác minh bảng, cột, metadata và revision thực tế. |
+| `src/sqlguard/web/database.py`, `src/sqlguard/web/query_service.py` | Web dùng `SQLGUARD_FINANCIAL_DB` hoặc mặc định `data/bird/financial.sqlite`; mở database chỉ đọc và bật `query_only`. Schema bảng/cột được introspect từ file. | Tại thời điểm viết phân tích trước, chưa tìm thấy DB trong checkout. Sau đó người dùng chọn `data/financial.sqlite`; kết quả kiểm tra file hiện tại được ghi trong [`BUSINESS_ROLE_POLICY_MATRIX_PROPOSAL.md`](./BUSINESS_ROLE_POLICY_MATRIX_PROPOSAL.md). Nguồn gốc/revision upstream vẫn chưa xác minh. |
 | `evaluation/datasets/financial/README.md`, `evaluation/bird_pilot.py`, `tests/unit/test_bird_pilot.py` | Các task D2 Financial dùng tên business role và tham chiếu BIRD source/Gold; suite ghi policy mới được mô tả, chưa enforce. Pilot hỗ trợ schema/query source PostgreSQL hoặc SQLite tương thích, runtime role dựa trên policy và kiểm tra danh tính DB cục bộ. | Nhãn role trong benchmark không phải quyết định phân quyền. Tài liệu dataset nói SQLite reference không phải expected data PostgreSQL và snapshot/provenance còn pending hoặc chưa xác minh. |
-| Tìm kiếm `*.sqlite` trong workspace | Không tìm thấy file SQLite nào trong checkout này. | Không cho biết database trên máy thành viên khác hoặc deployment bên ngoài có nội dung gì. |
+| Tìm kiếm `*.sqlite` trong workspace khi viết phân tích trước | Lúc đó chưa tìm thấy database. Sau đó `data/financial.sqlite` xuất hiện trong workspace và đã được kiểm tra ở chế độ chỉ đọc; kết quả hiện tại nằm trong proposal mới. | Kết quả kiểm tra chỉ áp dụng file hiện tại, không cho biết provenance hoặc nội dung database trên máy/deployment khác. |
 
 ## Các schema ứng viên
 
-### Phương án A — BIRD Financial SQLite (ứng viên ưu tiên, chờ xác minh)
+### Đối chiếu lịch sử — BIRD Financial SQLite (không còn là schema chuẩn được đề xuất)
 
-**Lý do đây là ứng viên phù hợp hơn với định hướng dự án:** Q1 trong workplan ghi đây là
-database dự án đã chọn; policy bảo mật hiện tại hướng theo BIRD; repository có benchmark và
-pilot BIRD Financial; `FinancialDatabase` cũng mặc định dùng đường dẫn
-`data/bird/financial.sqlite`. Phương án này thống nhất policy, đánh giá và định hướng dự án tốt
-hơn việc coi một schema dẫn xuất chưa xác minh là chuẩn.
+Workplan và executable policy cũ mô tả BIRD Mini-Dev Financial. Nội dung dưới đây chỉ giữ để
+đối chiếu policy cũ với schema hiện được chọn; không phải khuyến nghị quay lại schema này.
 
 Policy JSON khai báo các bảng/cột sau (bao gồm cả overlay của policy):
 
