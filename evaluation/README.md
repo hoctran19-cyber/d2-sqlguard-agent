@@ -44,7 +44,7 @@ does not turn fixture checks into an LLM benchmark. API docs: `/api/docs`.
 
 | File | Purpose |
 | --- | --- |
-| `datasets/sales-bootstrap.json` | Five tasks, expected rows/behavior, provisional role and setup |
+| `datasets/sales-bootstrap-v1.json` | Five tasks, expected rows/behavior, provisional role and setup |
 | `manifest.py` | Load and validate manifest before execution |
 | `scorer.py` | Pure deterministic checks; no runtime calls |
 | `runner.py` | Execute cases/repetitions, score, write artifacts |
