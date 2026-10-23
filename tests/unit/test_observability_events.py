@@ -1,3 +1,4 @@
+import asyncio
 import sqlite3
 from datetime import UTC, datetime, timedelta, timezone
 
@@ -9,6 +10,9 @@ from sqlguard.observability.events import (
     Event,
     EventStoreError,
     InMemoryEventSink,
+    LiveEvent,
+    LiveEventHub,
+    LiveEventSink,
     SQLiteEventStore,
     default_event_db_path,
 )
@@ -36,6 +40,16 @@ def test_sqlite_event_store_round_trips_all_fields_in_utc(tmp_path):
         duration_ms=12.5,
         category="db_timeout",
     )
+    event = LiveEvent(
+        run_id=event.run_id,
+        event_type=event.event_type,
+        timestamp=event.timestamp,
+        status=event.status,
+        duration_ms=event.duration_ms,
+        error_category=event.error_category,
+        module="database",
+        data={"sql": "SELECT 1"},
+    )
 
     store.emit(event)
     [restored] = store.events_for_run("run-roundtrip")
@@ -47,6 +61,7 @@ def test_sqlite_event_store_round_trips_all_fields_in_utc(tmp_path):
     assert restored.status == event.status
     assert restored.duration_ms == event.duration_ms
     assert restored.error_category == event.error_category
+    assert not hasattr(restored, "data")
     assert store.path.parent.is_dir()
 
 
@@ -188,3 +203,53 @@ def test_composite_sink_keeps_in_memory_compatibility_and_surfaces_write_failure
 
     assert error.value.category == "event_store_write_failed"
     assert memory.events == [event]
+
+
+def test_live_event_hub_keeps_run_order_and_replays_only_missing_events():
+    async def exercise():
+        hub = LiveEventHub()
+        hub.prepare("run-live-a")
+        first = hub.subscribe("run-live-a")
+        hub.publish(make_event("run-live-a", "run_started", status="running"))
+        hub.publish(make_event("run-live-a", "llm_call_started", status="running"))
+        live_one = await first.queue.get()
+        live_two = await first.queue.get()
+        assert [live_one[0], live_two[0]] == [1, 2]
+
+        hub.unsubscribe("run-live-a", first.subscriber_id)
+        replay = hub.subscribe("run-live-a", last_event_id=1)
+        assert [sequence for sequence, _ in replay.replay] == [2]
+        assert all(event.run_id == "run-live-a" for _, event in replay.replay)
+
+        hub.prepare("run-live-b")
+        hub.publish(make_event("run-live-b", "run_started"))
+        other = hub.subscribe("run-live-b", last_event_id=0)
+        assert [event.run_id for _, event in other.replay] == ["run-live-b"]
+        hub.unsubscribe("run-live-a", replay.subscriber_id)
+        hub.unsubscribe("run-live-b", other.subscriber_id)
+
+    asyncio.run(exercise())
+
+
+def test_live_sink_does_not_propagate_subscriber_transport_failure():
+    class BrokenHub:
+        def publish(self, event):
+            raise RuntimeError("private subscriber failure")
+
+    LiveEventSink(BrokenHub()).emit(make_event("run-broken-ui", "run_started"))
+
+
+def test_live_event_hub_marks_completed_stream_and_reports_replay_gap():
+    async def exercise():
+        hub = LiveEventHub(max_events_per_run=2)
+        hub.prepare("run-gap")
+        for index in range(3):
+            hub.publish(make_event("run-gap", f"event_{index}"))
+        hub.publish(make_event("run-gap", "run_completed", status="succeeded"))
+        subscription = hub.subscribe("run-gap", last_event_id=0)
+        assert subscription.replay_gap
+        assert subscription.completed
+        assert [sequence for sequence, _ in subscription.replay] == [3, 4]
+        hub.unsubscribe("run-gap", subscription.subscriber_id)
+
+    asyncio.run(exercise())

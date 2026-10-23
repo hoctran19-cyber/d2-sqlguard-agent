@@ -4,6 +4,7 @@ import json
 import sqlite3
 import urllib.error
 from datetime import UTC, datetime
+from uuid import uuid4
 
 import pytest
 
@@ -109,6 +110,61 @@ def install_ollama(monkeypatch, sql=ALLOWED_SQL, *, failure=None):
 
     monkeypatch.setattr("sqlguard.agent.planning.urllib.request.urlopen", fake_urlopen)
     return requests
+
+
+def test_query_sse_replays_run_payload_and_missing_events_by_cursor(web_client, monkeypatch):
+    install_ollama(monkeypatch)
+    run_id = str(uuid4())
+    response = web_client.post(
+        "/api/query",
+        json={"question": SYNTHETIC_QUESTION, "run_id": run_id},
+    )
+    assert response.status_code == 200
+    assert response.json()["run_id"] == run_id
+    stream_response = web_client.get(f"/api/query/stream/{run_id}")
+    assert stream_response.status_code == 200
+    assert stream_response.headers["content-type"].startswith("text/event-stream")
+    streamed = [
+        json.loads(line.removeprefix("data: "))
+        for line in stream_response.text.splitlines()
+        if line.startswith("data: ") and '"event_type"' in line
+    ]
+    assert [event["event_type"] for event in streamed][0] == "run_started"
+    assert streamed[-1]["event_type"] == "run_completed"
+    assert [event["run_id"] for event in streamed] == [run_id] * len(streamed)
+    assert streamed[0]["data"]["question"] == SYNTHETIC_QUESTION
+    assert streamed[0]["module"] == "controller"
+    assert any(event.get("data", {}).get("sql") == ALLOWED_SQL for event in streamed)
+    assert "data" not in response.json()["events"][0]
+    assert "SYNTHETIC-ID-001" not in response.text
+
+    replay_response = web_client.get(
+        f"/api/query/stream/{run_id}",
+        headers={"Last-Event-ID": "2"},
+    )
+    assert replay_response.status_code == 200
+    replay_ids = [
+        int(line.removeprefix("id: "))
+        for line in replay_response.text.splitlines()
+        if line.startswith("id: ")
+    ]
+    assert replay_ids and min(replay_ids) > 2
+    assert "event: stream_complete" in replay_response.text
+
+
+def test_live_query_stream_requires_admin_session(web_db):
+    client = TestClient(create_app(web_db))
+    stream_url = f"/api/query/stream/{uuid4()}"
+
+    assert client.get(stream_url).status_code == 401
+    assert (
+        client.post(
+            "/api/login",
+            json={"username": "operator", "password": "123456"},
+        ).status_code
+        == 200
+    )
+    assert client.get(stream_url).status_code == 403
 
 
 def test_synthetic_query_uses_ollama_policy_gate_and_real_sqlite(web_client, monkeypatch):

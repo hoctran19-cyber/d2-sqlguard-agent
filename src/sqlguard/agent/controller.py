@@ -17,7 +17,7 @@ from sqlguard.agent.models import (
 from sqlguard.agent.planning import Plan, Planner, RepairFeedback
 from sqlguard.mcp.tools import ToolError, ToolRegistry
 from sqlguard.memory.store import MemoryStore
-from sqlguard.observability.events import Event, EventSink, safe_error_category
+from sqlguard.observability.events import EventSink, LiveEvent, safe_error_category
 from sqlguard.security.gate import SecurityDecision, SecurityGate
 from sqlguard.security.prompting import render_denial
 from sqlguard.security.service import SecurityToolError
@@ -50,6 +50,42 @@ _DB_REPAIR_GUIDANCE = (
 RunScopeFactory = Callable[[str], RunScope]
 
 
+def _bounded_text(value: str, limit: int = 4000) -> str:
+    return value[:limit]
+
+
+def _safe_violation_codes(decision: SecurityDecision) -> list[str]:
+    violations = getattr(decision, "violations", ())
+    return [
+        violation
+        for violation in violations
+        if isinstance(violation, str)
+        and len(violation) <= 64
+        and violation.isascii()
+        and violation.isidentifier()
+        and violation == violation.casefold()
+    ]
+
+
+def _event_module(event_type: str) -> str:
+    if event_type.startswith("context_retrieval_") or event_type.startswith("memory_"):
+        return "memory"
+    if (
+        event_type.startswith(("llm_call_", "sql_generation_", "repair_"))
+        or event_type == "plan_created"
+    ):
+        return "planner"
+    if event_type.startswith("security_check_"):
+        return "security_gate"
+    if event_type.startswith("tool_call_"):
+        return "tool_registry"
+    if event_type.startswith("execute_"):
+        return "database"
+    if event_type.startswith(("observe_", "output_check_", "answer_", "run_", "budget_")):
+        return "controller"
+    return "observability"
+
+
 class AgentController:
     def __init__(
         self,
@@ -75,7 +111,11 @@ class AgentController:
         started_at = perf_counter()
         deadline = asyncio.get_running_loop().time() + self._budget.run_timeout_seconds
         try:
-            self._emit(state, "run_started")
+            self._emit(
+                state,
+                "run_started",
+                data={"question": state.request.question},
+            )
             schema_context = getattr(self._planner, "schema_context", None)
             # Chỉ ghi nhận schema có được cấu hình hay không; tuyệt đối không ghi nội dung schema.
             self._emit(
@@ -134,13 +174,40 @@ class AgentController:
         finally:
             state.finished_at = datetime.now(UTC)
             self._set_terminal_step(state)
+            memory_started = perf_counter()
+            memory_status = "completed"
+            memory_error = None
             try:
                 self._memory.append(state.run_id, "state", state.status.value)
             except Exception:
+                memory_status = "failed"
+                memory_error = "memory_error"
                 state.status = RunStatus.FAILED
                 state.failure_reason = "memory_error"
                 state.errors.append(state.failure_reason)
                 self._set_terminal_step(state)
+            try:
+                self._emit(
+                    state,
+                    "memory_state_persisted",
+                    status=memory_status,
+                    error_category=memory_error,
+                    duration_ms=(perf_counter() - memory_started) * 1000,
+                    data=(
+                        {"kind": "state", "value": state.status.value}
+                        if memory_status == "completed"
+                        else {"kind": "state"}
+                    ),
+                )
+            except _EventSinkFailure:
+                state.status = RunStatus.FAILED
+                state.failure_reason = "event_sink_error"
+                state.errors.append(state.failure_reason)
+                self._set_terminal_step(state)
+                try:
+                    self._memory.append(state.run_id, "state", state.status.value)
+                except Exception:
+                    state.errors.append("memory_error")
             duration_ms = (perf_counter() - started_at) * 1000
             try:
                 self._emit(
@@ -184,6 +251,7 @@ class AgentController:
             "context_retrieval_completed",
             status="completed",
             duration_ms=(perf_counter() - retrieval_started) * 1000,
+            data={"entries": list(context)},
         )
 
         state.current_step = "planning"
@@ -208,8 +276,11 @@ class AgentController:
             )
             if state.sql_attempt_count >= sql_limit:
                 raise _BudgetExceeded("sql_attempt_budget_exhausted")
-            self._emit(state, "security_check_started")
-            # Event chỉ ghi trạng thái/kết quả và thời lượng; SQL không được đưa vào trace.
+            self._emit(
+                state,
+                "security_check_started",
+                data={"sql": _bounded_text(sql), "sql_truncated": len(sql) > 4000},
+            )
             gate_started = perf_counter()
             state.sql_attempt_count += 1
             try:
@@ -232,6 +303,10 @@ class AgentController:
                 status="allowed" if allowed else "denied",
                 error_category=None if allowed else "security_rejection",
                 duration_ms=(perf_counter() - gate_started) * 1000,
+                data={
+                    "decision": "allow" if allowed else "deny",
+                    "violations": _safe_violation_codes(decision),
+                },
             )
             if not allowed:
                 # Bị gate từ chối: chỉ khi denial "repairable" và planner hỗ trợ mới được sửa.
@@ -247,9 +322,21 @@ class AgentController:
             if state.tool_call_count >= self._budget.max_tool_calls:
                 raise _BudgetExceeded("tool_call_budget_exhausted")
             self._ensure_before_deadline(deadline)
-            self._emit(state, "tool_call_started")
+            self._emit(
+                state,
+                "tool_call_started",
+                data={
+                    "tool_name": "query",
+                    "parameters": {"sql": _bounded_text(sql)},
+                    "sql_truncated": len(sql) > 4000,
+                },
+            )
             # Đo riêng bước thực thi để trace khi tool thành công, lỗi, timeout hoặc bị hủy.
-            self._emit(state, "execute_started")
+            self._emit(
+                state,
+                "execute_started",
+                data={"sql": _bounded_text(sql), "sql_truncated": len(sql) > 4000},
+            )
             state.tool_call_count += 1
             tool_started = perf_counter()
             # Chỉ được gán khi gate ở ranh giới tool (SecureSqlTool) từ chối; mặc định là None
@@ -367,6 +454,10 @@ class AgentController:
                     "answer_completed",
                     status="completed",
                     duration_ms=(perf_counter() - answer_started) * 1000,
+                    data={
+                        "result_preview": _bounded_text(answer, 2048),
+                        "result_truncated": len(answer) > 2048,
+                    },
                 )
                 return
 
@@ -460,9 +551,17 @@ class AgentController:
         lệ, plan sai kiểu) đều đổi thành ``_PlannerFailure`` và không giữ lại thông điệp gốc, nên
         chi tiết lỗi nội bộ không lọt vào event hay state.
         """
-        self._emit(state, "llm_call_started")
-        # Một lời gọi planner tạo hoặc sửa SQL; chỉ ghi trạng thái/thời lượng, không ghi SQL.
-        self._emit(state, "sql_generation_started")
+        model = getattr(self._planner, "model", None)
+        planner_data = (
+            {
+                "model": model,
+                "request_parameters": {"stream": False, "think": False, "format": "json"},
+            }
+            if isinstance(model, str)
+            else {}
+        )
+        self._emit(state, "llm_call_started", data=planner_data)
+        self._emit(state, "sql_generation_started", data=planner_data)
         state.llm_call_count += 1
         planner_started = perf_counter()
         try:
@@ -505,7 +604,12 @@ class AgentController:
                 duration_ms=duration_ms,
             )
             raise
-        self._emit(state, "plan_created")
+        plan_data = {
+            **planner_data,
+            "sql": _bounded_text(sql),
+            "sql_truncated": len(sql) > 4000,
+        }
+        self._emit(state, "plan_created", data=plan_data)
         self._emit(
             state,
             "llm_call_completed",
@@ -517,6 +621,7 @@ class AgentController:
             "sql_generation_completed",
             status="completed",
             duration_ms=(perf_counter() - planner_started) * 1000,
+            data=plan_data,
         )
         return sql
 
@@ -615,6 +720,9 @@ class AgentController:
             "repair_started",
             status="repairing",
             error_category=_safe_error_category(category),
+            related_attempt_id=(
+                f"sql-{state.sql_attempt_count}" if state.sql_attempt_count else None
+            ),
         )
         try:
             sql = await self._call_planner(
@@ -652,7 +760,34 @@ class AgentController:
             # Chặn category tùy ý ở ranh giới sink để không rò dữ liệu dù caller truyền nhầm.
             if details.get("error_category") is not None:
                 details["error_category"] = _safe_error_category(details["error_category"])
-            self._events.emit(Event(run_id=state.run_id, event_type=event_type, **details))
+            data = dict(details.pop("data", {}) or {})
+            data.update(
+                {
+                    "counters": {
+                        "planner_calls": state.llm_call_count,
+                        "sql_attempts": state.sql_attempt_count,
+                        "tool_calls": state.tool_call_count,
+                    },
+                    "budget": {
+                        "planner_calls": self._budget.max_llm_calls,
+                        "sql_attempts": self._budget.max_sql_attempts,
+                        "tool_calls": self._budget.max_tool_calls,
+                        "retries": self._budget.max_retries,
+                    },
+                }
+            )
+            self._events.emit(
+                LiveEvent(
+                    run_id=state.run_id,
+                    event_type=event_type,
+                    module=_event_module(event_type),
+                    step=state.current_step,
+                    attempt_id=f"sql-{state.sql_attempt_count + 1}",
+                    retry_count=state.retry_count,
+                    data=data,
+                    **details,
+                )
+            )
         except Exception:
             raise _EventSinkFailure from None
 
@@ -660,7 +795,20 @@ class AgentController:
         try:
             self._memory.append(state.run_id, kind, value)
         except Exception:
+            self._emit(
+                state,
+                "memory_write_completed",
+                status="failed",
+                error_category="memory_error",
+                data={"kind": kind},
+            )
             raise _MemoryFailure from None
+        self._emit(
+            state,
+            "memory_write_completed",
+            status="completed",
+            data={"kind": kind, "value": value},
+        )
 
     @staticmethod
     def _ensure_before_deadline(deadline: float) -> None:

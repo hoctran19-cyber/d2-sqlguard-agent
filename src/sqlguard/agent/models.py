@@ -18,6 +18,7 @@ class RunStatus(StrEnum):
 @dataclass(frozen=True)
 class AgentRequest:
     question: str
+    run_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -53,6 +54,10 @@ class AgentState:
     started_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     finished_at: datetime | None = None
     sql_attempt_count: int = 0
+
+    def __post_init__(self) -> None:
+        if self.request.run_id is not None:
+            self.run_id = self.request.run_id
 
 
 @dataclass(frozen=True)

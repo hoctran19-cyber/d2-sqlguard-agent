@@ -12,7 +12,7 @@ The current contracts are Python `Protocol`s and dataclasses. Implementations ar
 | Schema / prompt | `SchemaTool(context)` (`get_schema`), `build_system_prompt`, `render_tool_result`, `render_denial` | Role-filtered schema from the reviewed policy; fixed system prompt and nonce-fenced untrusted blocks. Integration guide: [`SECURITY_INTEGRATION.md`](SECURITY_INTEGRATION.md) |
 | Attack Lab | `AttackLab(PostgresNoteWriter(dsn), enabled=...)` | Demo-only note save/restore with revisions, active-run lock and audit; not an agent tool |
 | Memory | Short-term: `MemoryStore.append(run_id, kind, value)` / `get(run_id, kind)`; semantic: `SemanticMemory.render_for_role(role, policy, schema_context)` | Short-term memory is process-local and TTL-bound; semantic definitions are immutable, versioned, source-linked, and filtered against trusted role grants and available schema |
-| Events | `EventSink.emit(Event)` | In-memory sink and SQLite persistent sink; configure `SQLGUARD_EVENT_DB_PATH` (default: `$XDG_STATE_HOME/sqlguard/events.sqlite3` or `~/.local/state/sqlguard/events.sqlite3`) |
+| Events | `EventSink.emit(Event)` | In-memory sink, SQLite metadata persistence, and run-scoped in-process live fan-out for authenticated SSE; configure `SQLGUARD_EVENT_DB_PATH` (default: `$XDG_STATE_HOME/sqlguard/events.sqlite3` or `~/.local/state/sqlguard/events.sqlite3`) |
 | Evaluation | `BenchmarkCase`, `EvaluationResult`, `evaluate(...)` | Offline runner; no official dataset or metric claims |
 
 ## Query history API
@@ -32,13 +32,34 @@ not a production authentication or authorization claim. The history store persis
 observability events; it does not retain question text, SQL, query results, or conversation
 content for replay.
 
+## Live Query events
+
+The admin Query page opens `GET /api/query/stream/{run_id}` as an authenticated Server-Sent
+Events stream before sending `POST /api/query` with the same UUID in `run_id`. The stream requires
+the same admin session (401 unauthenticated, 403 for business/evaluator roles). Each `agent_event`
+has an SSE event ID and a JSON payload with run ID, event type, timestamp, status, module, step,
+duration, safe error category, attempt/retry correlation, counters, budget, and event-specific
+observed data. The current Web query runtime uses an in-process tool registry; it does not claim
+that a remote MCP transport is invoked. The browser's `Last-Event-ID` cursor replays missing
+in-process events after a temporary reconnect; retained event payloads are bounded and expire
+after ten minutes. A backend
+restart or expired replay window cannot recover transient payloads.
+
+Live payloads such as the authenticated request's prompt, proposed SQL, and filtered output
+preview are transient and are not written by the SQLite event store or included in the ordinary
+Query response's event list. Playback controls only change presentation; they do not pause the
+agent. The SSE broker is process-local, so deployments with multiple workers need sticky routing
+or a shared event broker before they can stream runs across workers.
+
 ## Adapter requirements
 
 - A planner adapter must declare provider/configuration errors explicitly, respect the controller's call budget, and avoid returning hidden side effects.
 - A tool adapter must validate its input schema, enforce the passed timeout, map backend failures to `ToolError` categories/retryability, and avoid embedding secret values in exceptions.
 - A database tool must only execute SQL that has passed the gate and must additionally use a read-only least-privilege account, database-level authorization, parameterization where applicable, and bounded result sizes.
 - A security gate is synchronous and fail-closed on parse/validation failures. `PolicySQLGate` is bound to the trusted `SecurityContext` (role from the authenticated session) and reads tables/columns/functions from a versioned policy file. Executors must run `decision.normalized_sql`, never the model's string. Violation codes and their `repairable` flag are listed in `src/sqlguard/security/violations.py`.
-- Memory and event implementations must minimize sensitive retention. Event payloads should remain metadata-only unless a reviewed redaction policy is adopted.
+- Memory and event implementations must minimize sensitive retention. SQLite persistence and
+  ordinary Query responses remain metadata-only; transient live payload fields must be bounded,
+  emitted only on the admin-authenticated run stream, and never include model chain-of-thought.
 
 ## State and failure meanings
 

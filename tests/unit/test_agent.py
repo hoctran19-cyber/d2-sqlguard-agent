@@ -40,6 +40,11 @@ def test_valid_request_completes_demo_flow():
     assert result.state.sql_attempt_count == 1
     assert result.state.current_step == "completed"
     assert_single_terminal_event(events.events, "run_completed", "succeeded")
+    event_types = [event.event_type for event in events.events]
+    assert event_types.index("memory_state_persisted") < event_types.index("run_completed")
+    persisted = events.events[event_types.index("memory_state_persisted")]
+    assert persisted.status == "completed"
+    assert persisted.error_category is None
     assert all(event.run_id == result.state.run_id for event in events.events)
     assert all(
         event.duration_ms is None or (isfinite(event.duration_ms) and event.duration_ms >= 0)

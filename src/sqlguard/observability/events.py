@@ -1,18 +1,24 @@
 from __future__ import annotations
 
+import asyncio
 import os
 import sqlite3
+import threading
+import time
+from collections import OrderedDict
 from collections.abc import Mapping
 from contextlib import closing
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Protocol
+from typing import Protocol, TypeAlias
+from uuid import uuid4
 
 EVENT_DB_PATH_ENV = "SQLGUARD_EVENT_DB_PATH"
 DEFAULT_HISTORY_LIMIT = 20
 MAX_HISTORY_LIMIT = 100
 MAX_HISTORY_OFFSET = 1_000_000
+JSONValue: TypeAlias = str | int | float | bool | None | list["JSONValue"] | dict[str, "JSONValue"]
 TERMINAL_EVENT_TYPES = (
     "run_completed",
     "run_refused",
@@ -80,6 +86,151 @@ class Event:
     error_category: str | None = None
 
 
+@dataclass(frozen=True)
+class LiveEvent(Event):
+    module: str | None = None
+    step: str | None = None
+    attempt_id: str | None = None
+    related_attempt_id: str | None = None
+    retry_count: int | None = None
+    data: Mapping[str, JSONValue] | None = None
+
+
+@dataclass
+class _LiveRun:
+    created_at: float
+    events: list[tuple[int, Event]] = field(default_factory=list)
+    subscribers: dict[
+        str, tuple[asyncio.AbstractEventLoop, asyncio.Queue[tuple[int, Event] | None]]
+    ] = field(default_factory=dict)
+    next_sequence: int = 1
+    completed: bool = False
+
+
+@dataclass(frozen=True)
+class LiveEventSubscription:
+    replay: tuple[tuple[int, Event], ...]
+    queue: asyncio.Queue[tuple[int, Event] | None]
+    completed: bool
+    subscriber_id: str
+    replay_gap: bool = False
+
+
+class LiveEventHub:
+    """In-process, run-scoped event fan-out with bounded replay for SSE reconnects."""
+
+    def __init__(
+        self,
+        *,
+        max_runs: int = 256,
+        max_events_per_run: int = 512,
+        retention_seconds: float = 600,
+    ) -> None:
+        self._max_runs = max_runs
+        self._max_events_per_run = max_events_per_run
+        self._retention_seconds = retention_seconds
+        self._lock = threading.RLock()
+        self._runs: OrderedDict[str, _LiveRun] = OrderedDict()
+
+    def prepare(self, run_id: str) -> None:
+        with self._lock:
+            self._prune_expired()
+            if run_id not in self._runs and len(self._runs) >= self._max_runs:
+                self._evict_completed()
+            if run_id not in self._runs and len(self._runs) >= self._max_runs:
+                raise RuntimeError("live_event_capacity_exhausted")
+            self._runs.setdefault(run_id, _LiveRun(created_at=time.monotonic()))
+
+    def subscribe(self, run_id: str, last_event_id: int = 0) -> LiveEventSubscription:
+        loop = asyncio.get_running_loop()
+        queue: asyncio.Queue[tuple[int, Event] | None] = asyncio.Queue()
+        subscriber_id = str(uuid4())
+        with self._lock:
+            self.prepare(run_id)
+            run = self._runs[run_id]
+            run.subscribers[subscriber_id] = (loop, queue)
+            replay = tuple(
+                (sequence, event) for sequence, event in run.events if sequence > last_event_id
+            )
+            replay_gap = bool(run.events and last_event_id < run.events[0][0] - 1)
+            return LiveEventSubscription(replay, queue, run.completed, subscriber_id, replay_gap)
+
+    def unsubscribe(self, run_id: str, subscriber_id: str) -> None:
+        with self._lock:
+            run = self._runs.get(run_id)
+            if run is not None:
+                run.subscribers.pop(subscriber_id, None)
+
+    def publish(self, event: Event) -> None:
+        with self._lock:
+            self.prepare(event.run_id)
+            run = self._runs[event.run_id]
+            if run.completed:
+                return
+            snapshot = (
+                replace(event, data=dict(event.data) if event.data is not None else None)
+                if isinstance(event, LiveEvent)
+                else event
+            )
+            sequence = run.next_sequence
+            run.next_sequence += 1
+            run.events.append((sequence, snapshot))
+            if len(run.events) > self._max_events_per_run:
+                del run.events[: len(run.events) - self._max_events_per_run]
+            subscribers = tuple(run.subscribers.values())
+            if event.event_type in TERMINAL_EVENT_TYPES:
+                run.completed = True
+        for loop, queue in subscribers:
+            try:
+                loop.call_soon_threadsafe(queue.put_nowait, (sequence, snapshot))
+                if event.event_type in TERMINAL_EVENT_TYPES:
+                    loop.call_soon_threadsafe(queue.put_nowait, None)
+            except RuntimeError:
+                continue
+
+    def complete(self, run_id: str) -> None:
+        with self._lock:
+            run = self._runs.get(run_id)
+            if run is None or run.completed:
+                return
+            run.completed = True
+            subscribers = tuple(run.subscribers.values())
+        for loop, queue in subscribers:
+            try:
+                loop.call_soon_threadsafe(queue.put_nowait, None)
+            except RuntimeError:
+                continue
+
+    def _prune_expired(self) -> None:
+        cutoff = time.monotonic() - self._retention_seconds
+        expired = [
+            run_id
+            for run_id, run in self._runs.items()
+            if run.completed and not run.subscribers and run.created_at < cutoff
+        ]
+        for run_id in expired:
+            del self._runs[run_id]
+
+    def _evict_completed(self) -> None:
+        for run_id, run in tuple(self._runs.items()):
+            if run.completed and not run.subscribers:
+                del self._runs[run_id]
+                return
+
+
+@dataclass(frozen=True)
+class LiveEventSink:
+    """Best-effort event sink; subscriber and transport failures never fail agent execution."""
+
+    hub: LiveEventHub
+
+    def emit(self, event: Event) -> None:
+        try:
+            self.hub.publish(event)
+        except RuntimeError:
+            return
+
+
 class EventSink(Protocol):
     def emit(self, event: Event) -> None: ...
 
@@ -89,7 +240,16 @@ class InMemoryEventSink:
     events: list[Event] = field(default_factory=list)
 
     def emit(self, event: Event) -> None:
-        self.events.append(event)
+        self.events.append(
+            Event(
+                run_id=event.run_id,
+                event_type=event.event_type,
+                timestamp=event.timestamp,
+                status=event.status,
+                duration_ms=event.duration_ms,
+                error_category=event.error_category,
+            )
+        )
 
 
 @dataclass(frozen=True)

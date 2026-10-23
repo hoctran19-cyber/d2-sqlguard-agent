@@ -10,7 +10,6 @@ import asyncio
 import json
 import os
 from collections.abc import Mapping
-from dataclasses import asdict
 from datetime import UTC
 from pathlib import Path
 from time import perf_counter
@@ -33,6 +32,7 @@ from sqlguard.memory.store import InMemoryMemory
 from sqlguard.observability.events import (
     CompositeEventSink,
     Event,
+    EventSink,
     InMemoryEventSink,
     SQLiteEventStore,
 )
@@ -74,12 +74,16 @@ class WebQueryConfigurationError(Exception):
 
 
 def _event_payload(event: Event) -> dict[str, Any]:
-    """Serialize controller metadata without dropping run correlation or timing fields."""
-    payload = asdict(event)
-    payload["timestamp"] = event.timestamp.astimezone(UTC).isoformat()
-    # Keep the legacy alias while exposing the Event contract's canonical field name.
-    payload["type"] = event.event_type
-    return payload
+    """Keep the synchronous Query response metadata-only; live artifacts use authenticated SSE."""
+    return {
+        "run_id": event.run_id,
+        "event_type": event.event_type,
+        "timestamp": event.timestamp.astimezone(UTC).isoformat(),
+        "status": event.status,
+        "duration_ms": event.duration_ms,
+        "error_category": event.error_category,
+        "type": event.event_type,
+    }
 
 
 def web_query_mode(env: Mapping[str, str] | None = None) -> str:
@@ -171,11 +175,19 @@ async def answer_question(
     database: FinancialDatabase,
     question: str,
     env: Mapping[str, str] | None = None,
+    *,
+    run_id: str | None = None,
+    live_sink: EventSink | None = None,
 ) -> dict:
     """Trả về dict cho API /api/query. status: full | partial | refused | failed."""
     env = os.environ if env is None else env
     if web_query_mode(env) == SYNTHETIC_QUERY_MODE:
-        return await _answer_synthetic_question(question, env)
+        return await _answer_synthetic_question(
+            question,
+            env,
+            run_id=run_id,
+            live_sink=live_sink,
+        )
 
     started = perf_counter()
     planner = build_planner()
@@ -185,7 +197,7 @@ async def answer_question(
     if not planner.supports(question):
         return {
             **base,
-            "run_id": None,
+            "run_id": run_id,
             "status": "failed",
             "reason": "Chưa tích hợp LLM: planner demo chỉ trả lời được các câu hỏi mẫu.",
             "sql": None,
@@ -197,7 +209,10 @@ async def answer_question(
     gate = RecordingGate(build_gate(database.table_names()))
     tool = FinancialQueryTool(database)
     events = InMemoryEventSink()
-    event_sink = CompositeEventSink((events, SQLiteEventStore.from_env(env)))
+    sinks: tuple[EventSink, ...] = (events, SQLiteEventStore.from_env(env))
+    if live_sink is not None:
+        sinks += (live_sink,)
+    event_sink = CompositeEventSink(sinks)
     controller = AgentController(
         planner=planner,
         tools=InProcessToolRegistry([tool]),
@@ -206,7 +221,7 @@ async def answer_question(
         events=event_sink,
         budget=ExecutionBudget(max_sql_attempts=1),  # Planner demo không có khả năng tự sửa SQL.
     )
-    state = (await controller.run(AgentRequest(question))).state
+    state = (await controller.run(AgentRequest(question, run_id=run_id))).state
 
     if state.status == RunStatus.SUCCEEDED and tool.last_result is not None:
         status, reason = "full", "Trả lời đầy đủ: câu SQL được phép và đã chạy thành công."
@@ -295,7 +310,13 @@ def _safe_runtime_reason(category: str | None) -> str:
     }.get(category or "", "Không thể hoàn tất lần chạy; không có kết quả được trả về.")
 
 
-async def _answer_synthetic_question(question: str, env: Mapping[str, str]) -> dict:
+async def _answer_synthetic_question(
+    question: str,
+    env: Mapping[str, str],
+    *,
+    run_id: str | None = None,
+    live_sink: EventSink | None = None,
+) -> dict:
     started = perf_counter()
     configured_path = env.get(WEB_QUERY_DB_ENV)
     if not configured_path or not configured_path.strip():
@@ -341,7 +362,10 @@ async def _answer_synthetic_question(question: str, env: Mapping[str, str]) -> d
     gate: _WebRecordingGate | None = None
     registry: _WebRecordingRegistry | None = None
     events = InMemoryEventSink()
-    event_sink = CompositeEventSink((events, SQLiteEventStore.from_env(env)))
+    sinks: tuple[EventSink, ...] = (events, SQLiteEventStore.from_env(env))
+    if live_sink is not None:
+        sinks += (live_sink,)
+    event_sink = CompositeEventSink(sinks)
 
     def scope_factory(run_id: str) -> RunScope:
         nonlocal gate, registry
@@ -359,7 +383,7 @@ async def _answer_synthetic_question(question: str, env: Mapping[str, str]) -> d
         budget=ExecutionBudget(max_sql_attempts=1),
         run_scope_factory=scope_factory,
     )
-    state = (await controller.run(AgentRequest(question))).state
+    state = (await controller.run(AgentRequest(question, run_id=run_id))).state
     decision = gate.last_decision if gate else None
     result = registry.result if registry else None
     gate_status = "ALLOW" if decision and decision.allowed else "BLOCK" if decision else "NOT_RUN"
