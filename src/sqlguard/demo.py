@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import argparse
 import asyncio
 import os
 import sys
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -14,6 +15,7 @@ from sqlguard.agent.postgres_schema import SchemaAdapterError
 from sqlguard.agent.runtime import (
     AUDIT_PATH_ENV,
     QUERY_SOURCE_ENV,
+    SCHEMA_SOURCE_ENV,
     QueryRuntimeError,
     QueryRuntimeFactory,
     build_query_runtime_factory,
@@ -24,6 +26,7 @@ from sqlguard.mcp.tools import InProcessToolRegistry, MockQueryTool, Tool, ToolR
 from sqlguard.memory.store import InMemoryMemory
 from sqlguard.observability.events import InMemoryEventSink
 from sqlguard.security.gate import ReadOnlySQLGate, SecurityDecision, SecurityGate
+from sqlguard.security.policy import POLICY_ENV
 
 DEMO_QUESTION = "Show the demo value"
 MCP_ENABLED_ENV = "SQLGUARD_MCP_ENABLED"
@@ -140,6 +143,7 @@ def _schema_dialect(planner: Planner) -> str | None:
 async def run_demo_report(
     planner: Planner | None = None,
     *,
+    question: str = DEMO_QUESTION,
     gate: SecurityGate | None = None,
     tool: MockQueryTool | None = None,
     budget: ExecutionBudget | None = None,
@@ -174,6 +178,14 @@ async def run_demo_report(
         or query_factory.role != role.strip().casefold()
     ):
         raise QueryRuntimeError("mcp_invalid_config")
+    if (
+        planner is None
+        and (env.get("SQLGUARD_PLANNER") or "demo").casefold() == "ollama"
+        and query_factory is not None
+        and query_factory.source == "sqlite"
+        and (env.get(SCHEMA_SOURCE_ENV) or "none").casefold() != "sqlite"
+    ):
+        raise SchemaAdapterError("schema_sqlite_source_required")
     planner = planner or await create_planner_for_role(role)
     name, model = _planner_label(planner)
     checks: list[GateCheck] = []
@@ -222,7 +234,7 @@ async def run_demo_report(
         )
 
     if use_mcp:
-        extra_env = {AUDIT_PATH_ENV: env[AUDIT_PATH_ENV]} if env.get(AUDIT_PATH_ENV) else None
+        extra_env = {key: env[key] for key in (AUDIT_PATH_ENV, POLICY_ENV) if env.get(key)} or None
         connection = sqlite_server_connection(
             database_path,
             role or "",
@@ -235,7 +247,7 @@ async def run_demo_report(
                 except Exception:
                     raise QueryRuntimeError("mcp_discovery_failed") from None
                 controller = make_controller(make_scope_factory(registry), registry)
-                result = await controller.run(AgentRequest(question=DEMO_QUESTION))
+                result = await controller.run(AgentRequest(question=question))
         except QueryRuntimeError:
             raise
         except Exception:
@@ -244,7 +256,7 @@ async def run_demo_report(
     else:
         # Đường PostgreSQL, SQLite trực tiếp và mock giữ nguyên registry hiện tại.
         controller = make_controller(make_scope_factory())
-        result = await controller.run(AgentRequest(question=DEMO_QUESTION))
+        result = await controller.run(AgentRequest(question=question))
     state = result.state
     return DemoReport(
         planner=name,
@@ -292,16 +304,23 @@ def format_report(report: DemoReport) -> str:
     return "\n".join(lines)
 
 
-async def run_demo() -> str:
-    report = await run_demo_report()
+async def run_demo(question: str = DEMO_QUESTION) -> str:
+    report = await run_demo_report(question=question)
     if not report.succeeded:
         raise RuntimeError(report.failure_reason)
     return report.final_answer or ""
 
 
-def main() -> int:
+def main(argv: Sequence[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Run the SQLGuard Text-to-SQL demo.")
+    parser.add_argument(
+        "--question",
+        default=DEMO_QUESTION,
+        help="natural-language question to send to the configured planner",
+    )
+    args = parser.parse_args(argv)
     try:
-        report = asyncio.run(run_demo_report())
+        report = asyncio.run(run_demo_report(question=args.question))
     except (PlannerConfigError, ValueError) as error:
         print(f"configuration_error: {error}", file=sys.stderr)
         return 2

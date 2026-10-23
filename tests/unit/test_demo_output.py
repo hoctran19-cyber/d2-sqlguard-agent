@@ -115,18 +115,18 @@ def test_displayed_sql_is_the_sql_given_to_planner_plan():
 
 def test_main_prints_report_and_exit_codes(monkeypatch, capsys):
     monkeypatch.setenv("SQLGUARD_PLANNER", "demo")
-    assert demo.main() == 0
+    assert demo.main([]) == 0
     assert "planner: demo" in capsys.readouterr().out
 
     mock_ollama(monkeypatch, "DELETE FROM t")
     monkeypatch.setenv("SQLGUARD_PLANNER", "ollama")
-    assert demo.main() == 1
+    assert demo.main([]) == 1
     assert "security_gate[1]: rejected" in capsys.readouterr().out
 
 
 def test_main_reports_configuration_error(monkeypatch, capsys):
     monkeypatch.setenv("SQLGUARD_PLANNER", "bogus")
-    assert demo.main() == 2
+    assert demo.main([]) == 2
     assert "configuration_error" in capsys.readouterr().err
 
 

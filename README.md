@@ -1,10 +1,10 @@
 # SQLGuard — Security-Aware Text-to-SQL Agent
 
-SQLGuard is a CO5151 project starter for a natural-language-to-SQL agent with an explicit security check before query execution. This repository contains a runnable, deterministic demo and replaceable interfaces; it is not a production Text-to-SQL system.
+SQLGuard is a CO5151 project starter for a natural-language-to-SQL agent with an explicit security check before query execution. The default demo is deterministic and uses mocks; optional local Ollama, SQLite, PostgreSQL, and MCP paths are also implemented. This is a controlled technical demo, not a production Text-to-SQL system.
 
 ## Goals and scope
 
-The intended system will retrieve database context, plan and generate SQL, enforce security policy, call approved tools, process results, and answer users. This starter demonstrates only the orchestration skeleton. The current planner and query tool are local mocks; there is no LLM, MCP server, database, authentication, production authorization policy, or benchmark result.
+The intended system will retrieve database context, plan and generate SQL, enforce security policy, call approved tools, process results, and answer users. The default planner and query tool are local mocks, while the opt-in Ollama, SQLite, PostgreSQL, and MCP paths exercise real local or configured services. There is no production authentication or authorization system, durable memory, or benchmark result.
 
 ## Team
 
@@ -18,8 +18,8 @@ See [team responsibilities](docs/TEAM_RESPONSIBILITIES.md) for collaboration and
 
 ## Architecture and implementation status
 
-- **Implemented starter:** asynchronous controller, run state and configurable budgets, short-term in-memory store, structured in-memory events, tool contract/registry, SQLGlot-based single-`SELECT` gate, deterministic mock planner/tool, and a small evaluation runner.
-- **Not implemented:** real LLM, MCP transport/client, database connection, query authorization tied to identities, durable memory, production observability, recovery based on model-generated repair, or official research benchmark.
+- **Implemented starter:** asynchronous controller, run state and configurable budgets, short-term in-memory store, structured in-memory events, tool contract/registry, SQLGlot-based single-`SELECT` gate, deterministic mock planner/tool, optional Ollama planner, read-only SQLite and PostgreSQL executors, optional MCP transport, and a small evaluation runner.
+- **Not implemented:** query authorization tied to real authenticated identities, durable memory, production observability, or an official research benchmark.
 - **Security boundary:** the gate denies parse errors, non-`SELECT` statements, multiple statements, and optionally tables outside a configured allowlist. It is not a complete authorization system. A real database adapter must use least privilege, parameterization, timeouts, and independently enforced database permissions.
 
 The architecture and interfaces are described in [`docs/architecture/`](docs/architecture/), [`docs/interfaces/`](docs/interfaces/), and [`docs/threat-model/`](docs/threat-model/).
@@ -55,7 +55,7 @@ sqlguard-demo
 # mock_result: demo_value=1
 ```
 
-Equivalent invocation: `python -m sqlguard.demo`. The demo prints the selected planner (and model for Ollama), the exact SQL the planner proposed, the security gate verdict, the SQL that reached the tool, and the result or failure status (exit code `1` on failure, `2` on invalid configuration). `mock_result` is the hardcoded `MockQueryTool` value, not a database result; SQL rejected by the gate is never passed to the tool.
+Equivalent invocation: `python -m sqlguard.demo`. Add `--question "..."` to choose the natural-language question. The demo prints the selected planner (and model for Ollama), the exact SQL the planner proposed, the security gate verdict, the SQL that reached the tool, and the result or failure status (exit code `1` on failure, `2` on invalid configuration). `mock_result` is the hardcoded `MockQueryTool` value, not a database result; SQL rejected by the gate is never passed to the tool.
 
 ### Optional: local LLM planner (Ollama + Qwen3)
 
@@ -66,7 +66,7 @@ brew install ollama            # or download the app from https://ollama.com
 ollama serve                   # skip if the Ollama app is already running
 ollama pull qwen3:8b
 curl http://localhost:11434/api/tags   # check the local API lists qwen3:8b
-SQLGUARD_PLANNER=ollama python -m sqlguard.demo
+SQLGUARD_PLANNER=ollama python -m sqlguard.demo --question "Show the demo value"
 ```
 
 Optional settings: `SQLGUARD_RUN_TIMEOUT_SECONDS` (demo run budget, default `60`), `SQLGUARD_OLLAMA_URL` (default `http://localhost:11434/api/chat`), `SQLGUARD_OLLAMA_MODEL` (default `qwen3:8b`), `SQLGUARD_OLLAMA_TIMEOUT_SECONDS` (default `60`). The planner uses non-streaming structured JSON output (`sql`, `summary`) and fails the run with `planner_error` on any Ollama or output-validation error; it never falls back to `DemoPlanner`. Generated SQL is only a proposal: it still goes through the security gate before any tool call.
@@ -99,10 +99,54 @@ export SQLGUARD_QUERY_SOURCE=sqlite
 export SQLGUARD_SCHEMA_SOURCE=sqlite
 export SQLGUARD_SQLITE_PATH='/absolute/path/to/local.db'
 export SQLGUARD_ROLE=sales
-SQLGUARD_PLANNER=ollama python -m sqlguard.demo
+SQLGUARD_PLANNER=ollama python -m sqlguard.demo --question "List order IDs and total amounts"
 ```
 
 The SQLite schema adapter exposes only tables and columns allowed to the selected trusted role. Query and schema sources are independent; `SQLGUARD_SCHEMA_SOURCE` may also be `none` or `postgres`, and `SQLGUARD_QUERY_SOURCE` may be `mock`, `postgres`, or `sqlite`. SQLite mode never creates a missing database or falls back to mock. Use only local data you are authorized to access; database files and SQLite journal/WAL sidecars are ignored by Git. `.env.example` contains placeholders and is not automatically loaded.
+
+### End-to-end local Ollama + SQLite demo
+
+The packaged `d2_synthetic_v1` policy describes a synthetic sales schema. The checked-in `data/financial.sqlite` has a different schema and is not a compatible database for this policy; schema compatibility also does not establish data provenance or license. Create a disposable fixture with synthetic rows instead. The generator refuses to overwrite an existing file and does not add a database binary to Git:
+
+```bash
+python -m sqlguard.demo_fixture --output /tmp/sqlguard-demo.sqlite
+```
+
+Install the project and start Ollama with a local Qwen model:
+
+```bash
+python -m pip install -e ".[dev]"
+ollama serve                         # skip if Ollama is already running
+ollama pull qwen3:8b
+curl http://localhost:11434/api/tags # verify the model is listed
+```
+
+Configure the planner, schema source, query source, database, and trusted policy role explicitly. `sales` is a role in the synthetic reference policy; it is not one of the business roles (`operator`, `analyst`, or `credit_officer`).
+
+```bash
+export SQLGUARD_PLANNER=ollama
+export SQLGUARD_OLLAMA_MODEL=qwen3:8b
+export SQLGUARD_SQLITE_PATH=/tmp/sqlguard-demo.sqlite
+export SQLGUARD_SCHEMA_SOURCE=sqlite
+export SQLGUARD_QUERY_SOURCE=sqlite
+export SQLGUARD_ROLE=sales
+export SQLGUARD_POLICY=d2_synthetic_v1
+python -m sqlguard.demo --question "List order IDs and total amounts"
+```
+
+The schema adapter reads `SQLGUARD_SQLITE_PATH` and filters it through the selected policy role. The query runtime opens that same path read-only; SQL passes the policy-aware gate, `SecureSqlTool`, and SQLite authorizer before execution. A successful output identifies the Ollama model, SQLite schema/table count, proposed SQL, gate verdict, and rows returned by SQLite. For the sample question, the synthetic rows should include order IDs `101` and `102` with totals `120000` and `230000` (exact generated SQL can vary by model). `mock_result` means no database was queried; a SQLite result is labeled `result`. Missing configuration, invalid database/schema, unavailable Ollama, or a gate rejection fails visibly and never switches to mock.
+
+Common checks: `query_config_error: query_sqlite_path_missing` means set `SQLGUARD_SQLITE_PATH`; `query_config_error: query_role_missing` means set a supported role; `schema_error: schema_sqlite_source_required` means set `SQLGUARD_SCHEMA_SOURCE=sqlite`. If Ollama is unavailable or the model is not loaded, check `curl http://localhost:11434/api/tags`, confirm `ollama serve` is running, and verify `SQLGUARD_OLLAMA_MODEL` matches one of the listed model names. A security rejection is not a configuration fallback; use a query within the role policy rather than relaxing the gate.
+
+To route execution through the optional local MCP STDIO server instead of the in-process SQLite executor, install the extra and enable MCP:
+
+```bash
+python -m pip install -e ".[dev,mcp]"
+export SQLGUARD_MCP_ENABLED=true
+python -m sqlguard.demo --question "List order IDs and total amounts"
+```
+
+MCP requires `SQLGUARD_QUERY_SOURCE=sqlite`, a configured trusted role, an existing `SQLGUARD_SQLITE_PATH`, and the `mcp` extra. The server receives the same SQLite path, role, and selected policy; its query tool still applies the policy gate and SQLite authorizer. Leave `SQLGUARD_MCP_ENABLED` unset (or set it to `false`) to use direct SQLite execution.
 
 Focused tests (no database needed): `python -m pytest -q tests/unit/test_agent_runtime_query.py tests/security/test_controller_security.py`.
 
