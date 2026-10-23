@@ -18,3 +18,4 @@
 - Define whether query repair may regenerate SQL and require a new security decision for every generated statement.
 - Set memory retention and event-sink policies after privacy requirements are known.
 - Specify benchmark source/licensing, ground truth, metric definitions, baselines, and reproducibility protocol.
+- Phê duyệt schema business role chuẩn, quyền truy cập và các kiểm soát tổng hợp của analyst trước khi bật SQL; xem [Thiết kế policy và thống nhất schema cho business role](./BUSINESS_ROLE_POLICY_DESIGN.md).
