@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass, field
 from importlib import resources
 from pathlib import Path
 from typing import Any
 
-DEFAULT_POLICY_RESOURCE = "d2_synthetic_v1.json"
+DEFAULT_POLICY = "d2_synthetic_v1"
+POLICY_ENV = "SQLGUARD_POLICY"
+_DEFAULT_DOMAIN = "an internal business database"
 
 
 class PolicyError(ValueError):
@@ -51,6 +54,9 @@ class RolePolicy:
     canaries: tuple[Canary, ...] = ()
     # Reviewed descriptions for get_schema; key "_table" describes the table itself.
     descriptions: dict[str, dict[str, str]] = field(default_factory=dict)
+    # Free-text columns the Attack Lab may rewrite: table -> primary key column.
+    note_targets: dict[str, str] = field(default_factory=dict)
+    domain_description: str = _DEFAULT_DOMAIN
 
     def has_role(self, role: str) -> bool:
         return role.casefold() in self.roles
@@ -108,6 +114,10 @@ class RolePolicy:
                 _fold(table): {_fold(key): str(text) for key, text in entries.items()}
                 for table, entries in data.get("descriptions", {}).items()
             }
+            note_targets = {
+                _fold(table): _fold(key) for table, key in data.get("note_targets", {}).items()
+            }
+            domain_description = str(data.get("domain_description", _DEFAULT_DOMAIN))
         except (KeyError, TypeError, AttributeError) as error:
             raise PolicyError("Policy file is missing a required field") from error
 
@@ -127,6 +137,9 @@ class RolePolicy:
         for table, entries in descriptions.items():
             if table not in tables or not set(entries) - {"_table"} <= tables[table]:
                 raise PolicyError(f"Description references an unknown table or column: {table}")
+        for table, key in note_targets.items():
+            if not {key, "note"} <= tables.get(table, frozenset()):
+                raise PolicyError(f"Note target {table!r} needs columns {key!r} and 'note'")
         return cls(
             version=version,
             schema=schema,
@@ -138,6 +151,8 @@ class RolePolicy:
             limits=limits,
             canaries=canaries,
             descriptions=descriptions,
+            note_targets=note_targets,
+            domain_description=domain_description,
         )
 
     @classmethod
@@ -145,13 +160,21 @@ class RolePolicy:
         return cls.from_dict(json.loads(Path(path).read_text(encoding="utf-8")))
 
 
-def load_default_policy() -> RolePolicy:
+def load_policy(name: str) -> RolePolicy:
+    """Load a packaged policy by name, e.g. ``bird_financial_v1``."""
+    if not name.replace("_", "").isalnum():
+        raise PolicyError(f"Invalid policy name {name!r}")
     text = (
         resources.files("sqlguard.security")
-        .joinpath("policies", DEFAULT_POLICY_RESOURCE)
+        .joinpath("policies", f"{name}.json")
         .read_text(encoding="utf-8")
     )
     return RolePolicy.from_dict(json.loads(text))
+
+
+def load_default_policy() -> RolePolicy:
+    """The policy named by ``SQLGUARD_POLICY``, else ``DEFAULT_POLICY``."""
+    return load_policy(os.environ.get(POLICY_ENV) or DEFAULT_POLICY)
 
 
 def _fold(name: str) -> str:

@@ -484,16 +484,19 @@ class _Evaluation:
                 ("LEFT", ""),
                 ("LEFT", "OUTER"),
             }
-            condition = join.args.get("on")
-            while isinstance(condition, exp.Paren):
-                condition = condition.this
-            if extra or not allowed_shape or not isinstance(condition, exp.EQ):
+            # ON is one foreign-key equality, or an AND of them (a bridge table such as disp
+            # joined on both of its keys).
+            terms = list(_conjuncts(join.args.get("on")))
+            if extra or not allowed_shape or not terms:
                 self.violations.add("join_not_allowed")
                 continue
-            left = _resolve_join_column(condition.this, alias_map, policy)
-            right = _resolve_join_column(condition.expression, alias_map, policy)
-            if left is None or right is None or not policy.is_foreign_key(left, right):
-                self.violations.add("join_not_allowed")
+            for term in terms:
+                left = right = None
+                if isinstance(term, exp.EQ):
+                    left = _resolve_join_column(term.this, alias_map, policy)
+                    right = _resolve_join_column(term.expression, alias_map, policy)
+                if left is None or right is None or not policy.is_foreign_key(left, right):
+                    self.violations.add("join_not_allowed")
 
     # -- columns -----------------------------------------------------------------------------
 
@@ -612,6 +615,17 @@ def _select_arg_violation(key: str) -> str:
         "locks": "locking_clause",
         "windows": "window_not_supported",
     }.get(key, "unsupported_syntax")
+
+
+def _conjuncts(node):
+    """Flatten ``a AND (b AND c)`` into its terms; parentheses are transparent."""
+    while isinstance(node, exp.Paren):
+        node = node.this
+    if isinstance(node, exp.And):
+        yield from _conjuncts(node.this)
+        yield from _conjuncts(node.expression)
+    elif node is not None:
+        yield node
 
 
 def _resolve_join_column(node, alias_map, policy) -> tuple[str, str] | None:

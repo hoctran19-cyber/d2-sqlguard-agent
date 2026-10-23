@@ -68,7 +68,6 @@ def run(controller, question="question"):
 @pytest.mark.parametrize(
     "category",
     [
-        "db_permission_denied",
         "db_timeout",
         "db_read_only_violation",
         "db_error",
@@ -95,6 +94,32 @@ def test_non_retryable_database_errors_are_terminal_failures_without_repair(cate
     assert audit.records[-1].error_category == category
     assert {r.run_id for r in audit.records} == {result.state.run_id}
     assert {e.run_id for e in events.events} == {result.state.run_id}
+    assert not any(e.event_type.startswith("repair") for e in events.events)
+
+
+def test_database_permission_denial_is_a_refusal_without_repair_or_retry():
+    executor = StaticExecutor(("a",), [(1,)], error=ExecutorError("db_permission_denied"))
+    audit, events = InMemoryAuditSink(), InMemoryEventSink()
+    planner = ScriptedRepairPlanner(GOOD_SQL, [GOOD_SQL])
+    controller, _ = build("sales", executor, planner, audit, events)
+    result = run(controller)
+
+    # DB chặn vì quyền dù gate đã cho qua: là từ chối bảo mật (REFUSED), không phải lỗi hệ thống;
+    # failure_reason giữ category để biết lớp DB đã chặn.
+    assert result.state.status == RunStatus.REFUSED
+    assert result.state.failure_reason == "db_permission_denied"
+    assert result.state.final_answer is None
+    assert planner.feedback == [] and result.state.llm_call_count == 1
+    assert result.state.tool_call_count == 1 and result.state.retry_count == 0
+    assert len(executor.calls) == 1
+    assert [(r.phase, r.outcome) for r in audit.records] == [
+        ("gate", "allowed"),
+        ("execute", "db_error"),
+    ]
+    assert audit.records[-1].error_category == "db_permission_denied"
+    terminal = events.events[-1]
+    assert terminal.event_type == "run_refused"
+    assert terminal.error_category == "db_permission_denied"
     assert not any(e.event_type.startswith("repair") for e in events.events)
 
 

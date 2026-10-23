@@ -306,5 +306,10 @@
       "status": "Trạng thái: success, refunded",
       "bank_reference": "Mã tham chiếu ngân hàng"
     }
-  }
+  },
+  "note_targets": {
+    "customers": "customer_id",
+    "orders": "order_id"
+  },
+  "domain_description": "an internal order database (customers, orders, products, payments)"
 }

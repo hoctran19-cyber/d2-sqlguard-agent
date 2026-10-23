@@ -13,6 +13,7 @@ import asyncio
 import os
 from collections.abc import Mapping
 
+from sqlguard.security.policy import load_default_policy
 from sqlguard.security.service import ExecutorError, QueryResult
 
 DSN_ENV_PREFIX = "SQLGUARD_DB_DSN_"
@@ -24,8 +25,10 @@ class PostgresExecutor:
         self._connect_timeout = connect_timeout_seconds
 
     @classmethod
-    def from_env(cls, roles: tuple[str, ...] = ("sales", "finance", "operations")):
-        """Read ``SQLGUARD_DB_DSN_<ROLE>`` variables; credentials never live in code."""
+    def from_env(cls, roles: tuple[str, ...] | None = None):
+        """Read ``SQLGUARD_DB_DSN_<ROLE>`` for each policy role; credentials never live in code."""
+        if roles is None:
+            roles = tuple(load_default_policy().roles)
         dsns = {
             role: os.environ[DSN_ENV_PREFIX + role.upper()]
             for role in roles

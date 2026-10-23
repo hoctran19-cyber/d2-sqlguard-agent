@@ -226,7 +226,8 @@ def build_query_runtime_factory(
             raise QueryRuntimeError("query_sqlite_db_missing")
         if executor is None:
             try:
-                executor = SQLiteExecutor(path)
+                # Authorizer của executor dựng từ cùng policy với gate.
+                executor = SQLiteExecutor(path, policy)
             except (ExecutorError, OSError, ValueError):
                 raise QueryRuntimeError("query_sqlite_db_unavailable") from None
     elif executor is None:
