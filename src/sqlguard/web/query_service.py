@@ -11,6 +11,7 @@ import json
 import os
 from collections.abc import Mapping
 from dataclasses import asdict
+from datetime import UTC
 from pathlib import Path
 from time import perf_counter
 from typing import Any
@@ -29,7 +30,7 @@ from sqlguard.agent.runtime import (
 from sqlguard.agent.sqlite_schema import SQLITE_PATH_ENV
 from sqlguard.mcp.tools import InProcessToolRegistry, ToolError, ToolRegistry
 from sqlguard.memory.store import InMemoryMemory
-from sqlguard.observability.events import InMemoryEventSink
+from sqlguard.observability.events import Event, InMemoryEventSink
 from sqlguard.security.gate import PolicySQLGate, ReadOnlySQLGate, SecurityDecision
 from sqlguard.security.policy import RolePolicy, load_policy
 from sqlguard.web.database import (
@@ -65,6 +66,15 @@ class WebQueryConfigurationError(Exception):
     def __init__(self, category: str) -> None:
         super().__init__(category)
         self.category = category
+
+
+def _event_payload(event: Event) -> dict[str, Any]:
+    """Serialize controller metadata without dropping run correlation or timing fields."""
+    payload = asdict(event)
+    payload["timestamp"] = event.timestamp.astimezone(UTC).isoformat()
+    # Keep the legacy alias while exposing the Event contract's canonical field name.
+    payload["type"] = event.event_type
+    return payload
 
 
 def web_query_mode(env: Mapping[str, str] | None = None) -> str:
@@ -206,9 +216,7 @@ async def answer_question(
         "reason": reason,
         "sql": planner.last_sql,
         "result": tool.last_result.to_dict() if status == "full" else None,
-        "events": [
-            {"type": e["event_type"], "status": e["status"]} for e in map(asdict, events.events)
-        ],
+        "events": [_event_payload(event) for event in events.events],
         "duration_ms": (perf_counter() - started) * 1000,
     }
 
@@ -389,6 +397,6 @@ async def _answer_synthetic_question(question: str, env: Mapping[str, str]) -> d
         "result": page_result,
         "row_count": page_result["total_rows"] if page_result else 0,
         "truncated": page_result["truncated"] if page_result else False,
-        "events": [{"type": event.event_type, "status": event.status} for event in events.events],
+        "events": [_event_payload(event) for event in events.events],
         "duration_ms": (perf_counter() - started) * 1000,
     }

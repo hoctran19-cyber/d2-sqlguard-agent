@@ -3,6 +3,7 @@ import io
 import json
 import sqlite3
 import urllib.error
+from datetime import UTC, datetime
 
 import pytest
 
@@ -29,6 +30,29 @@ from sqlguard.web.query_service import (  # noqa: E402
 )
 
 ALLOWED_SQL = "SELECT order_id, total_amount_vnd FROM orders ORDER BY order_id"
+
+
+def assert_event_contract(body, terminal_type, terminal_status, terminal_error=None):
+    events = body["events"]
+    assert events[0]["event_type"] == "run_started"
+    assert events[-1]["event_type"] == terminal_type
+    assert events[-1]["status"] == terminal_status
+    assert events[-1]["error_category"] == terminal_error
+    assert all(event["run_id"] == body["run_id"] for event in events)
+    for event in events:
+        assert {
+            "run_id",
+            "event_type",
+            "timestamp",
+            "status",
+            "duration_ms",
+            "error_category",
+        } <= event.keys()
+        assert event["type"] == event["event_type"]
+        timestamp = datetime.fromisoformat(event["timestamp"])
+        assert timestamp.tzinfo is not None
+        assert timestamp.utcoffset() == UTC.utcoffset(timestamp)
+        assert event["duration_ms"] is None or event["duration_ms"] >= 0
 
 
 class FakeResponse(io.BytesIO):
@@ -103,6 +127,26 @@ def test_synthetic_query_uses_ollama_policy_gate_and_real_sqlite(web_client, mon
     assert body["row_count"] == 2
     assert body["duration_ms"] >= 0
     assert body["run_id"]
+    assert_event_contract(body, "run_completed", "succeeded")
+    event_types = [event["event_type"] for event in body["events"]]
+    assert event_types.index("sql_generation_completed") < event_types.index(
+        "security_check_completed"
+    )
+    assert event_types.index("security_check_completed") < event_types.index("execute_completed")
+    assert (
+        next(
+            event for event in body["events"] if event["event_type"] == "security_check_completed"
+        )["status"]
+        == "allowed"
+    )
+    assert (
+        next(event for event in body["events"] if event["event_type"] == "execute_completed")[
+            "status"
+        ]
+        == "completed"
+    )
+    assert "SYNTHETIC-ID-001" not in repr(body["events"])
+    assert "SYNTHETIC-REF-001" not in repr(body["events"])
     assert requests[0][1] == 4.0
     prompt = requests[0][0]["messages"][1]["content"]
     assert "Table: orders" in prompt
@@ -167,13 +211,22 @@ def test_policy_denials_never_reach_sqlite_executor(web_client, monkeypatch, web
     assert body["gate"]["status"] == "BLOCK"
     assert body["result"] is None
     assert executed == []
-    assert response.status_code == 200
     assert body["execution_status"] == "refused"
     assert str(web_db.resolve()) not in response.text
     assert "Traceback" not in response.text
     assert "sqlite3." not in response.text
     assert "SYNTHETIC-ID-001" not in response.text
     assert "SYNTHETIC-REF-001" not in response.text
+    assert_event_contract(body, "run_refused", "refused", "security_rejection")
+    gate_event = next(
+        event for event in body["events"] if event["event_type"] == "security_check_completed"
+    )
+    assert gate_event["status"] == "denied"
+    assert gate_event["error_category"] == "security_rejection"
+    assert not any(
+        event["event_type"] == "execute_completed" and event["status"] == "completed"
+        for event in body["events"]
+    )
 
 
 @pytest.mark.parametrize(
@@ -254,6 +307,16 @@ def test_ollama_failure_is_reported_without_demo_fallback(web_client, monkeypatc
     assert "Ollama" in body["reason"]
     assert "private" not in response.text
     assert len(calls) == 1
+    assert_event_contract(body, "run_failed", "failed", "planner_error")
+    event_types = [event["event_type"] for event in body["events"]]
+    assert (
+        next(
+            event for event in body["events"] if event["event_type"] == "sql_generation_completed"
+        )["status"]
+        == "failed"
+    )
+    assert "security_check_completed" not in event_types
+    assert "execute_completed" not in event_types
 
 
 def test_invalid_ollama_output_is_reported_without_fallback(web_client, monkeypatch):
@@ -270,10 +333,19 @@ def test_invalid_ollama_output_is_reported_without_fallback(web_client, monkeypa
     assert body["result"] is None
 
 
-def test_query_executor_failure_has_safe_error_and_no_result(web_client, monkeypatch):
+@pytest.mark.parametrize(
+    ("error_category", "expected_reason"),
+    [
+        ("db_unavailable", "Không thể truy cập database demo"),
+        ("db_timeout", "Truy vấn vượt quá thời gian cho phép"),
+    ],
+)
+def test_query_executor_failure_has_safe_error_and_no_result(
+    web_client, monkeypatch, error_category, expected_reason
+):
     class FailingExecutor(SQLiteExecutor):
         async def execute(self, sql, *, role, timeout_seconds, max_rows):
-            raise ExecutorError("db_unavailable")
+            raise ExecutorError(error_category)
 
     monkeypatch.setattr("sqlguard.agent.runtime.SQLiteExecutor", FailingExecutor)
     install_ollama(monkeypatch)
@@ -284,7 +356,17 @@ def test_query_executor_failure_has_safe_error_and_no_result(web_client, monkeyp
     assert body["execution_status"] == "failed"
     assert body["gate"]["status"] == "ALLOW"
     assert body["result"] is None
-    assert "Không thể truy cập database demo" in body["reason"]
+    assert expected_reason in body["reason"]
+    assert_event_contract(body, "run_failed", "failed", error_category)
+    tool_event = next(
+        event for event in body["events"] if event["event_type"] == "execute_completed"
+    )
+    assert tool_event["status"] == "failed"
+    assert tool_event["error_category"] == error_category
+    assert not any(
+        event["event_type"] == "execute_completed" and event["status"] == "completed"
+        for event in body["events"]
+    )
 
 
 def test_synthetic_database_configuration_fails_clearly_and_does_not_fallback(
