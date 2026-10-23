@@ -9,9 +9,15 @@ pytest.importorskip("httpx")
 
 from fastapi.testclient import TestClient  # noqa: E402
 
+from sqlguard.security.business_database import (  # noqa: E402
+    BUSINESS_DATABASE_ENV,
+    BusinessDatabaseReadinessCode,
+    check_business_database_readiness,
+)
 from sqlguard.security.policy import load_policy  # noqa: E402
 from sqlguard.web.app import create_app  # noqa: E402
 from sqlguard.web.auth import BUSINESS_ROLES, SessionStore, User  # noqa: E402
+from sqlguard.web.database import FinancialDatabase  # noqa: E402
 from sqlguard.web.role_reference import FINANCIAL_SCHEMA, role_reference  # noqa: E402
 
 # username -> (role, nhãn hiển thị) đã được người dùng chốt.
@@ -177,6 +183,36 @@ def test_business_user_cannot_call_data_apis(client, username):
         ).status_code
         == 403
     )
+
+
+@pytest.mark.parametrize("username", BUSINESS_USERS)
+def test_unready_business_database_cannot_be_queried_by_business_users(
+    client, username, monkeypatch
+):
+    monkeypatch.delenv(BUSINESS_DATABASE_ENV, raising=False)
+    readiness = check_business_database_readiness()
+    assert not readiness.ready
+    assert readiness.code is BusinessDatabaseReadinessCode.NOT_CONFIGURED
+
+    database_calls = []
+
+    def record_database_call(*args, **kwargs):
+        database_calls.append((args, kwargs))
+        raise AssertionError("Business user request must not access the legacy database")
+
+    monkeypatch.setattr(FinancialDatabase, "table_names", record_database_call)
+    monkeypatch.setattr(FinancialDatabase, "run_page", record_database_call)
+    login(client, username)
+
+    assert client.get("/api/tables").status_code == 403
+    assert client.post("/api/sql", json={"sql": "SELECT 1"}).status_code == 403
+    assert (
+        client.post(
+            "/api/query", json={"question": "Có bao nhiêu khách hàng trong hệ thống?"}
+        ).status_code
+        == 403
+    )
+    assert database_calls == []
 
 
 @pytest.mark.parametrize("username", BUSINESS_USERS)
