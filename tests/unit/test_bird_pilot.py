@@ -95,6 +95,10 @@ def test_invalid_and_ambiguous_case_ids_fail_explicitly(tmp_path):
         load_reviewed_cases(report_path, [dataset], ["1", "1", "2"])
 
 
+@pytest.mark.skip(
+    reason="Task 6E enables SQLite; SQLite dialect handling is covered by "
+    "test_sqlite_reviewed_cases_keep_sqlite_dialect."
+)
 def test_unsupported_sql_dialect_fails_explicitly(tmp_path):
     report_path, dataset, _ = _write_sources(tmp_path, dialect="sqlite")
 

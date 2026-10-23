@@ -12,17 +12,21 @@ from sqlguard.agent.models import AgentRequest, ExecutionBudget
 from sqlguard.agent.planning import OllamaPlanner, Planner, PlannerConfigError
 from sqlguard.agent.postgres_schema import SchemaAdapterError
 from sqlguard.agent.runtime import (
+    AUDIT_PATH_ENV,
+    QUERY_SOURCE_ENV,
     QueryRuntimeError,
     QueryRuntimeFactory,
     build_query_runtime_factory,
     create_planner_for_role,
 )
-from sqlguard.mcp.tools import InProcessToolRegistry, MockQueryTool, Tool
+from sqlguard.mcp.client import sqlite_server_connection
+from sqlguard.mcp.tools import InProcessToolRegistry, MockQueryTool, Tool, ToolRegistry
 from sqlguard.memory.store import InMemoryMemory
 from sqlguard.observability.events import InMemoryEventSink
 from sqlguard.security.gate import ReadOnlySQLGate, SecurityDecision, SecurityGate
 
 DEMO_QUESTION = "Show the demo value"
+MCP_ENABLED_ENV = "SQLGUARD_MCP_ENABLED"
 
 
 @dataclass(frozen=True)
@@ -80,6 +84,29 @@ class _RecordingTools(InProcessToolRegistry):
         return await super().call(name, arguments, timeout_seconds=timeout_seconds)
 
 
+class _RecordingRegistry:
+    """Ghi lại SQL được gửi tới registry MCP mà không thay đổi kết quả hay lỗi."""
+
+    def __init__(self, registry: ToolRegistry, calls: list[str]) -> None:
+        self._registry = registry
+        self._calls = calls
+
+    async def call(self, name: str, arguments: dict[str, Any], *, timeout_seconds: float) -> Any:
+        sql = arguments.get("sql")
+        if isinstance(sql, str):
+            self._calls.append(sql)
+        return await self._registry.call(name, arguments, timeout_seconds=timeout_seconds)
+
+
+def _mcp_enabled(env: Mapping[str, str]) -> bool:
+    raw = env.get(MCP_ENABLED_ENV)
+    if raw is None or raw.casefold() == "false":
+        return False
+    if raw.casefold() == "true":
+        return True
+    raise QueryRuntimeError("mcp_invalid_config")
+
+
 def budget_from_env(env: Mapping[str, str] | None = None) -> ExecutionBudget:
     """Tạo budget cho demo; ``SQLGUARD_RUN_TIMEOUT_SECONDS`` ghi đè giới hạn mặc định 60 giây."""
     env = os.environ if env is None else env
@@ -118,45 +145,106 @@ async def run_demo_report(
     budget: ExecutionBudget | None = None,
     query_factory: QueryRuntimeFactory | None = None,
 ) -> DemoReport:
+    env = dict(os.environ)
     # SQLGUARD_ROLE do người vận hành đặt trong môi trường chạy, KHÔNG lấy từ câu hỏi hay LLM.
     # Cùng một role này được dùng cho schema, gate, SecureSqlTool và executor của lần chạy.
-    role = os.environ.get("SQLGUARD_ROLE")
+    role = env.get("SQLGUARD_ROLE")
+    use_mcp = _mcp_enabled(env)
+    if use_mcp:
+        if (env.get(QUERY_SOURCE_ENV) or "mock").casefold() != "sqlite":
+            raise QueryRuntimeError("mcp_requires_sqlite")
+        if gate is not None or tool is not None:
+            raise QueryRuntimeError("mcp_invalid_config")
+        if not role or not role.strip():
+            raise QueryRuntimeError("query_role_missing")
+        database = env.get("SQLGUARD_SQLITE_PATH")
+        if not database or not database.strip():
+            raise QueryRuntimeError("query_sqlite_path_missing")
+        database_path = os.path.expanduser(database)
+        if not os.path.isfile(database_path):
+            raise QueryRuntimeError("query_sqlite_db_missing")
+        env["SQLGUARD_SQLITE_PATH"] = database_path
     # Dựng cấu hình truy vấn TRƯỚC planner để lỗi cấu hình dừng sớm (chưa nạp schema/gọi LLM).
     # Nếu bên gọi tiêm gate/tool riêng (test) thì giữ nguyên đường đi cũ.
     if query_factory is None and gate is None and tool is None:
-        query_factory = build_query_runtime_factory(role)
+        query_factory = build_query_runtime_factory(role, env)
+    if use_mcp and (
+        query_factory is None
+        or query_factory.source != "sqlite"
+        or query_factory.role != role.strip().casefold()
+    ):
+        raise QueryRuntimeError("mcp_invalid_config")
     planner = planner or await create_planner_for_role(role)
     name, model = _planner_label(planner)
     checks: list[GateCheck] = []
     tool_sql: list[str] = []
+
     # Controller dùng gate thật và tool mock; hai lớp bọc chỉ để ghi lại SQL phục vụ báo cáo.
     # Chế độ database dùng SecureSqlTool + PolicySQLGate; chế độ mock dùng MockQueryTool như cũ.
     # Không bao giờ chuyển sang mock khi chế độ database gặp lỗi (lỗi đã được ném ở trên).
-    scope_factory = None
-    if query_factory is not None:
-        # Gate/tool được dựng theo run_id của controller để audit khớp với run.
+    def make_scope_factory(registry: ToolRegistry | None = None):
+        if query_factory is None:
+            return None
+
+        # Gate/tool scope vẫn gắn với run_id của controller; MCP chỉ thay registry phía thực thi.
         def scope_factory(run_id: str) -> RunScope:
             built = query_factory.for_run(run_id)
+            scoped_tools: ToolRegistry = (
+                _RecordingRegistry(registry, tool_sql)
+                if registry is not None
+                else _RecordingTools([built.tool], tool_sql)
+            )
             return RunScope(
                 _RecordingGate(built.gate, checks),
-                _RecordingTools([built.tool], tool_sql),
-                # Kiểm tra rò rỉ câu trả lời cuối bằng role tin cậy của run.
+                scoped_tools,
                 output_check=built.output_check,
             )
 
-    # Đường postgres chỉ đi qua scope_factory (gate/tool theo run_id); không nhận runtime dựng sẵn.
-    query_tool: Tool = tool or MockQueryTool()
-    query_gate: SecurityGate = gate or ReadOnlySQLGate()
-    controller = AgentController(
-        run_scope_factory=scope_factory,
-        planner=planner,
-        tools=_RecordingTools([query_tool], tool_sql),
-        security_gate=_RecordingGate(query_gate, checks),
-        memory=InMemoryMemory(),
-        events=InMemoryEventSink(),
-        budget=budget or budget_from_env(),
-    )
-    result = await controller.run(AgentRequest(question=DEMO_QUESTION))
+        return scope_factory
+
+    def make_controller(scope_factory, registry: ToolRegistry | None = None) -> AgentController:
+        # PostgreSQL và mock giữ registry hiện tại; chỉ nhánh MCP tiêm registry từ xa vào
+        # cùng RunScope với gate và bước kiểm tra đầu ra.
+        query_tool: Tool = tool or MockQueryTool()
+        query_gate: SecurityGate = gate or ReadOnlySQLGate()
+        return AgentController(
+            run_scope_factory=scope_factory,
+            planner=planner,
+            tools=(
+                _RecordingRegistry(registry, tool_sql)
+                if registry is not None
+                else _RecordingTools([query_tool], tool_sql)
+            ),
+            security_gate=_RecordingGate(query_gate, checks),
+            memory=InMemoryMemory(),
+            events=InMemoryEventSink(),
+            budget=budget or budget_from_env(),
+        )
+
+    if use_mcp:
+        extra_env = {AUDIT_PATH_ENV: env[AUDIT_PATH_ENV]} if env.get(AUDIT_PATH_ENV) else None
+        connection = sqlite_server_connection(
+            database_path,
+            role or "",
+            extra_env=extra_env,
+        )
+        try:
+            async with connection:
+                try:
+                    registry = await connection.registry()
+                except Exception:
+                    raise QueryRuntimeError("mcp_discovery_failed") from None
+                controller = make_controller(make_scope_factory(registry), registry)
+                result = await controller.run(AgentRequest(question=DEMO_QUESTION))
+        except QueryRuntimeError:
+            raise
+        except Exception:
+            # Không truyền thông báo transport/SDK lên output hay log của ứng dụng.
+            raise QueryRuntimeError("mcp_connection_failed") from None
+    else:
+        # Đường PostgreSQL, SQLite trực tiếp và mock giữ nguyên registry hiện tại.
+        controller = make_controller(make_scope_factory())
+        result = await controller.run(AgentRequest(question=DEMO_QUESTION))
     state = result.state
     return DemoReport(
         planner=name,
@@ -166,7 +254,7 @@ async def run_demo_report(
         failure_reason=state.failure_reason,
         final_answer=state.final_answer,
         schema_tables=_schema_table_count(planner),
-        query_source=query_factory.source if query_factory is not None else "mock",
+        query_source="mcp" if use_mcp else (query_factory.source if query_factory else "mock"),
         gate_checks=checks,
         tool_sql=tool_sql,
         schema_dialect=_schema_dialect(planner),
@@ -184,6 +272,8 @@ def format_report(report: DemoReport) -> str:
         lines.append("tool: SecureSqlTool + PostgresExecutor (real PostgreSQL, read-only)")
     elif report.query_source == "sqlite":
         lines.append("tool: SecureSqlTool + SQLiteExecutor (local SQLite, read-only)")
+    elif report.query_source == "mcp":
+        lines.append("tool: MCP STDIO + SQLGuard SQLite server (read-only)")
     else:
         lines.append("tool: MockQueryTool (mock; no database is queried)")
     if not report.gate_checks:
