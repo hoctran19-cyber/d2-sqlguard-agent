@@ -140,7 +140,7 @@ function showAnswer(container, user, answer) {
 function renderStaticResult(result) {
   const rows = result.rows.length
     ? result.rows.map((row) => h("tr", {}, row.map((cell) =>
-      h("td", { class: cell === null ? "null" : "" }, cell === null ? "NULL" : cell)))
+      h("td", { class: cell === null ? "null" : "" }, cell === null ? "NULL" : cell))))
     : [h("tr", {}, h("td", {
       colspan: String(result.columns.length || 1), class: "muted",
     }, "0 dòng"))];
