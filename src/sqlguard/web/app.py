@@ -232,11 +232,12 @@ def create_app(db_path: Path | None = None) -> FastAPI:
                 "access": "reference",
                 "effective_access": {
                     "data_queries": "disabled",
-                    "reason": "Truy vấn dữ liệu của role nghiệp vụ đang tắt cho tới khi Security "
-                    "Gate thực thi policy Financial; mọi API dữ liệu trả 403.",
+                    "reason": "Chưa có policy runtime được duyệt cho role này; policy "
+                    "bird_financial_v1 khai báo role và schema khác.",
                 },
-                "note": "Bảng dưới đây là quyền tham chiếu theo tài liệu policy, chưa được "
-                "enforce trong runtime và không phải quyền truy cập đang có hiệu lực.",
+                "note": "Bảng dưới đây là quyền tham chiếu, chưa được enforce trong runtime và "
+                "không phải quyền truy cập đang có hiệu lực. Chưa có crosswalk được duyệt giữa "
+                "role/schema này và bird_financial_v1; mọi API dữ liệu trả 403.",
                 "reference": role_reference(user.role),
             }
         columns = database_call(database.table_columns)

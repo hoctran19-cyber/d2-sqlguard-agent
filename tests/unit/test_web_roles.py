@@ -9,8 +9,9 @@ pytest.importorskip("httpx")
 
 from fastapi.testclient import TestClient  # noqa: E402
 
+from sqlguard.security.policy import load_policy  # noqa: E402
 from sqlguard.web.app import create_app  # noqa: E402
-from sqlguard.web.auth import BUSINESS_ROLES  # noqa: E402
+from sqlguard.web.auth import BUSINESS_ROLES, SessionStore, User  # noqa: E402
 from sqlguard.web.role_reference import FINANCIAL_SCHEMA, role_reference  # noqa: E402
 
 # username -> (role, nhãn hiển thị) đã được người dùng chốt.
@@ -120,6 +121,28 @@ def test_business_roles_constant_matches_users():
     assert set(BUSINESS_ROLES) == {role for role, _ in BUSINESS_USERS.values()}
 
 
+def test_session_store_rejects_unknown_and_malformed_roles():
+    sessions = SessionStore()
+    with pytest.raises(ValueError, match="unknown role"):
+        sessions.create(User("spoofed", "risk", "/home"))
+
+    token = "invalid-session"
+    sessions._sessions[token] = (User("spoofed", "operator ", "/home"), 9999999999)
+    assert sessions.get(token) is None
+    assert token not in sessions._sessions
+    assert sessions.get(None) is None
+
+
+def test_business_role_names_are_not_implicitly_mapped_to_bird_roles():
+    policy = load_policy("bird_financial_v1")
+    assert {role for role in ("teller", "credit", "risk") if policy.has_role(role)} == {
+        "teller",
+        "credit",
+        "risk",
+    }
+    assert not any(policy.has_role(role) for role in BUSINESS_ROLES)
+
+
 @pytest.mark.parametrize("username", BUSINESS_USERS)
 def test_business_user_wrong_password_rejected(client, username):
     assert login(client, username, "wrong").status_code == 401
@@ -197,6 +220,8 @@ def test_info_separates_reference_from_effective_access(client, username):
     assert (info["username"], info["role"], info["role_label"]) == (username, role, label)
     assert info["access"] == "reference"
     assert info["effective_access"]["data_queries"] == "disabled"
+    assert "policy runtime" in info["effective_access"]["reason"]
+    assert "crosswalk được duyệt" in info["note"]
     assert "chưa được enforce" in info["note"]
     ref = info["reference"]
     assert ref["enforced"] is False and ref["default_rule"] == "deny"
