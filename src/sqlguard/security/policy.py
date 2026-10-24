@@ -44,6 +44,9 @@ class PolicyLimits:
     # Aggregate-only roles: groups covering fewer distinct individuals (cohort_keys) are
     # withheld. 0 disables it. The value is provisional until the team approves it.
     min_group_size: int = 0
+    # False: every output column must be read from a table, so a planner cannot answer with a
+    # made-up constant (``SELECT 1``, ``SELECT NULL AS card_id``) instead of being refused.
+    allow_constant_projections: bool = True
 
 
 @dataclass(frozen=True)

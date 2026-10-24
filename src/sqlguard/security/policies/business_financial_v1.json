@@ -298,7 +298,8 @@
     "max_result_bytes": 65536,
     "max_text_length": 500,
     "query_timeout_seconds": 3.0,
-    "min_group_size": 5
+    "min_group_size": 5,
+    "allow_constant_projections": false
   },
   "cohort_keys": {
     "client": "client_id",

@@ -78,6 +78,11 @@ VIOLATIONS: dict[str, ViolationInfo] = {
     "aggregate_measure_exposed": ViolationInfo(
         "Query uses a measure outside an aggregate function", True, _POLICY
     ),
+    "constant_projection": ViolationInfo(
+        "Every output column must be read from a table; constant placeholders are not answers",
+        False,
+        _POLICY,
+    ),
     "aggregate_required": ViolationInfo(
         "This role may only receive aggregate results; group by allowed dimensions and aggregate",
         True,

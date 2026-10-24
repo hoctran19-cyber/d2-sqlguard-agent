@@ -493,6 +493,7 @@ def _safe_policy_reason(decision: SecurityDecision | None) -> str:
         ),
         "aggregate_measure_exposed": "Role chỉ tổng hợp: số liệu chỉ được dùng trong hàm tổng hợp.",
         "aggregate_required": "Role này chỉ được nhận kết quả tổng hợp, không được xuất từng dòng.",
+        "constant_projection": "Câu truy vấn trả giá trị hằng thay vì dữ liệu đọc từ bảng.",
         "star_not_allowed": "Policy không cho phép chọn tất cả cột.",
         "subquery_not_supported": "Subquery chưa được hỗ trợ.",
         "join_not_allowed": "Chỉ cho phép JOIN theo khóa ngoại đã khai báo.",

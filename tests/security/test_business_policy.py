@@ -166,7 +166,31 @@ ANALYST_ALLOWED = [
     "ON T1.district_id = T2.district_id WHERE T1.a11 > 10000",
 ]
 
+# F7: a key may be the value COUNT counts through a CASE branch (Kiet's D2-L06 as Gemini wrote it).
+ANALYST_ALLOWED += [
+    "SELECT CAST(COUNT(DISTINCT CASE WHEN T1.gender = 'F' THEN T1.client_id END) AS REAL) * 100.0 "
+    "/ COUNT(DISTINCT T1.client_id) FROM client AS T1 INNER JOIN district AS T2 "
+    "ON T1.district_id = T2.district_id WHERE T2.a11 > 10000",
+    "SELECT COUNT(CASE WHEN type = 'VYDAJ' THEN account_id END) FROM trans",
+    "SELECT COUNT(DISTINCT CASE WHEN gender = 'M' THEN client_id ELSE NULL END) FROM client",
+]
+
 ANALYST_DENIED = [
+    # F7 stays narrow: the key must be the counted value, not a condition, operand or SUM input.
+    (
+        "SELECT COUNT(DISTINCT CASE WHEN client_id = 5 THEN client_id END) FROM client",
+        "aggregate_key_exposed",
+    ),
+    (
+        "SELECT COUNT(DISTINCT CASE WHEN gender = 'F' THEN client_id + 1 END) FROM client",
+        "aggregate_key_exposed",
+    ),
+    ("SELECT SUM(CASE WHEN gender = 'F' THEN client_id END) FROM client", "aggregate_key_exposed"),
+    ("SELECT MAX(CASE WHEN gender = 'F' THEN client_id END) FROM client", "aggregate_key_exposed"),
+    (
+        "SELECT gender, CASE WHEN gender = 'F' THEN client_id END FROM client GROUP BY gender",
+        "aggregate_key_exposed",
+    ),
     # Individual keys: output, grouping, filtering, ordering or a non-COUNT aggregate.
     ("SELECT account_id, SUM(amount) FROM trans GROUP BY account_id", "aggregate_key_exposed"),
     ("SELECT COUNT(*) FROM trans GROUP BY account_id", "aggregate_key_exposed"),
@@ -195,7 +219,7 @@ ANALYST_DENIED = [
     ("SELECT DISTINCT a2 FROM district", "aggregate_required"),
     ("SELECT a2, SUM(a4) FROM district", "aggregate_required"),
     ("SELECT gender, district_id, COUNT(*) FROM client GROUP BY gender", "aggregate_required"),
-    ("SELECT 1", "aggregate_required"),
+    ("SELECT 1", "constant_projection"),
     # Forbidden columns and tables stay forbidden.
     ("SELECT COUNT(*) FROM client WHERE full_name LIKE 'A%'", "column_forbidden"),
     ("SELECT COUNT(*) FROM trans WHERE balance > 0", "column_forbidden"),
@@ -351,3 +375,44 @@ def test_executor_rejects_unknown_role(db_path):
     executor = SQLiteExecutor(db_path, POLICY)
     with pytest.raises(ExecutorError):
         asyncio.run(executor.execute("SELECT 1", role="teller", timeout_seconds=1, max_rows=1))
+
+
+# -- F8: business queries must read their answer from a table ---------------------------------
+
+CONSTANT_ANSWERS = [
+    "SELECT 1",
+    "SELECT COUNT(*)",
+    "SELECT 'Không có thông tin về thẻ trong cơ sở dữ liệu.' AS message",
+    'SELECT NULL AS card_id, NULL AS "loai the" FROM disp AS D '
+    "INNER JOIN account AS A ON D.account_id = A.account_id WHERE D.type = 'OWNER'",
+    "SELECT account_id, 'n/a' AS card_type FROM account",
+]
+
+
+@pytest.mark.parametrize("role", ROLES)
+@pytest.mark.parametrize("sql", CONSTANT_ANSWERS)
+def test_made_up_constant_answers_are_refused(role, sql):
+    decision = check(role, sql)
+    assert not decision.allowed
+    assert "constant_projection" in decision.violations
+    assert not decision.repairable
+
+
+@pytest.mark.parametrize(
+    ("role", "sql"),
+    [
+        ("operator", "SELECT COUNT(*) FROM account"),
+        ("operator", "SELECT account_id, frequency FROM account WHERE account_id = 3"),
+        ("credit_officer", "SELECT COUNT(*) FROM loan WHERE amount >= 250000"),
+        ("analyst", "SELECT gender, COUNT(*) * 100.0 / 5 FROM client GROUP BY gender"),
+    ],
+)
+def test_queries_reading_tables_are_not_constant(role, sql):
+    assert "constant_projection" not in check(role, sql).violations
+
+
+def test_constant_rule_is_off_unless_the_policy_turns_it_on():
+    from sqlguard.security.policy import load_default_policy
+
+    gate = PolicySQLGate(SecurityContext("sales"), load_default_policy())
+    assert "constant_projection" not in gate.check("SELECT 1 AS demo_value").violations

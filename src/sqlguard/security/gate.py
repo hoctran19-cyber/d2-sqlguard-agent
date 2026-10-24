@@ -337,6 +337,8 @@ class _Evaluation:
         # Collect structure, table and join findings together so a terminal finding (for example
         # a system catalog) is never hidden behind a repairable one (for example ``*``).
         self._check_structure(root)
+        if not limits.allow_constant_projections and _constant_projection(root):
+            self.violations.add("constant_projection")
         alias_map = self._check_tables(root, role)
         self._check_joins(root, alias_map)
         if self.violations:
@@ -601,8 +603,11 @@ class _Evaluation:
     def _check_aggregate(self, root: exp.Select, alias_map: dict[str, str], role: str) -> None:
         """Aggregate-only roles get grouped/aggregated results, never individual rows.
 
-        Keys may appear only in JOIN conditions and as the direct argument of COUNT; measures
-        only inside an aggregate function; dimensions anywhere. Every projection is an aggregate
+        Keys may appear only in JOIN conditions and as what COUNT counts: its direct argument, or
+        the value of a CASE branch that COUNT counts directly (``COUNT(DISTINCT CASE WHEN
+        gender = 'F' THEN client_id END)``; the WHEN conditions are checked as any other
+        expression, so a key there is still exposed); measures only inside an aggregate
+        function; dimensions anywhere. Every projection is an aggregate
         or a grouped expression, so SQLite's bare columns cannot return a row's value. Small
         groups are not suppressed here (the cohort threshold is not approved yet).
         """
@@ -623,7 +628,9 @@ class _Evaluation:
                 parent = column.parent
                 if isinstance(parent, exp.Distinct):
                     parent = parent.parent
-                counted = isinstance(aggregate, exp.Count) and parent is aggregate
+                counted = isinstance(aggregate, exp.Count) and (
+                    parent is aggregate or _counted_case_value(column, aggregate)
+                )
                 if not (counted or _enclosing(column, root, exp.Join) is not None):
                     self.violations.add("aggregate_key_exposed")
             elif kind == MEASURE and aggregate is None:
@@ -689,6 +696,35 @@ class _Evaluation:
         if name not in output_aliases:
             self.violations.add("column_unknown")
         return None
+
+
+def _counted_case_value(column: exp.Column, count: exp.Count) -> bool:
+    """True when the key is a THEN/ELSE value of a CASE that ``count`` counts directly."""
+    parent = column.parent
+    if isinstance(parent, exp.If) and parent.args.get("true") is column:
+        case = parent.parent
+    elif isinstance(parent, exp.Case) and parent.args.get("default") is column:
+        case = parent
+    else:
+        return False
+    if not isinstance(case, exp.Case):
+        return False
+    holder = case.parent
+    if isinstance(holder, exp.Distinct):
+        holder = holder.parent
+    return holder is count
+
+
+def _constant_projection(root: exp.Select) -> bool:
+    """A query that reads no table, or outputs a column that is only a literal (``SELECT 1``,
+    ``SELECT NULL AS card_id ...``): what it returns did not come from the database."""
+    if root.find(exp.Table) is None:
+        return True
+    for projection in root.expressions:
+        target = projection.this if isinstance(projection, exp.Alias) else projection
+        if target.find(exp.Column, exp.AggFunc) is None:
+            return True
+    return False
 
 
 def _select_arg_violation(key: str) -> str:
