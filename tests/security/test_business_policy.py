@@ -315,7 +315,10 @@ def test_each_role_runs_its_own_queries_on_sqlite(db_path):
         "JOIN account a ON d.account_id = a.account_id "
         "JOIN trans t ON t.account_id = a.account_id GROUP BY gender",
     )
-    assert analyst["row_count"] >= 1
+    # The query runs; every group here covers fewer than min_group_size clients (3 rows per
+    # table), so all are withheld (see test_small_group_suppression.py).
+    assert analyst["columns"] == ["gender", "COUNT(DISTINCT client.client_id)", "SUM(t.amount)"]
+    assert analyst["rows"] == [] and analyst["small_groups_withheld"] is True
     credit = run_tool(db_path, "credit_officer", "SELECT loan_id, amount, status FROM loan")
     assert credit["row_count"] == 3
 

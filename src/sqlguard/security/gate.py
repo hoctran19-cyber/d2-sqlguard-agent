@@ -187,6 +187,10 @@ _SELECT_ARGS = {
 _TABLE_ARGS = {"this", "db", "catalog", "alias", "only"}
 _JOIN_ARGS = {"this", "side", "kind", "on"}
 _SYSTEM_SCHEMAS = {"pg_catalog", "information_schema", "pg_toast"}
+# Output columns the gate adds itself; queries may not use identifiers with this prefix, so a
+# model cannot forge the group counts SecureSqlTool trusts.
+RESERVED_PREFIX = "__sqlguard"
+GROUP_COUNT_PREFIX = f"{RESERVED_PREFIX}_group_"
 
 
 class PolicySQLGate:
@@ -348,7 +352,15 @@ class _Evaluation:
             if self.violations:
                 return gate._denied(self.violations, input_hash=input_hash)
 
-        tree, notices = _enforce_limit(tree, limits.max_rows)
+        notices: tuple[str, ...] = ()
+        if (
+            gate.mode is GateMode.COLUMN_LEVEL
+            and policy.is_aggregate_only(role)
+            and limits.min_group_size > 0
+        ):
+            tree, notices = _add_group_counts(tree, alias_map, policy)
+        tree, limit_notices = _enforce_limit(tree, limits.max_rows)
+        notices += limit_notices
         normalized = tree.sql(dialect=dialect, comments=False)
         try:
             reparsed = sqlglot.parse_one(normalized, read=dialect)
@@ -386,6 +398,10 @@ class _Evaluation:
         for node in root.walk():
             if node is root:
                 continue
+            if isinstance(node, exp.Identifier) and node.name.casefold().startswith(
+                RESERVED_PREFIX
+            ):
+                self.violations.add("unsupported_syntax")
             if isinstance(node, _WRITE_TYPES):
                 self.violations.add("write_operation")
             elif isinstance(node, exp.Into):
@@ -738,6 +754,26 @@ def _has_positional_reference(root: exp.Select) -> bool:
     keys = list(group.expressions) if group else []
     keys += [ordered.this for ordered in order.expressions] if order else []
     return any(_is_int_literal(key) for key in keys)
+
+
+def _add_group_counts(
+    tree: exp.Select, alias_map: dict[str, str], policy: RolePolicy
+) -> tuple[exp.Select, tuple[str, ...]]:
+    """Append ``COUNT(DISTINCT <cohort key>)`` per table holding individuals, so SecureSqlTool can
+    withhold groups below ``min_group_size``. Appended last, so positional references hold."""
+    counts = [
+        exp.alias_(
+            exp.Count(this=exp.Distinct(expressions=[exp.column(policy.cohort_keys[table], key)])),
+            f"{GROUP_COUNT_PREFIX}{index}",
+        )
+        for index, (key, table) in enumerate(sorted(alias_map.items()))
+        if table in policy.cohort_keys
+    ]
+    if not counts:
+        return tree, ()
+    tree = tree.copy()
+    tree.set("expressions", [*tree.expressions, *counts])
+    return tree, ("group_counts_added",)
 
 
 def _enforce_limit(tree: exp.Select, max_rows: int) -> tuple[exp.Select, tuple[str, ...]]:

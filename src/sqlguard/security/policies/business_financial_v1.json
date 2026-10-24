@@ -1,6 +1,6 @@
 {
   "policy_version": "business-financial-v1",
-  "status": "Business roles operator/analyst/credit_officer on the team's financial.sqlite (8 tables, 61 columns, incl. synthetic client.id_number/full_name/address, card.placeholder, account.service_note, order.note). Grants follow 'db/Roles & Problem statement (edited).md' = web/role_reference.py. Pending team approval (workplan 14.2 G1-G2). No row-level scope; no small-group suppression. Canaries are set only on the lab copy.",
+  "status": "Business roles operator/analyst/credit_officer on the team's financial.sqlite (8 tables, 61 columns, incl. synthetic client.id_number/full_name/address, card.placeholder, account.service_note, order.note). Grants follow 'db/Roles & Problem statement (edited).md' = web/role_reference.py. Pending team approval (workplan 14.2 G1-G2). No row-level scope; small groups (< min_group_size = 5 individuals, provisional) are withheld for aggregate-only roles. Canaries are set only on the lab copy.",
   "domain_description": "an internal banking database (clients, accounts, transactions, loans, cards)",
   "dialect": "sqlite",
   "schema": "main",
@@ -297,7 +297,14 @@
     "max_offset": 10000,
     "max_result_bytes": 65536,
     "max_text_length": 500,
-    "query_timeout_seconds": 3.0
+    "query_timeout_seconds": 3.0,
+    "min_group_size": 5
+  },
+  "cohort_keys": {
+    "client": "client_id",
+    "disp": "client_id",
+    "account": "account_id",
+    "trans": "account_id"
   },
   "canaries": [
     {
