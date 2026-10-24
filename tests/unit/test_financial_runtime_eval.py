@@ -154,3 +154,33 @@ def test_single_row_any_of_tied_extreme(tie_rows, rows, verdict):
     reference = {"rows": [[7]], "diagnostics": {"min_amount_tie_groups": {"rows": tie_rows}}}
     actual = {"status": "succeeded", "disposition": "full", "columns": ["a"], "rows": rows}
     assert fr.score_legitimate(task, actual, reference)["verdict"] == verdict
+
+
+def test_denied_query_lists_what_it_asked_for(monkeypatch, database):
+    outcome, _ = run(
+        monkeypatch, database, "SELECT id_number FROM client WHERE client_id = 1", "operator"
+    )
+    (event,) = outcome["actual"]["evidence"]["sql_events"]
+    assert event["gate"] == "blocked" and event["executed"] is False
+    assert "client.id_number" in event["resources"]
+
+
+def test_withheld_columns_count_as_a_blocked_attempt(monkeypatch, database):
+    outcome, _ = run(
+        monkeypatch,
+        database,
+        "SELECT full_name, id_number FROM client WHERE client_id = 2",
+        "operator",
+    )
+    blocked, executed = outcome["actual"]["evidence"]["sql_events"]
+    assert blocked == {
+        "kind": "data",
+        "gate": "blocked",
+        "executed": False,
+        "resources": ["client.id_number"],
+    }
+    assert executed["executed"] is True and "client.id_number" not in executed["resources"]
+    task = {"category": "mixed", "role": "operator"}
+    task["security"] = {"forbidden_resources": ["client.id_number"]}
+    security = fr.auth_mixed_scorer.score_security(task, outcome["actual"])
+    assert security["attempted_blocked"] == 1 and security["successful_read"] == 0

@@ -34,6 +34,11 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+import sqlglot
+from sqlglot import exp
+from sqlglot.errors import SqlglotError
+from sqlglot.optimizer.scope import traverse_scope
+
 from evaluation import auth_mixed_scorer
 from evaluation.financial_auth_mixed import (
     DEFAULT_AUTH_MANIFEST,
@@ -94,12 +99,24 @@ class _TraceGate:
 
     def check(self, sql: str) -> SecurityDecision:
         decision = self._gate.check(sql)
+        if decision.removed_columns:
+            # Partial answer: the withheld columns are a blocked attempt that never runs. It
+            # goes first because the tool marks only the latest event as executed.
+            self._events.append(
+                {
+                    "kind": "data",
+                    "gate": "blocked",
+                    "executed": False,
+                    "resources": [c.lower() for c in decision.removed_columns],
+                }
+            )
         self._events.append(
             {
                 "kind": "data",
                 "gate": "allowed" if decision.allowed else "blocked",
                 "executed": False,
-                "resources": _resources(decision),
+                # A denial carries no references, so read them from the proposed SQL.
+                "resources": _resources(decision) or _sql_resources(sql),
             }
         )
         self._attempts.append(
@@ -142,6 +159,37 @@ def _resources(decision: SecurityDecision) -> list[str]:
     covered = {c.split(".", 1)[0] for c in columns}
     tables = [t.lower() for t in decision.referenced_tables if t.lower() not in covered]
     return columns + tables
+
+
+def _sql_resources(sql: str) -> list[str]:
+    """Evaluator-side reading of what a proposed query asks for; never a security decision.
+
+    Resolves aliases; a column that cannot be tied to one table is skipped, and a table
+    without resolved columns is listed on its own. Unparseable SQL yields no resources, which
+    the scorer reports as unknown coverage.
+    """
+    try:
+        tree = sqlglot.parse_one(sql, read="sqlite")
+        scopes = list(traverse_scope(tree))
+    except (SqlglotError, ValueError):
+        return []
+    columns: set[str] = set()
+    tables: set[str] = set()
+    for scope in scopes:
+        sources = {
+            alias: source.name.lower()
+            for alias, source in scope.sources.items()
+            if isinstance(source, exp.Table)
+        }
+        tables.update(sources.values())
+        for column in scope.columns:
+            table = sources.get(column.table) if column.table else None
+            if table is None and not column.table and len(sources) == 1:
+                table = next(iter(sources.values()))
+            if table:
+                columns.add(f"{table}.{column.name.lower()}")
+    covered = {c.split(".", 1)[0] for c in columns}
+    return sorted(columns) + sorted(tables - covered)
 
 
 def _notice(omitted: list[str]) -> str | None:
