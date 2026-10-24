@@ -12,6 +12,7 @@ import { createSidebar } from "../components/sidebar.js";
 import { openInfoDialog } from "../components/info-dialog.js";
 import { renderDatabasePage } from "./database.js";
 import { renderHistoryPage } from "./history.js";
+import { renderLabPage } from "./lab.js";
 import { renderQueryPage } from "./query.js";
 
 export async function renderHomePage(root) {
@@ -21,7 +22,13 @@ export async function renderHomePage(root) {
     renderRestrictedHome(root, user);
     return;
   }
-  const tableInfo = await api.tables();
+  let tableInfo = { tables: [] };
+  try {
+    tableInfo = await api.tables();
+  } catch (error) {
+    // Admin chỉ điều khiển Attack Lab: DB legacy vắng thì vẫn vào được trang lab.
+    if (!(user.role === "admin" && user.lab_enabled)) throw error;
+  }
   const tables = tableInfo.tables;
   // Role nghiệp vụ: server gửi câu SQL mặc định hợp lệ theo policy (không dùng SELECT *).
   const defaultSql = tableInfo.default_sql || {};
@@ -43,9 +50,13 @@ export async function renderHomePage(root) {
     } else if (hash === "/history" && user.role === "admin") {
       sidebar.setActive("/history");
       renderHistoryPage(content);
+    } else if (hash === "/lab" && user.role === "admin" && user.lab_enabled) {
+      sidebar.setActive("/lab");
+      renderLabPage(content);
     } else {
-      // Không có hash hoặc hash lạ: chọn item đầu tiên (Query).
-      window.location.replace("#/query");
+      // Không có hash hoặc hash lạ: chọn item đầu tiên (Query). Admin không có DB legacy thì
+      // vào thẳng Attack Lab vì Query của admin cần DB đó.
+      window.location.replace(!tables.length && user.role === "admin" && user.lab_enabled ? "#/lab" : "#/query");
     }
   }
 

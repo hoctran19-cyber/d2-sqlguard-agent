@@ -57,6 +57,14 @@ input:focus, textarea:focus { outline: 2px solid var(--accent-soft); border-colo
 .notice-box { background: var(--warn-soft); color: var(--warn); border-radius: 8px;
   padding: 10px 14px; margin: 12px 0; }
 .notice-box p { margin: 4px 0 0; color: var(--text); }
+.ok-box { background: var(--ok-soft); color: var(--ok); border-radius: 8px; padding: 8px 12px; margin: 12px 0; }
+.injection-notice { border-left: 4px solid var(--warn); }
+
+/* ---------- Attack Lab ---------- */
+.lab-page .lab-target { font: inherit; padding: 6px 10px; border: 1px solid var(--line);
+  border-radius: 8px; background: var(--panel); color: var(--text); }
+.lab-page .lab-current { white-space: pre-wrap; overflow-wrap: anywhere; }
+.lab-page textarea.sql-input { width: 100%; box-sizing: border-box; }
 
 /* ---------- Trang đăng nhập ---------- */
 .login-page { min-height: 100vh; display: grid; place-items: center; padding: 16px; }

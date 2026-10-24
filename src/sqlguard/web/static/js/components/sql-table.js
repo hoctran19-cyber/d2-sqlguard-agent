@@ -4,6 +4,7 @@
 
 import { api } from "../api.js";
 import { h, spinner } from "../dom.js";
+import { injectionNotice } from "./injection-notice.js";
 
 /**
  * Tạo component.
@@ -22,6 +23,7 @@ export function createSqlTable({ sql, initialResult = null, label = "SQL" }) {
   const runButton = h("button", { class: "btn", onclick: () => run(textarea.value, 1) }, "Chạy SQL");
   const status = h("span", { class: "muted" });
   const errorBox = h("div", { class: "error-box hidden", role: "alert" });
+  const noticeArea = h("div", { class: "injection-area" });
   const tableArea = h("div", { class: "table-wrap" });
   const prevButton = h("button", { class: "btn secondary", onclick: () => run(state.sql, state.page - 1) }, "‹ Trước");
   const nextButton = h("button", { class: "btn secondary", onclick: () => run(state.sql, state.page + 1) }, "Sau ›");
@@ -39,6 +41,7 @@ export function createSqlTable({ sql, initialResult = null, label = "SQL" }) {
     h("div", { class: "row" }, runButton, status,
       h("span", { class: "muted small" }, "Ctrl/⌘ + Enter để chạy. Chỉ cho phép một câu SELECT.")),
     errorBox,
+    noticeArea,
     tableArea,
     pager,
   );
@@ -48,6 +51,7 @@ export function createSqlTable({ sql, initialResult = null, label = "SQL" }) {
     state.sql = result.sql;
     state.page = result.page;
     state.totalPages = result.total_pages;
+    noticeArea.replaceChildren(...(result.possible_injection ? [injectionNotice()] : []));
     if (!result.columns.length) {
       tableArea.replaceChildren(h("p", { class: "muted" }, "Không có cột nào."));
     } else {

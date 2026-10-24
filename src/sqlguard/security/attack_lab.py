@@ -290,6 +290,10 @@ class AttackLab:
         self._store = store or InMemoryRevisionStore()
         self._lock = asyncio.Lock()
 
+    @property
+    def targets(self) -> list[str]:
+        return sorted(f"{table}.{row_id}" for table, row_id in self._targets)
+
     async def get(self, target: str) -> dict:
         table, row_id = self._parse(target, action="read", user_id="-")
         target = f"{table}.{row_id}"

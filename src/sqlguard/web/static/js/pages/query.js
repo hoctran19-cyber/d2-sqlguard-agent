@@ -6,6 +6,7 @@
 import { api } from "../api.js";
 import { h, spinner } from "../dom.js";
 import { createSqlTable } from "../components/sql-table.js";
+import { injectionNotice, labRevisionsLine } from "../components/injection-notice.js";
 import { createWorkflowVisualizer } from "../components/workflow-visualizer.js";
 
 // Nhãn và màu cho từng loại kết quả trả về từ backend.
@@ -289,6 +290,8 @@ function showAnswer(container, user, answer, visualizer = null) {
         },
       }, "Đặt câu hỏi mới")),
     statusBox,
+    answer.possible_injection ? injectionNotice() : null,
+    labRevisionsLine(answer.lab_revisions),
     gateArea,
     sqlArea,
     resultArea,

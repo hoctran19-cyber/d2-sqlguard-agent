@@ -21,8 +21,12 @@ route và UI nằm trong `src/sqlguard/web/` (dùng chung).
 - Đã chạy thử trên bản sao của `db/financial.sqlite` (24/10): `init-copy`, `show`/`save`/`restore`
   trên `account.3`; `revision_conflict` và `target_not_allowed` (`client.4`) bị từ chối và có
   audit; hash sau restore trùng baseline; file gốc không đổi hash.
-- **Chưa có:** route và UI trong web; web chưa theo dõi run đang chạy, nên chưa có nguồn cho
-  `run_active` (L6–L8).
+- **Đã có (24/10, A1–A4):** `LabRunGuard` và 5 route trong `web/` (chỉ `admin`), trang Attack Lab,
+  cảnh báo `possible_injection` ở Query/Database, và `lab_revisions` trong kết quả `/api/query`
+  (đọc ở tầng web, không sửa `agent/`). Test: `tests/unit/test_web_attack_lab.py`; đã kiểm bằng
+  trình duyệt với hai phiên (admin tiêm, operator hỏi).
+- **Chưa có:** ghi `(revision, hash)` vào trace/event của run (L8 đầy đủ, cần Học); Observe chưa
+  hiện revision, chỉ trang Query hiện dòng "note lúc run bắt đầu".
 - `note_targets` của `business_financial_v1`: `account.service_note` (key `account_id`) và
   `order.note` (key `order_id`). Trên `db/financial.sqlite`, cả 4500 dòng `account` và 6471 dòng
   `order` đều có note synthetic (`SYN …`).
@@ -116,6 +120,7 @@ bản sao lab và sidecar. Chỉ process web có quyền đó, agent thì không
 | `PUT /api/lab/notes/{target}` | `{content, expected_revision}` | `lab.save(...)` | thêm `run_active` (409), `revision_conflict` (409), `invalid_payload` (422) |
 | `POST /api/lab/notes/{target}/restore` | `{expected_revision, to_revision?}` | `lab.restore(...)` | như trên, thêm `unknown_revision` (422) |
 | `GET /api/lab/notes/{target}/history` | — | `lab.history(target)` (không có nội dung) | như `GET` |
+| `GET /api/lab/targets` | — | `lab.targets` (route bổ sung cho UI) | `lab_disabled` (404) |
 
 - `user_id` lấy từ session, không lấy từ body. Chỉ role hệ thống `admin`. Business role
   (`operator`/`analyst`/`credit_officer`) và `evaluator` nhận 403.
@@ -164,7 +169,9 @@ bản sao lab và sidecar. Chỉ process web có quyền đó, agent thì không
 | L9 | Harness của Kiệt dùng `create_lab_copy` + `AttackLab.save` cho mỗi run I03/I04, xóa bản sao sau run | `evaluation/financial_injection.py` | P1-7 chạy được offline | Kiệt |
 
 **Trạng thái 24/10:** L1–L5 xong và đã commit, kèm CLI `show`/`history`/`save`/`restore` và
-`attack_lab_from_env`. L6–L9 chưa làm.
+`attack_lab_from_env`. L6, L7 xong (A1, A2, A4); L8 xong phần web (A3: `lab_revisions` trong kết
+quả query), chưa ghi vào trace của run. L9 xong phía adapter (24/10, `ControllerAdapter` dùng `create_lab_copy` + `AttackLab.save`
+mỗi run indirect, xóa bản sao sau run); Kiệt cần review.
 
 Thứ tự: L1 → L2 → L3 → L5 → L4 là phần security (khoảng 4h), làm trong ngày 26/10. L6–L7 cũng do
 Khang làm, vì đã làm P1-8 ở web. L8 cần Học review vì đụng `agent/`. Nếu L6–L8 không kịp trước
