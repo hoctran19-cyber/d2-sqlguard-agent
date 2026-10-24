@@ -252,7 +252,8 @@ def test_tool_level_non_repairable_rejection_cannot_bypass_checks():
     _, tool, executor = strict_stack()
     planner = ScriptedRepairPlanner("SELECT phone_number FROM customers", [GOOD_SQL])
     result = run(controller(planner, ReadOnlySQLGate(), tool))
-    assert result.state.status == RunStatus.FAILED
+    # F1: kết thúc REFUSED như khi gate của controller từ chối.
+    assert result.state.status == RunStatus.REFUSED
     assert result.state.failure_reason == "security_rejection"
     assert planner.feedback == []
     assert executor.calls == []

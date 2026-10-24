@@ -60,7 +60,8 @@ def test_allowed_sql_is_regenerated_bounded_and_free_of_forbidden_columns(case):
         return
     tree = sqlglot.parse_one(decision.normalized_sql, read="postgres")
     limit = tree.args["limit"].expression
-    assert int(limit.this) <= POLICY.limits.max_rows
+    # One row over max_rows lets SecureSqlTool detect truncation; it returns max_rows at most.
+    assert int(limit.this) <= POLICY.limits.max_rows + 1
     assert "/*" not in decision.normalized_sql and "--" not in decision.normalized_sql
     if mode is GateMode.COLUMN_LEVEL:
         forbidden = POLICY.forbidden_column_names(case["role"])

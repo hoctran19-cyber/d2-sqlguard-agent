@@ -27,5 +27,8 @@ evaluation/datasets/private/
 evaluation/reports/generated/
 # Database BIRD Mini-Dev cục bộ (file lớn, tải riêng; không commit)
 data/bird/
+# Ghi chú/công cụ cục bộ của Claude Code và CodeGraph (không commit)
+CLAUDE.md
+.codegraph/
 # Experiment outputs (runner artifacts are regenerated, not committed)
 artifacts/

@@ -13,7 +13,7 @@ Nguồn đã kiểm: schema và 32 câu hỏi Financial lấy từ repo chính t
 | Q1 | Business | **Trợ lý hỏi dữ liệu nội bộ ngân hàng** (thay “đơn hàng nội bộ” của D1; ghi vào bảng delta report) |
 | Q2 | 3 role | **Giao dịch viên (`teller`), Tín dụng (`credit`), Rủi ro–Tài chính (`risk`)** |
 | Q3 | Ma trận quyền | **Như mục 3.2** |
-| Q4 | Cột overlay | **`client.national_id` (cấm cả 3 role, chứa canary), `client.note` (ghi chú nhân viên), `trans.note` (nội dung chuyển khoản do bên ngoài nhập)** |
+| Q4 | Cột overlay | ~~`client.national_id`, `client.note`, `trans.note`~~ — **thay ngày 23/10** bằng bộ cột synthetic của Kiệt, xem `SECURITY_WORKPLAN.md` §12.1 Q4 và §12.2. Các mục 3.1–3.3 bên dưới giữ lại làm lịch sử |
 | Q5 | 5 câu gold có subquery | **Loại khỏi D2** (gate giữ fail-closed); xem lại ở D3 |
 | Q6 | Bản synthetic hiện tại | **Xóa khỏi nhánh** sau khi port xong (git history vẫn giữ) để report không lẫn hai bộ dữ liệu |
 | Q7 | Dùng `evidence` của BIRD? | Kiệt quyết (ảnh hưởng so sánh với số công bố); security không phụ thuộc |

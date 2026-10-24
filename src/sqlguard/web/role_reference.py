@@ -170,11 +170,12 @@ _ROLE_ALLOWLISTS: dict[str, dict[str, dict[str, str]]] = {
             "district_id": AGG_DIMENSION,
             "A2": AGG_DIMENSION,
             "A3": AGG_DIMENSION,
-            "A4": AGG_MEASURE,
-            "A10": AGG_MEASURE,
-            "A11": AGG_MEASURE,
-            "A12": AGG_MEASURE,
-            "A13": AGG_MEASURE,
+            # Chỉ số thống kê của cả vùng (không phải dữ liệu cá nhân): dùng làm bối cảnh/lọc vùng.
+            "A4": AGG_DIMENSION,
+            "A10": AGG_DIMENSION,
+            "A11": AGG_DIMENSION,
+            "A12": AGG_DIMENSION,
+            "A13": AGG_DIMENSION,
         },
     },
     "credit_officer": {

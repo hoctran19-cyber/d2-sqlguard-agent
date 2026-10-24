@@ -166,4 +166,32 @@ def test_note_statements_are_fixed_and_parameterized():
 
     for read_sql, update_sql in statements.values():
         assert read_sql.count("%s") == 1 and update_sql.count("%s") == 2
-        assert "UPDATE" in update_sql and "SET note = %s" in update_sql
+        assert "UPDATE" in update_sql and 'SET "note" = %s' in update_sql
+
+
+def test_note_statements_use_the_policy_note_column():
+    from sqlguard.security.policy import load_policy
+
+    statements = note_statements(load_policy("bird_financial_v1"))
+
+    assert statements["account"] == (
+        'SELECT "service_note" FROM "account" WHERE "account_id" = %s',
+        'UPDATE "account" SET "service_note" = %s WHERE "account_id" = %s',
+    )
+    assert statements["order"][1] == 'UPDATE "order" SET "note" = %s WHERE "order_id" = %s'
+
+
+def test_note_target_column_must_exist():
+    from sqlguard.security.policy import PolicyError, RolePolicy
+
+    data = {
+        "policy_version": "t",
+        "tables": {"account": ["account_id", "service_note"]},
+        "roles": {},
+        "note_targets": {"account": {"key": "account_id", "column": "memo"}},
+    }
+
+    with pytest.raises(PolicyError):
+        RolePolicy.from_dict(data)
+    data["note_targets"]["account"]["column"] = "service_note"
+    assert RolePolicy.from_dict(data).note_column("account") == "service_note"

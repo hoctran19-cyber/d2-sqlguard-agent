@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import urllib.error
 import urllib.request
 from collections.abc import Mapping
@@ -14,6 +15,7 @@ from sqlguard.memory.semantic import (
     DEFAULT_SEMANTIC_MEMORY,
     SemanticMemory,
     SemanticMemoryError,
+    semantic_memory_for,
 )
 from sqlguard.security.policy import RolePolicy
 from sqlguard.security.prompting import (
@@ -26,6 +28,14 @@ from sqlguard.security.prompting import (
 DEFAULT_OLLAMA_URL = "http://localhost:11434/api/chat"
 DEFAULT_OLLAMA_MODEL = "qwen3:8b"
 DEFAULT_OLLAMA_TIMEOUT_SECONDS = 60.0
+
+DEFAULT_GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta"
+DEFAULT_GEMINI_MODEL = "gemini-2.5-flash"
+DEFAULT_GEMINI_TIMEOUT_SECONDS = 30.0
+GEMINI_API_KEY_ENV = "GEMINI_API_KEY"
+_GEMINI_MODEL_NAME = re.compile(r"[A-Za-z0-9._-]+")
+# finishReason cho biết bộ lọc của Google đã chặn câu trả lời (không phải lỗi của planner).
+_GEMINI_BLOCKED_FINISH_REASONS = frozenset({"SAFETY", "BLOCKLIST", "PROHIBITED_CONTENT", "SPII"})
 
 
 @dataclass(frozen=True)
@@ -105,9 +115,25 @@ PLAN_SCHEMA: dict[str, Any] = {
     "additionalProperties": False,
 }
 
+# Gemini ``responseSchema`` dùng tập con của OpenAPI, không nhận ``additionalProperties``;
+# planner vẫn tự kiểm tra đúng hai trường như với Ollama.
+GEMINI_PLAN_SCHEMA: dict[str, Any] = {
+    "type": "OBJECT",
+    "properties": {"sql": {"type": "STRING"}, "summary": {"type": "STRING"}},
+    "required": ["sql", "summary"],
+}
 
-class OllamaPlanner:
-    """Sinh SQL bằng model Ollama chạy cục bộ. Chỉ đề xuất SQL, không bao giờ thực thi.
+
+class PlannerBlockedError(PlannerError):
+    """Nhà cung cấp LLM từ chối trả lời vì bộ lọc an toàn của họ (không phải lỗi kết nối).
+
+    Tách khỏi ``PlannerError`` thường để run bị bộ lọc của provider chặn không bị đếm lẫn với
+    run bị Security Gate từ chối hay planner hỏng.
+    """
+
+
+class LLMPlanner:
+    """Phần chung của các planner gọi LLM. Chỉ đề xuất SQL, không bao giờ thực thi.
 
     - ``context`` do controller truyền vào là các chuỗi ghi nhớ (ví dụ dấu hiệu retry), không
       phải schema database.
@@ -120,32 +146,37 @@ class OllamaPlanner:
     - Mọi lỗi đều raise ``PlannerError``, không tự động chuyển sang ``DemoPlanner``.
     - Lời gọi HTTP (blocking) chạy trong thread riêng với timeout hữu hạn; hủy task đang chờ
       không dừng được request đang bay, request chỉ kết thúc muộn nhất khi hết timeout.
+
+    Lớp con chỉ khác nhau ở định dạng request/response và cách gửi HTTP. Prompt gửi cho mọi
+    provider là một (``_build_messages``), nên kết quả giữa các model so sánh được.
     """
+
+    # Tên provider ghi vào event và tên hiển thị trong thông báo lỗi; lớp con đặt lại.
+    provider = "llm"
+    _label = "LLM"
 
     def __init__(
         self,
         *,
-        url: str = DEFAULT_OLLAMA_URL,
-        model: str = DEFAULT_OLLAMA_MODEL,
-        timeout_seconds: float = DEFAULT_OLLAMA_TIMEOUT_SECONDS,
+        model: str,
+        timeout_seconds: float,
         schema_context: SchemaContext | None = None,
         policy: RolePolicy | None = None,
         role: str | None = None,
         semantic_memory: SemanticMemory | None = None,
     ) -> None:
-        if not url.startswith(("http://", "https://")):
-            raise PlannerConfigError("Ollama URL must start with http:// or https://")
         if not model:
-            raise PlannerConfigError("Ollama model must not be empty")
+            raise PlannerConfigError(f"{self._label} model must not be empty")
         if not timeout_seconds > 0:
-            raise PlannerConfigError("Ollama timeout must be a positive number")
+            raise PlannerConfigError(f"{self._label} timeout must be a positive number")
         if (policy is None) != (role is None):
-            raise PlannerConfigError("Ollama role and policy must be supplied together")
+            raise PlannerConfigError(f"{self._label} role and policy must be supplied together")
         if role is not None:
             role = role.strip().casefold()
             if not role or not policy or not policy.has_role(role):
-                raise PlannerConfigError("Ollama role is not present in the configured policy")
-        self._url = url
+                raise PlannerConfigError(
+                    f"{self._label} role is not present in the configured policy"
+                )
         self._model = model
         self._timeout = timeout_seconds
         # Mỗi planner giữ schema riêng của mình (bất biến), nên không có state dùng chung.
@@ -154,7 +185,7 @@ class OllamaPlanner:
         self._role = role
         self._semantic_context = ""
         if policy is not None and role is not None:
-            catalog = semantic_memory or DEFAULT_SEMANTIC_MEMORY
+            catalog = semantic_memory or semantic_memory_for(policy) or DEFAULT_SEMANTIC_MEMORY
             if catalog is not None and not isinstance(catalog, SemanticMemory):
                 raise PlannerConfigError("Semantic memory configuration is invalid")
             try:
@@ -173,31 +204,10 @@ class OllamaPlanner:
     def schema_context(self) -> SchemaContext | None:
         return self._schema_context
 
-    @classmethod
-    def from_env(
-        cls,
-        env: Mapping[str, str] | None = None,
-        *,
-        schema_context: SchemaContext | None = None,
-        policy: RolePolicy | None = None,
-        role: str | None = None,
-        semantic_memory: SemanticMemory | None = None,
-    ) -> OllamaPlanner:
-        env = os.environ if env is None else env
-        raw_timeout = env.get("SQLGUARD_OLLAMA_TIMEOUT_SECONDS")
-        try:
-            timeout = float(raw_timeout) if raw_timeout else DEFAULT_OLLAMA_TIMEOUT_SECONDS
-        except ValueError:
-            raise PlannerConfigError("SQLGUARD_OLLAMA_TIMEOUT_SECONDS must be a number") from None
-        return cls(
-            url=env.get("SQLGUARD_OLLAMA_URL") or DEFAULT_OLLAMA_URL,
-            model=env.get("SQLGUARD_OLLAMA_MODEL") or DEFAULT_OLLAMA_MODEL,
-            timeout_seconds=timeout,
-            schema_context=schema_context,
-            policy=policy,
-            role=role,
-            semantic_memory=semantic_memory,
-        )
+    @property
+    def request_parameters(self) -> dict[str, Any]:
+        """Tham số request ghi vào event (không có prompt, schema hay secret)."""
+        return {}
 
     async def create_plan(self, question: str, context: tuple[str, ...]) -> Plan:
         payload = self._build_payload(question, context)
@@ -214,9 +224,10 @@ class OllamaPlanner:
         body = await asyncio.to_thread(self._post, payload)
         return self._parse(body)
 
-    def _build_payload(
+    def _build_messages(
         self, question: str, context: tuple[str, ...], feedback: RepairFeedback | None = None
-    ) -> dict[str, Any]:
+    ) -> tuple[str, str]:
+        """Trả về (system, user); đây là toàn bộ nội dung được gửi cho model."""
         # Chưa có schema thì gửi "(not supplied)" để model không tự bịa tên bảng/cột.
         schema = self._schema_context.to_prompt_text() if self._schema_context else "(not supplied)"
         user = (
@@ -249,6 +260,106 @@ class OllamaPlanner:
             if self._policy is not None and self._role is not None
             else SYSTEM_PROMPT
         )
+        return system, user
+
+    def _build_payload(
+        self, question: str, context: tuple[str, ...], feedback: RepairFeedback | None = None
+    ) -> dict[str, Any]:
+        raise NotImplementedError
+
+    def _post(self, payload: dict[str, Any]) -> bytes:
+        raise NotImplementedError
+
+    def _parse(self, body: bytes) -> Plan:
+        raise NotImplementedError
+
+
+def _plan_from_content(content: str) -> Plan:
+    """Kiểm tra JSON plan mà model trả về; dùng chung cho mọi provider."""
+    try:
+        plan = json.loads(content)
+    except ValueError:
+        raise PlannerError("Planner output is not valid JSON") from None
+    if not isinstance(plan, dict):
+        raise PlannerError("Planner output must be a JSON object")
+    if set(plan) != {"sql", "summary"}:
+        raise PlannerError("Planner output must contain exactly 'sql' and 'summary'")
+    sql, summary = plan["sql"], plan["summary"]
+    if not isinstance(sql, str) or not sql.strip():
+        raise PlannerError("Planner 'sql' must be a non-empty string")
+    if not isinstance(summary, str):
+        raise PlannerError("Planner 'summary' must be a string")
+    return Plan(sql=sql.strip(), summary=summary.strip())
+
+
+def _env_timeout(env: Mapping[str, str], name: str, default: float) -> float:
+    raw_timeout = env.get(name)
+    try:
+        return float(raw_timeout) if raw_timeout else default
+    except ValueError:
+        raise PlannerConfigError(f"{name} must be a number") from None
+
+
+class OllamaPlanner(LLMPlanner):
+    """Sinh SQL bằng model Ollama chạy cục bộ; prompt và dữ liệu không rời máy."""
+
+    provider = "ollama"
+    _label = "Ollama"
+
+    def __init__(
+        self,
+        *,
+        url: str = DEFAULT_OLLAMA_URL,
+        model: str = DEFAULT_OLLAMA_MODEL,
+        timeout_seconds: float = DEFAULT_OLLAMA_TIMEOUT_SECONDS,
+        schema_context: SchemaContext | None = None,
+        policy: RolePolicy | None = None,
+        role: str | None = None,
+        semantic_memory: SemanticMemory | None = None,
+    ) -> None:
+        if not url.startswith(("http://", "https://")):
+            raise PlannerConfigError("Ollama URL must start with http:// or https://")
+        super().__init__(
+            model=model,
+            timeout_seconds=timeout_seconds,
+            schema_context=schema_context,
+            policy=policy,
+            role=role,
+            semantic_memory=semantic_memory,
+        )
+        self._url = url
+
+    @property
+    def request_parameters(self) -> dict[str, Any]:
+        return {"stream": False, "think": False, "format": "json"}
+
+    @classmethod
+    def from_env(
+        cls,
+        env: Mapping[str, str] | None = None,
+        *,
+        schema_context: SchemaContext | None = None,
+        policy: RolePolicy | None = None,
+        role: str | None = None,
+        semantic_memory: SemanticMemory | None = None,
+    ) -> OllamaPlanner:
+        env = os.environ if env is None else env
+        return cls(
+            url=env.get("SQLGUARD_OLLAMA_URL") or DEFAULT_OLLAMA_URL,
+            model=env.get("SQLGUARD_OLLAMA_MODEL") or DEFAULT_OLLAMA_MODEL,
+            timeout_seconds=_env_timeout(
+                env, "SQLGUARD_OLLAMA_TIMEOUT_SECONDS", DEFAULT_OLLAMA_TIMEOUT_SECONDS
+            ),
+            schema_context=schema_context,
+            policy=policy,
+            role=role,
+            semantic_memory=semantic_memory,
+        )
+
+    def _build_payload(
+        self, question: str, context: tuple[str, ...], feedback: RepairFeedback | None = None
+    ) -> dict[str, Any]:
+        system, user = self._build_messages(question, context, feedback)
         return {
             "model": self._model,
             "stream": False,
@@ -282,8 +393,7 @@ class OllamaPlanner:
         except OSError:
             raise PlannerError("Ollama connection failed") from None
 
-    @staticmethod
-    def _parse(body: bytes) -> Plan:
+    def _parse(self, body: bytes) -> Plan:
         try:
             data = json.loads(body)
         except (ValueError, UnicodeDecodeError):
@@ -292,24 +402,153 @@ class OllamaPlanner:
         content = message.get("content") if isinstance(message, dict) else None
         if not isinstance(content, str) or not content.strip():
             raise PlannerError("Ollama response is missing message.content")
+        return _plan_from_content(content)
+
+
+class GeminiPlanner(LLMPlanner):
+    """Sinh SQL bằng Gemini API (Google). Chỉ đề xuất SQL, không bao giờ thực thi.
+
+    Ra khỏi máy: system prompt, schema đã lọc theo role, semantic memory, câu hỏi, và khi sửa
+    thì SQL trước đó cùng mã vi phạm của gate. Không có dòng dữ liệu nào: controller không đưa
+    kết quả truy vấn lại cho planner.
+
+    API key chỉ đi qua header ``x-goog-api-key`` trên https, không nằm trong URL và không xuất
+    hiện trong thông báo lỗi. Bị bộ lọc an toàn của Google chặn thì raise ``PlannerBlockedError``.
+    """
+
+    provider = "gemini"
+    _label = "Gemini"
+
+    def __init__(
+        self,
+        *,
+        api_key: str,
+        url: str = DEFAULT_GEMINI_URL,
+        model: str = DEFAULT_GEMINI_MODEL,
+        timeout_seconds: float = DEFAULT_GEMINI_TIMEOUT_SECONDS,
+        schema_context: SchemaContext | None = None,
+        policy: RolePolicy | None = None,
+        role: str | None = None,
+        semantic_memory: SemanticMemory | None = None,
+    ) -> None:
+        # Key đi trong header nên chỉ cho phép kênh mã hóa.
+        if not url.startswith("https://"):
+            raise PlannerConfigError("Gemini URL must start with https://")
+        if not api_key or not api_key.strip():
+            raise PlannerConfigError(f"Gemini API key is missing (set {GEMINI_API_KEY_ENV})")
+        # Tên model nằm trong đường dẫn URL: chỉ nhận ký tự an toàn.
+        if model and not _GEMINI_MODEL_NAME.fullmatch(model):
+            raise PlannerConfigError("Gemini model name is invalid")
+        super().__init__(
+            model=model,
+            timeout_seconds=timeout_seconds,
+            schema_context=schema_context,
+            policy=policy,
+            role=role,
+            semantic_memory=semantic_memory,
+        )
+        self._url = f"{url.rstrip('/')}/models/{model}:generateContent"
+        self._api_key = api_key.strip()
+
+    @property
+    def request_parameters(self) -> dict[str, Any]:
+        return {"temperature": 0, "response_mime_type": "application/json"}
+
+    @classmethod
+    def from_env(
+        cls,
+        env: Mapping[str, str] | None = None,
+        *,
+        schema_context: SchemaContext | None = None,
+        policy: RolePolicy | None = None,
+        role: str | None = None,
+        semantic_memory: SemanticMemory | None = None,
+    ) -> GeminiPlanner:
+        env = os.environ if env is None else env
+        return cls(
+            api_key=env.get(GEMINI_API_KEY_ENV) or "",
+            url=env.get("SQLGUARD_GEMINI_URL") or DEFAULT_GEMINI_URL,
+            model=env.get("SQLGUARD_GEMINI_MODEL") or DEFAULT_GEMINI_MODEL,
+            timeout_seconds=_env_timeout(
+                env, "SQLGUARD_GEMINI_TIMEOUT_SECONDS", DEFAULT_GEMINI_TIMEOUT_SECONDS
+            ),
+            schema_context=schema_context,
+            policy=policy,
+            role=role,
+            semantic_memory=semantic_memory,
+        )
+
+    def _build_payload(
+        self, question: str, context: tuple[str, ...], feedback: RepairFeedback | None = None
+    ) -> dict[str, Any]:
+        system, user = self._build_messages(question, context, feedback)
+        return {
+            "systemInstruction": {"parts": [{"text": system}]},
+            "contents": [{"role": "user", "parts": [{"text": user}]}],
+            "generationConfig": {
+                "temperature": 0,
+                "responseMimeType": "application/json",
+                "responseSchema": GEMINI_PLAN_SCHEMA,
+            },
+        }
+
+    def _post(self, payload: dict[str, Any]) -> bytes:
+        # URL đã được giới hạn ở https trong __init__ (nên bỏ qua S310).
+        request = urllib.request.Request(  # noqa: S310
+            self._url,
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json", "x-goog-api-key": self._api_key},
+            method="POST",
+        )
+        # Thông báo lỗi chỉ có mã trạng thái: không có URL, body hay key.
         try:
-            plan = json.loads(content)
-        except ValueError:
-            raise PlannerError("Planner output is not valid JSON") from None
-        if not isinstance(plan, dict):
-            raise PlannerError("Planner output must be a JSON object")
-        if set(plan) != {"sql", "summary"}:
-            raise PlannerError("Planner output must contain exactly 'sql' and 'summary'")
-        sql, summary = plan["sql"], plan["summary"]
-        if not isinstance(sql, str) or not sql.strip():
-            raise PlannerError("Planner 'sql' must be a non-empty string")
-        if not isinstance(summary, str):
-            raise PlannerError("Planner 'summary' must be a string")
-        return Plan(sql=sql.strip(), summary=summary.strip())
+            with urllib.request.urlopen(request, timeout=self._timeout) as response:  # noqa: S310
+                return response.read()
+        except urllib.error.HTTPError as error:
+            raise PlannerError(f"Gemini returned HTTP status {error.code}") from None
+        except TimeoutError:
+            raise PlannerError("Gemini request timed out") from None
+        except urllib.error.URLError as error:
+            if isinstance(error.reason, TimeoutError):
+                raise PlannerError("Gemini request timed out") from None
+            raise PlannerError("Could not connect to Gemini") from None
+        except OSError:
+            raise PlannerError("Gemini connection failed") from None
+
+    def _parse(self, body: bytes) -> Plan:
+        try:
+            data = json.loads(body)
+        except (ValueError, UnicodeDecodeError):
+            raise PlannerError("Gemini response is not valid JSON") from None
+        if not isinstance(data, dict):
+            raise PlannerError("Gemini response must be a JSON object")
+        feedback = data.get("promptFeedback")
+        if isinstance(feedback, dict) and feedback.get("blockReason"):
+            raise PlannerBlockedError("Gemini blocked the prompt")
+        candidates = data.get("candidates")
+        candidate = candidates[0] if isinstance(candidates, list) and candidates else None
+        if not isinstance(candidate, dict):
+            raise PlannerError("Gemini response has no candidates")
+        if candidate.get("finishReason") in _GEMINI_BLOCKED_FINISH_REASONS:
+            raise PlannerBlockedError("Gemini blocked the response")
+        content = candidate.get("content")
+        parts = content.get("parts") if isinstance(content, dict) else None
+        # Bỏ qua phần "thought" (suy luận nội bộ của model), chỉ ghép phần trả lời.
+        text = "".join(
+            part["text"]
+            for part in parts or ()
+            if isinstance(part, dict)
+            and isinstance(part.get("text"), str)
+            and not part.get("thought")
+        )
+        if not text.strip():
+            raise PlannerError("Gemini response is missing text")
+        return _plan_from_content(text)
 
 
 def create_planner(env: Mapping[str, str] | None = None) -> Planner:
-    """Chọn planner theo biến ``SQLGUARD_PLANNER``: ``demo`` (mặc định) hoặc ``ollama``.
+    """Chọn planner theo biến ``SQLGUARD_PLANNER``: ``demo`` (mặc định), ``ollama`` hoặc
+    ``gemini``.
 
     Hàm này không nạp schema; muốn planner có schema theo role hãy dùng
     ``sqlguard.agent.runtime.create_planner_for_role``.
@@ -320,4 +559,6 @@ def create_planner(env: Mapping[str, str] | None = None) -> Planner:
         return DemoPlanner()
     if name == "ollama":
         return OllamaPlanner.from_env(env)
-    raise PlannerConfigError("SQLGUARD_PLANNER must be 'demo' or 'ollama'")
+    if name == "gemini":
+        return GeminiPlanner.from_env(env)
+    raise PlannerConfigError("SQLGUARD_PLANNER must be 'demo', 'ollama' or 'gemini'")

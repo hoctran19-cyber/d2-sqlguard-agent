@@ -14,7 +14,7 @@ from sqlguard.agent.models import (
     ExecutionBudget,
     RunStatus,
 )
-from sqlguard.agent.planning import Plan, Planner, RepairFeedback
+from sqlguard.agent.planning import Plan, Planner, PlannerBlockedError, RepairFeedback
 from sqlguard.mcp.tools import ToolCallResult, ToolError, ToolRegistry
 from sqlguard.memory.store import MemoryStore
 from sqlguard.observability.events import EventSink, LiveEvent, safe_error_category
@@ -165,7 +165,7 @@ def _sanitize_trace_data(data: dict[str, Any]) -> dict[str, Any]:
     for key, value in data.items():
         if key in {"counters", "budget", "request_parameters"} and isinstance(value, dict):
             safe[key] = dict(value)
-        elif key == "model" and isinstance(value, str):
+        elif key in {"model", "provider"} and isinstance(value, str):
             safe[key] = value[:128]
         elif key in {"question", "entries", "result_preview", "value"}:
             if key == "question" and isinstance(value, str):
@@ -471,9 +471,9 @@ class AgentController:
             state.status = RunStatus.FAILED
             state.failure_reason = "security_gate_error"
             state.errors.append(state.failure_reason)
-        except _PlannerFailure:
+        except _PlannerFailure as failure:
             state.status = RunStatus.FAILED
-            state.failure_reason = "planner_error"
+            state.failure_reason = failure.category
             state.errors.append(state.failure_reason)
         except Exception as error:
             state.status = RunStatus.FAILED
@@ -852,6 +852,9 @@ class AgentController:
                 if repaired is not None:
                     sql = repaired
                     continue
+                # Không sửa được: kết thúc REFUSED như khi gate của controller từ chối (F1), để
+                # UAR/ASR không đếm lần chặn ở ranh giới tool là lỗi hệ thống.
+                raise _SecurityRejected
             # Lỗi schema/cú pháp của DB: đúng một lần sửa mỗi run, SQL mới phải qua gate lại.
             if tool_denial is None and not db_repair_used and category in _DB_REPAIRABLE:
                 db_repair_used = True
@@ -941,10 +944,13 @@ class AgentController:
         chi tiết lỗi nội bộ không lọt vào event hay state.
         """
         model = getattr(self._planner, "model", None)
+        provider = getattr(self._planner, "provider", None)
+        parameters = getattr(self._planner, "request_parameters", None)
         planner_data = (
             {
                 "model": model,
-                "request_parameters": {"stream": False, "think": False, "format": "json"},
+                **({"provider": provider} if isinstance(provider, str) else {}),
+                "request_parameters": dict(parameters) if isinstance(parameters, dict) else {},
             }
             if isinstance(model, str)
             else {}
@@ -959,22 +965,26 @@ class AgentController:
             summary = getattr(plan, "summary", None)
             if not isinstance(sql, str) or not isinstance(summary, str):
                 raise TypeError
-        except Exception:
+        except Exception as error:
+            # Bộ lọc an toàn của provider chặn thì ghi mã riêng, không lẫn với lỗi planner.
+            category = (
+                "planner_blocked" if isinstance(error, PlannerBlockedError) else "planner_error"
+            )
             self._emit(
                 state,
                 "llm_call_completed",
                 status="failed",
-                error_category="planner_error",
+                error_category=category,
                 duration_ms=(perf_counter() - planner_started) * 1000,
             )
             self._emit(
                 state,
                 "sql_generation_completed",
                 status="failed",
-                error_category="planner_error",
+                error_category=category,
                 duration_ms=(perf_counter() - planner_started) * 1000,
             )
-            raise _PlannerFailure from None
+            raise _PlannerFailure(category) from None
         except asyncio.CancelledError:
             duration_ms = (perf_counter() - planner_started) * 1000
             error_category = self._cancellation_category(deadline)
@@ -1117,12 +1127,12 @@ class AgentController:
             sql = await self._call_planner(
                 state, lambda: repair(state.request.question, context, feedback), deadline
             )
-        except _PlannerFailure:
+        except _PlannerFailure as failure:
             self._emit(
                 state,
                 "repair_completed",
                 status="failed",
-                error_category="planner_error",
+                error_category=failure.category,
                 duration_ms=(perf_counter() - repair_started) * 1000,
             )
             raise
@@ -1304,7 +1314,9 @@ class _SecurityGateFailure(Exception):
 
 
 class _PlannerFailure(Exception):
-    pass
+    def __init__(self, category: str = "planner_error") -> None:
+        super().__init__(category)
+        self.category = category
 
 
 class _MemoryFailure(Exception):
