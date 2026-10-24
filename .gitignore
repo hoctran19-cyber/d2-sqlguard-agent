@@ -27,3 +27,5 @@ evaluation/datasets/private/
 evaluation/reports/generated/
 # Database BIRD Mini-Dev cục bộ (file lớn, tải riêng; không commit)
 data/bird/
+# Experiment outputs (runner artifacts are regenerated, not committed)
+artifacts/

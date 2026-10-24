@@ -183,8 +183,9 @@
           "tolerance": null
         }
       ],
-      "gold_sql": "gold/D2-L01.sql",
+      "gold_sql": "gold/D2-L01.sqlite.sql",
       "gold_sql_sha256": "eb717166d2297b530c835152c5116987c1f14ab66bc209d1f8d85f36c794f9ab",
+      "gold_dialect": "sqlite",
       "source": {
         "benchmark": "BIRD Mini-Dev",
         "db_id": "financial",
@@ -289,8 +290,9 @@
           "tolerance": null
         }
       ],
-      "gold_sql": "gold/D2-L02.sql",
-      "gold_sql_sha256": "f5915955ae44b6cf98a0276e6a65c5df197863130b8e63d9fd7b169c011e24e7",
+      "gold_sql": "gold/D2-L02.sqlite.sql",
+      "gold_sql_sha256": "1dd3140df2d5a9c3ac9cd67f6b247c9f0d6f67bd160242871bec38bf57399ec0",
+      "gold_dialect": "sqlite",
       "source": {
         "benchmark": "BIRD Mini-Dev",
         "db_id": "financial",
@@ -387,8 +389,9 @@
           "tolerance": null
         }
       ],
-      "gold_sql": "gold/D2-L03.sql",
-      "gold_sql_sha256": "0e797ef0f143374ffb6f068fbc8a429e72c0bf13d011394374769afdd0629be3",
+      "gold_sql": "gold/D2-L03.sqlite.sql",
+      "gold_sql_sha256": "4c4b373981aeda1859ea4b68400f5c8c9ab788000fc3f2a1614dd878811742f9",
+      "gold_dialect": "sqlite",
       "source": {
         "benchmark": "BIRD Mini-Dev",
         "db_id": "financial",
@@ -478,8 +481,9 @@
           "tolerance": null
         }
       ],
-      "gold_sql": "gold/D2-L04.sql",
+      "gold_sql": "gold/D2-L04.sqlite.sql",
       "gold_sql_sha256": "586375fb2c04ed2e47dad23114af289f7c109bb46528f54cfb1d8f2849afc668",
+      "gold_dialect": "sqlite",
       "source": {
         "benchmark": "BIRD Mini-Dev",
         "db_id": "financial",
@@ -579,8 +583,9 @@
           "tolerance": null
         }
       ],
-      "gold_sql": "gold/D2-L05.sql",
-      "gold_sql_sha256": "c575edc1a6a5304eaa9b11e1c5d5652391098495d3650c9b314cef3530e68bb8",
+      "gold_sql": "gold/D2-L05.sqlite.sql",
+      "gold_sql_sha256": "14ac430b3e7e5312e182d78e626fe84891bfedd05014cb3402a5febca6feb05e",
+      "gold_dialect": "sqlite",
       "source": {
         "benchmark": "BIRD Mini-Dev",
         "db_id": "financial",
@@ -670,8 +675,9 @@
           }
         }
       ],
-      "gold_sql": "gold/D2-L06.sql",
-      "gold_sql_sha256": "06d4fefedf33fddc7e2149fdc264d5d3b53515e4ae3b237ff40639557ccd0ed6",
+      "gold_sql": "gold/D2-L06.sqlite.sql",
+      "gold_sql_sha256": "1d1bba2987781d3273fc4e7ee49cc69a9b25c8489e8b6ee9a9bfc68724f3405a",
+      "gold_dialect": "sqlite",
       "source": {
         "benchmark": "BIRD Mini-Dev",
         "db_id": "financial",
@@ -760,8 +766,9 @@
           }
         }
       ],
-      "gold_sql": "gold/D2-L07.sql",
-      "gold_sql_sha256": "04c7d8840ba125cacf372724d9a4b7e812f3f11545d0a53946a06083efe9e468",
+      "gold_sql": "gold/D2-L07.sqlite.sql",
+      "gold_sql_sha256": "946fb21e93ea46a9b638b4a3b83f285372614ef04f006e4c88aad81c9b2af059",
+      "gold_dialect": "sqlite",
       "source": {
         "benchmark": "BIRD Mini-Dev",
         "db_id": "financial",
@@ -851,8 +858,9 @@
           "tolerance": null
         }
       ],
-      "gold_sql": "gold/D2-L08.sql",
-      "gold_sql_sha256": "a73dea6f94b34d256784e7ffb0a44c0ec564dd35e371e7fdc80404ac60c332fc",
+      "gold_sql": "gold/D2-L08.sqlite.sql",
+      "gold_sql_sha256": "8f645f1cff000094c3b162a86b9b358a30917efd6cce51c61e7c72a48cc35180",
+      "gold_dialect": "sqlite",
       "source": {
         "benchmark": "BIRD Mini-Dev",
         "db_id": "financial",
@@ -941,8 +949,9 @@
           "tolerance": null
         }
       ],
-      "gold_sql": "gold/D2-L09.sql",
-      "gold_sql_sha256": "7fe1595bcaa3c38347d99ac8afee1f0573b172b7f3f1b785f1f563e940264fe5",
+      "gold_sql": "gold/D2-L09.sqlite.sql",
+      "gold_sql_sha256": "506a292040f8cd15576766eca23afa95d106923fc2a08acf9bc487b711e83cb7",
+      "gold_dialect": "sqlite",
       "source": {
         "benchmark": "BIRD Mini-Dev",
         "db_id": "financial",
@@ -1031,8 +1040,9 @@
           "tolerance": null
         }
       ],
-      "gold_sql": "gold/D2-L10.sql",
+      "gold_sql": "gold/D2-L10.sqlite.sql",
       "gold_sql_sha256": "3501fd921d0ecf7416e519daac08634122e7e8384fa9c2576060f09c5cf75745",
+      "gold_dialect": "sqlite",
       "source": {
         "benchmark": "BIRD Mini-Dev",
         "db_id": "financial",

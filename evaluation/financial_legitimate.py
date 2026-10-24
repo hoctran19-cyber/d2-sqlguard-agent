@@ -2,9 +2,11 @@
 
 This module validates task *definitions* only. It never runs an agent, never connects to
 PostgreSQL and is not accepted by ``evaluation.manifest`` / ``evaluation.runner`` (which stay
-fixture-only for the sales bootstrap). The optional SQLite reference check opens a local
-SQLite file read-only and compares it with the recorded reference artifact; SQLite results
-are never certified as PostgreSQL expected rows.
+fixture-only for the sales bootstrap). Gold SQL is the verbatim BIRD Mini-Dev **SQLite** SQL
+(``mini_dev_sqlite.json``), recorded in the SQLite reference artifact; question text and
+evidence still come from the PostgreSQL source and role pools. The optional SQLite reference
+check opens a local SQLite file read-only and compares it with the recorded reference
+artifact; SQLite results are never certified as PostgreSQL expected rows.
 """
 
 from __future__ import annotations
@@ -126,9 +128,9 @@ def sql_projection_count(sql: str, dialect: str = "postgres") -> int:
     return len(sqlglot.parse_one(sql, read=dialect).selects)
 
 
-def aggregate_only_violations(sql: str) -> list[str]:
+def aggregate_only_violations(sql: str, dialect: str = "postgres") -> list[str]:
     """Static analyst check: outputs must be aggregates or non-key GROUP BY dimensions."""
-    tree = sqlglot.parse_one(sql, read="postgres")
+    tree = sqlglot.parse_one(sql, read=dialect)
     group = tree.args.get("group")
     grouped = {e.sql().lower() for e in group.expressions} if group else set()
     problems = []
@@ -192,7 +194,14 @@ def _check_suite(document: dict, errors: list[str]) -> None:
         errors.append(f"run_plan.planned_runs must be {expected_runs}")
 
 
-def _check_task(task: dict, document: dict, gold_source: dict, root: Path, errors: list[str]):
+def _check_task(
+    task: dict,
+    document: dict,
+    gold_source: dict,
+    sqlite_gold: dict,
+    root: Path,
+    errors: list[str],
+):
     task_id = task.get("id")
     role, question_id = SELECTION[task_id]
     where = f"{task_id}:"
@@ -218,10 +227,18 @@ def _check_task(task: dict, document: dict, gold_source: dict, root: Path, error
     if not gold_path.is_file() or root.resolve() not in gold_path.parents:
         errors.append(f"{where} gold_sql file missing or outside suite directory")
         return
+    # Gold is the verbatim SQLite SQL of the same question_id, as recorded in the reference.
+    reference = sqlite_gold.get(task_id) or {}
+    sqlite_sql = reference.get("sqlite_sql")
+    if reference.get("question_id") != question_id or not isinstance(sqlite_sql, str):
+        errors.append(f"{where} SQLite reference entry missing for question_id {question_id}")
+        return
+    if task.get("gold_dialect") != "sqlite" or not gold_path.name.endswith(".sqlite.sql"):
+        errors.append(f"{where} gold must be gold_dialect=sqlite in a .sqlite.sql file")
     gold_text = gold_path.read_text(encoding="utf-8")
-    if gold_text != record["SQL"] + "\n":
-        errors.append(f"{where} gold SQL file is not the exact PostgreSQL source SQL")
-    if task.get("gold_sql_sha256") != sha256_text(record["SQL"]):
+    if gold_text != sqlite_sql + "\n" or reference.get("translated") is not False:
+        errors.append(f"{where} gold SQL file is not the exact SQLite source SQL")
+    if task.get("gold_sql_sha256") != sha256_text(sqlite_sql):
         errors.append(f"{where} gold_sql_sha256 mismatch")
 
     expected = task.get("expected") or {}
@@ -236,7 +253,7 @@ def _check_task(task: dict, document: dict, gold_source: dict, root: Path, error
         errors.append(f"{where} null rows require pending_postgresql_validation")
 
     columns = task.get("output_columns") or []
-    width = sql_projection_count(record["SQL"])
+    width = sql_projection_count(sqlite_sql, "sqlite")
     if len(columns) != width or len(expected.get("columns") or []) != width:
         errors.append(f"{where} output/expected column width != gold projection width {width}")
     if [c.get("position") for c in columns] != list(range(1, width + 1)):
@@ -264,7 +281,7 @@ def _check_task(task: dict, document: dict, gold_source: dict, root: Path, error
     security = task.get("security") or {}
     if security.get("expected_forbidden_accesses") != []:
         errors.append(f"{where} legitimate task must expect no forbidden accesses")
-    refs = sql_column_refs(record["SQL"])
+    refs = sql_column_refs(sqlite_sql, "sqlite")
     declared = {tuple(item.split(".", 1)) for item in security.get("referenced_columns", [])}
     if declared != refs:
         errors.append(f"{where} referenced_columns != columns parsed from gold SQL")
@@ -278,7 +295,7 @@ def _check_task(task: dict, document: dict, gold_source: dict, root: Path, error
     if role == "analyst":
         if security.get("aggregate_only") is not True:
             errors.append(f"{where} analyst task must declare aggregate_only=true")
-        for problem in aggregate_only_violations(record["SQL"]):
+        for problem in aggregate_only_violations(sqlite_sql, "sqlite"):
             errors.append(f"{where} analyst aggregate-only: {problem}")
 
     for field in ("attack", "fault", "pair"):
@@ -296,7 +313,9 @@ def _check_task(task: dict, document: dict, gold_source: dict, root: Path, error
         errors.append(f"{where} prompt_refinement.status invalid")
 
 
-def validate_suite(document: dict, *, root: Path = SUITE_DIR, gold_source_path=None) -> dict:
+def validate_suite(
+    document: dict, *, root: Path = SUITE_DIR, gold_source_path=None, reference_path=None
+) -> dict:
     """Validate the draft suite statically; return it unchanged or raise SuiteValidationError."""
     errors: list[str] = []
     if not isinstance(document, dict):
@@ -308,6 +327,8 @@ def validate_suite(document: dict, *, root: Path = SUITE_DIR, gold_source_path=N
     gold_source = {
         r["question_id"]: r for r in load_json(gold_source_path) if r["db_id"] == "financial"
     }
+    reference_path = Path(reference_path or Path(root) / DEFAULT_REFERENCE.name)
+    sqlite_gold = load_json(reference_path).get("results") or {}
     tasks = document.get("tasks")
     if not isinstance(tasks, list):
         raise SuiteValidationError(errors + ["tasks must be a list"])
@@ -319,7 +340,7 @@ def validate_suite(document: dict, *, root: Path = SUITE_DIR, gold_source_path=N
         errors.append("duplicate (role, question_id) pair")
     for task in tasks:
         if task.get("id") in SELECTION:
-            _check_task(task, document, gold_source, Path(root), errors)
+            _check_task(task, document, gold_source, sqlite_gold, Path(root), errors)
     for item in public_inputs(document) if not errors else []:
         if set(item) != set(MODEL_INPUT_FIELDS):
             errors.append("public input projection leaked extra fields")
@@ -340,6 +361,8 @@ def minidev_dir() -> Path:
 def check_role_pool_sources(document: dict, minidev: Path) -> list[str]:
     """Compare recorded role-pool prompts/hashes with the local (read-only) minidev inputs."""
     errors = []
+    # Role pools carry PostgreSQL SQL; the suite gold is SQLite, so compare with the PG source.
+    pg_source = {r["question_id"]: r["SQL"] for r in load_json(POSTGRES_GOLD_SOURCE)}
     pools = {}
     for role, name in ROLE_POOL_FILES.items():
         path = minidev / name
@@ -356,8 +379,8 @@ def check_role_pool_sources(document: dict, minidev: Path) -> list[str]:
             errors.append(f"{task['id']}: role_pool.question_vi differs from pool file")
         if pool.get("evidence_vi") != record["evidence"]:
             errors.append(f"{task['id']}: role_pool.evidence_vi differs from pool file")
-        if record["SQL"] + "\n" != (SUITE_DIR / task["gold_sql"]).read_text(encoding="utf-8"):
-            errors.append(f"{task['id']}: role pool SQL differs from gold file")
+        if record["SQL"] != pg_source.get(task["source"]["question_id"]):
+            errors.append(f"{task['id']}: role pool SQL differs from PostgreSQL source")
         unchanged = (task["question"], task["evidence"]) == (record["question"], record["evidence"])
         status = task["prompt_refinement"]["status"]
         if unchanged != (status == "unchanged_from_role_pool"):

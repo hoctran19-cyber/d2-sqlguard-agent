@@ -1,4 +1,40 @@
-# Evaluation bootstrap — five provisional sales cases
+# Evaluation
+
+## Financial D2 experiment commands
+
+The experiment file `experiments/d2.yaml` fixes the snapshot (path + SHA-256), the runtime
+(adapter, planner/model, policy), the two configs and their budgets, repetitions, seeds and the
+smoke task set. Run from the repository root (`pip install -e ".[dev]"`):
+
+```bash
+# 1. Check definitions, snapshot and runtime configuration (exit 1 on any blocking check)
+python -m evaluation.runner validate --experiment evaluation/experiments/d2.yaml
+
+# 2. Smoke run on representative tasks; ends with a health check that gates the full batch
+python -m evaluation.runner run --experiment evaluation/experiments/d2.yaml \
+  --tasks D2-L01 D2-A01 D2-M01 D2-I01 --repetitions 1 --output artifacts/d2/smoke-001
+
+# 3. Full batch from the experiment config
+python -m evaluation.runner run --experiment evaluation/experiments/d2.yaml \
+  --output artifacts/d2/main-001
+
+# 4. Re-score from stored artifacts (no model call)
+python -m evaluation.runner score --input artifacts/d2/main-001
+
+# 5. Rebuild summary.csv / summary.json / error-analysis.md
+python -m evaluation.runner summarize --input artifacts/d2/main-001
+```
+
+| Command | Behavior |
+| --- | --- |
+| `validate` | `ok`/`warn`/`fail` per check: definitions (21 main + 2 clean), task ids, snapshot hash and SQLite sidecars, config differences, adapter, runtime policy covers every task role, local Ollama model available, capabilities (tasks that would be `not_run`) |
+| `run` | Refuses to start on a `fail` check (`--force` records the blocked runs as errors); never overwrites an output directory (`--resume` continues one); `--adapter replay` runs the harness self-test instead of the runtime. Ends with a health check — coverage, record shape, one trace per record, no harness errors, results respecting `financial-result.v1` — and exits 1 if it fails |
+| `score` | Re-scores every stored runtime result with the current scorer, keeps not-run/error records, appends to `manifest.json` `scoring_history` |
+| `summarize` | Recomputes the six report tables and charts from the records |
+
+`artifacts/` is ignored by Git. Offline smoke tests: `pytest -q evaluation/tests/test_financial_cli.py`.
+
+## Sales fixture bootstrap — five provisional cases
 
 This workspace calls the existing `AgentController` directly from Python. It uses a
 **scripted planner, a fresh in-memory SQLite database and a narrow fixture policy**.
@@ -10,9 +46,9 @@ The business/schema/policy are provisional. No code is automatically committed.
 Use the existing development environment (`pip install -e ".[dev]" if not installed):
 
 ```bash
-python -m evaluation.runner
-python -m evaluation.runner --repetitions 2
-python -m evaluation.runner --max-sql-attempts 1
+python -m evaluation.runner bootstrap
+python -m evaluation.runner bootstrap --repetitions 2
+python -m evaluation.runner bootstrap --max-sql-attempts 1
 pytest -q
 ```
 
@@ -54,7 +90,7 @@ does not turn fixture checks into an LLM benchmark. API docs: `/api/docs`.
 | `web/app.py`, `web/static/index.html` | Localhost API + single-page console over the runner |
 | `../tests/unit/test_evaluation_web.py` | API tests; skipped unless the `web` extra is installed |
 | `../tests/unit/test_evaluation_bootstrap.py` | Comparator, fixtures, gold, artifact and error checks |
-| `datasets/financial/` | Financial D2 task definitions (SQLite): legitimate, auth, mixed; see its README |
+| `datasets/financial/` | Financial D2 task definitions (SQLite): legitimate, auth, mixed, injection, clean; see its README |
 
 The original `src/sqlguard/evaluation.py` and its public interfaces remain intact.
 This provisional workspace isolates richer experiment contracts while A/B settle the real

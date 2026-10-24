@@ -2,6 +2,8 @@
 
 SQLGuard is a CO5151 project starter for a natural-language-to-SQL agent with an explicit security check before query execution. The default demo is deterministic and uses mocks; optional local Ollama, SQLite, PostgreSQL, and MCP paths are also implemented. This is a controlled technical demo, not a production Text-to-SQL system.
 
+Quick local web setup (Vietnamese): [docs/LOCAL_SETUP.md](docs/LOCAL_SETUP.md).
+
 ## Goals and scope
 
 The intended system will retrieve database context, plan and generate SQL, enforce security policy, call approved tools, process results, and answer users. The default planner and query tool are local mocks, while the opt-in Ollama, SQLite, PostgreSQL, and MCP paths exercise real local or configured services. There is no production authentication or authorization system, durable memory, or benchmark result.
