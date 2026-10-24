@@ -159,16 +159,16 @@ Ví dụ cùng một tài khoản: operator giải thích giao dịch và lệnh
 | `district` | `district_id`  | Mã khu vực                                          | TH–chiều   | Nhóm/lọc/nhãn báo cáo tổng hợp; không trả row cá thể              |
 | `district` | `A2`           | Tên khu vực                                         | TH–chiều   | Nhóm/lọc/nhãn báo cáo tổng hợp; không trả row cá thể              |
 | `district` | `A3`           | Vùng                                                | TH–chiều   | Nhóm/lọc/nhãn báo cáo tổng hợp; không trả row cá thể              |
-| `district` | `A4`           | Dân số                                              | TH–số liệu | Chỉ tiêu tổng hợp/bối cảnh vùng; không xuất giao dịch cá thể      |
+| `district` | `A4`           | Dân số                                              | TH–chiều   | Chỉ số của cả vùng, dùng làm bối cảnh/lọc vùng (24/10, chờ nhóm duyệt)      |
 | `district` | `A5`           | Số đơn vị dân cư dưới 499 người theo mô tả nguồn    | **Cấm**    | Chỉ số vùng ngoài allowlist hiện hành; không hàm ý bí mật tự thân |
 | `district` | `A6`           | Số đơn vị dân cư 500–1.999 người                    | **Cấm**    | Chỉ số vùng ngoài allowlist hiện hành; không hàm ý bí mật tự thân |
 | `district` | `A7`           | Số đơn vị dân cư 2.000–9.999 người                  | **Cấm**    | Chỉ số vùng ngoài allowlist hiện hành; không hàm ý bí mật tự thân |
 | `district` | `A8`           | Số đơn vị dân cư trên 10.000 người theo mô tả nguồn | **Cấm**    | Chỉ số vùng ngoài allowlist hiện hành; không hàm ý bí mật tự thân |
 | `district` | `A9`           | Chưa có diễn giải đủ tin cậy trong dictionary local | **Cấm**    | Chỉ số vùng ngoài allowlist hiện hành; không hàm ý bí mật tự thân |
-| `district` | `A10`          | Tỷ lệ dân số đô thị                                 | TH–số liệu | Chỉ tiêu tổng hợp/bối cảnh vùng; không xuất giao dịch cá thể      |
-| `district` | `A11`          | Lương trung bình khu vực                            | TH–số liệu | Chỉ tiêu tổng hợp/bối cảnh vùng; không xuất giao dịch cá thể      |
-| `district` | `A12`          | Tỷ lệ thất nghiệp 1995                              | TH–số liệu | Chỉ tiêu tổng hợp/bối cảnh vùng; không xuất giao dịch cá thể      |
-| `district` | `A13`          | Tỷ lệ thất nghiệp 1996                              | TH–số liệu | Chỉ tiêu tổng hợp/bối cảnh vùng; không xuất giao dịch cá thể      |
+| `district` | `A10`          | Tỷ lệ dân số đô thị                                 | TH–chiều   | Chỉ số của cả vùng, dùng làm bối cảnh/lọc vùng (24/10, chờ nhóm duyệt)      |
+| `district` | `A11`          | Lương trung bình khu vực                            | TH–chiều   | Chỉ số của cả vùng, dùng làm bối cảnh/lọc vùng (24/10, chờ nhóm duyệt)      |
+| `district` | `A12`          | Tỷ lệ thất nghiệp 1995                              | TH–chiều   | Chỉ số của cả vùng, dùng làm bối cảnh/lọc vùng (24/10, chờ nhóm duyệt)      |
+| `district` | `A13`          | Tỷ lệ thất nghiệp 1996                              | TH–chiều   | Chỉ số của cả vùng, dùng làm bối cảnh/lọc vùng (24/10, chờ nhóm duyệt)      |
 | `district` | `A14`          | Số doanh nhân trên 1.000 dân                        | **Cấm**    | Chỉ số vùng ngoài allowlist hiện hành; không hàm ý bí mật tự thân |
 | `district` | `A15`          | Số vụ phạm tội 1995                                 | **Cấm**    | Chỉ số vùng ngoài allowlist hiện hành; không hàm ý bí mật tự thân |
 | `district` | `A16`          | Số vụ phạm tội 1996                                 | **Cấm**    | Chỉ số vùng ngoài allowlist hiện hành; không hàm ý bí mật tự thân |

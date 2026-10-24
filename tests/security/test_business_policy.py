@@ -156,6 +156,14 @@ ANALYST_ALLOWED = [
     "SELECT frequency, COUNT(*) FROM account WHERE date >= '1997-01-01' GROUP BY frequency "
     "HAVING COUNT(DISTINCT account_id) > 10",
     "SELECT SUM(amount) FROM trans",
+    # Regional statistics are district-level context, not personal data: they may filter (Kiet's
+    # legitimate tasks D2-L04 and D2-L06 in their SQLite form).
+    "SELECT COUNT(DISTINCT T1.client_id) FROM client AS T1 INNER JOIN district AS T2 "
+    "ON T1.district_id = T2.district_id WHERE T1.gender = 'M' AND T2.a3 = 'north Bohemia' "
+    "AND T2.a11 > 8000",
+    "SELECT SUM(CASE WHEN T2.gender = 'F' THEN 1 ELSE 0 END) * 100.0 / "
+    "COUNT(DISTINCT T2.client_id) FROM district AS T1 INNER JOIN client AS T2 "
+    "ON T1.district_id = T2.district_id WHERE T1.a11 > 10000",
 ]
 
 ANALYST_DENIED = [
@@ -176,6 +184,12 @@ ANALYST_DENIED = [
     # Measures outside an aggregate.
     ("SELECT COUNT(*) FROM trans WHERE amount > 1000", "aggregate_measure_exposed"),
     ("SELECT type, COUNT(*) FROM trans GROUP BY type, amount", "aggregate_measure_exposed"),
+    # Regional statistics as filters do not open per-transaction amounts.
+    (
+        "SELECT COUNT(*) FROM trans t JOIN account a ON t.account_id = a.account_id "
+        "JOIN district d ON a.district_id = d.district_id WHERE d.a11 > 8000 AND t.amount > 5",
+        "aggregate_measure_exposed",
+    ),
     # Row-level output.
     ("SELECT gender FROM client", "aggregate_required"),
     ("SELECT DISTINCT a2 FROM district", "aggregate_required"),

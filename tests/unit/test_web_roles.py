@@ -317,7 +317,7 @@ def test_info_analyst_is_aggregate_only_with_conditions():
     assert access[("client", "client_id")] == "aggregate_key"
     assert access[("client", "gender")] == "aggregate_dimension"
     assert access[("trans", "amount")] == "aggregate_measure"
-    assert access[("district", "A4")] == "aggregate_measure"
+    assert access[("district", "A4")] == "aggregate_dimension"
     assert access[("client", "full_name")] == "denied"
     assert access[("trans", "balance")] == "denied"
     assert {t["name"]: t["access"] for t in ref["tables"]} == {

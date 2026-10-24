@@ -192,11 +192,11 @@
         "district_id": "dimension",
         "a2": "dimension",
         "a3": "dimension",
-        "a4": "measure",
-        "a10": "measure",
-        "a11": "measure",
-        "a12": "measure",
-        "a13": "measure"
+        "a4": "dimension",
+        "a10": "dimension",
+        "a11": "dimension",
+        "a12": "dimension",
+        "a13": "dimension"
       },
       "trans": {
         "trans_id": "key",
