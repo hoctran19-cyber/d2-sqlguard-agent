@@ -852,6 +852,9 @@ class AgentController:
                 if repaired is not None:
                     sql = repaired
                     continue
+                # Không sửa được: kết thúc REFUSED như khi gate của controller từ chối (F1), để
+                # UAR/ASR không đếm lần chặn ở ranh giới tool là lỗi hệ thống.
+                raise _SecurityRejected
             # Lỗi schema/cú pháp của DB: đúng một lần sửa mỗi run, SQL mới phải qua gate lại.
             if tool_denial is None and not db_repair_used and category in _DB_REPAIRABLE:
                 db_repair_used = True

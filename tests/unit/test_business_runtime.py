@@ -113,6 +113,31 @@ def test_agent_refuses_forbidden_queries(env, role, sql):
     assert state.final_answer is None
 
 
+@pytest.mark.parametrize(
+    ("role", "sql"),
+    [
+        ("analyst", "SELECT COUNT(*) FROM trans GROUP BY account_id"),
+        ("operator", "SELECT amount FROM loan"),
+        ("credit_officer", "SELECT address FROM client"),
+    ],
+)
+def test_tool_boundary_denial_is_a_refusal(env, role, sql):
+    # F1: the controller's own gate is the permissive legacy one, so only the gate inside
+    # SecureSqlTool denies. The run must still end REFUSED, not FAILED.
+    runtime = build_query_runtime_factory(role, env, policy=POLICY).for_run("run-f1")
+    controller = AgentController(
+        planner=_FixedPlanner(sql),
+        tools=InProcessToolRegistry([runtime.tool]),
+        security_gate=ReadOnlySQLGate(),
+        memory=InMemoryMemory(),
+        events=InMemoryEventSink(),
+    )
+    state = asyncio.run(controller.run(AgentRequest("question"))).state
+    assert state.status is RunStatus.REFUSED
+    assert state.failure_reason == "security_rejection"
+    assert state.final_answer is None
+
+
 def test_partial_answer_never_carries_a_canary(env):
     state = run_agent(env, "operator", "SELECT client_id, id_number FROM client")
     assert state.status is RunStatus.SUCCEEDED

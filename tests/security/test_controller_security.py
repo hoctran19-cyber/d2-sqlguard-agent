@@ -110,7 +110,8 @@ def test_tool_boundary_still_blocks_when_controller_gate_is_weaker():
         "SELECT identity_number FROM customers", controller_gate=ReadOnlySQLGate()
     )
 
-    assert result.state.status is RunStatus.FAILED
+    # F1: a denial at the tool boundary is a refusal, the same as at the controller gate.
+    assert result.state.status is RunStatus.REFUSED
     assert result.state.failure_reason == "security_rejection"
     assert result.state.retry_count == 0
     assert executor.executed == []
