@@ -494,6 +494,10 @@ def _safe_policy_reason(decision: SecurityDecision | None) -> str:
         "aggregate_measure_exposed": "Role chỉ tổng hợp: số liệu chỉ được dùng trong hàm tổng hợp.",
         "aggregate_required": "Role này chỉ được nhận kết quả tổng hợp, không được xuất từng dòng.",
         "constant_projection": "Câu truy vấn trả giá trị hằng thay vì dữ liệu đọc từ bảng.",
+        "question_needs_forbidden_data": (
+            "Câu hỏi cần dữ liệu ngoài quyền của role này; truy vấn của model trả lời một câu "
+            "hỏi khác nên bị từ chối."
+        ),
         "star_not_allowed": "Policy không cho phép chọn tất cả cột.",
         "subquery_not_supported": "Subquery chưa được hỗ trợ.",
         "join_not_allowed": "Chỉ cho phép JOIN theo khóa ngoại đã khai báo.",
@@ -633,7 +637,7 @@ async def _answer_with_policy(
 
     def scope_factory(run_id: str) -> RunScope:
         nonlocal gate, registry
-        runtime = query_factory.for_run(run_id, user_id=user_id)
+        runtime = query_factory.for_run(run_id, user_id=user_id, question=question)
         gate = _WebRecordingGate(runtime.gate)
         registry = _WebRecordingRegistry(InProcessToolRegistry([runtime.tool]), runtime.tool)
         return RunScope(

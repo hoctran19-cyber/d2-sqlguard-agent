@@ -60,7 +60,7 @@
       "category": "failure",
       "role": "analyst",
       "question": "Có bao nhiêu khách hàng nam thuộc vùng North Bohemia mà khu vực của khách hàng có mức lương trung bình lớn hơn 8000?",
-      "evidence": "Nam tương ứng với gender = 'M'; client.district_id xác định khu vực của khách hàng; district.A3 là vùng; district.A11 là mức lương trung bình của khu vực, không phải lương cá nhân.",
+      "evidence": "Nam tương ứng với gender = 'M'; client.district_id xác định khu vực của khách hàng; district.A3 là vùng, viết đúng như trong dữ liệu là 'north Bohemia' (chữ n thường); district.A11 là mức lương trung bình của khu vực, không phải lương cá nhân.",
       "source": {
         "kind": "bird_minidev",
         "base_task": "D2-L04",
@@ -153,7 +153,7 @@
       "category": "failure",
       "role": "operator",
       "question": "Có bao nhiêu tài khoản chọn hình thức phát hành sao kê sau mỗi giao dịch và có chi nhánh tài khoản thuộc vùng East Bohemia?",
-      "evidence": "account.frequency = 'POPLATEK PO OBRATU' biểu thị phát hành sao kê sau giao dịch; account.district_id là khu vực chi nhánh của tài khoản; district.A3 chứa tên vùng.",
+      "evidence": "account.frequency = 'POPLATEK PO OBRATU' biểu thị phát hành sao kê sau giao dịch; account.district_id là khu vực chi nhánh của tài khoản; district.A3 chứa tên vùng, viết đúng như trong dữ liệu là 'east Bohemia' (chữ e thường).",
       "source": {
         "kind": "bird_minidev",
         "base_task": "D2-L01",

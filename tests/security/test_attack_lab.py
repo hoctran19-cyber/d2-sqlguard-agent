@@ -165,20 +165,20 @@ def test_note_statements_are_fixed_and_parameterized():
     statements = note_statements(load_default_policy())
 
     for read_sql, update_sql in statements.values():
-        assert read_sql.count("%s") == 1 and update_sql.count("%s") == 2
-        assert "UPDATE" in update_sql and 'SET "note" = %s' in update_sql
+        assert read_sql.count("?") == 1 and update_sql.count("?") == 2
+        assert "UPDATE" in update_sql and 'SET "note" = ?' in update_sql
 
 
 def test_note_statements_use_the_policy_note_column():
     from sqlguard.security.policy import load_policy
 
-    statements = note_statements(load_policy("bird_financial_v1"))
+    statements = note_statements(load_policy("business_financial_v1"))
 
     assert statements["account"] == (
-        'SELECT "service_note" FROM "account" WHERE "account_id" = %s',
-        'UPDATE "account" SET "service_note" = %s WHERE "account_id" = %s',
+        'SELECT "service_note" FROM "account" WHERE "account_id" = ?',
+        'UPDATE "account" SET "service_note" = ? WHERE "account_id" = ?',
     )
-    assert statements["order"][1] == 'UPDATE "order" SET "note" = %s WHERE "order_id" = %s'
+    assert statements["order"][1] == 'UPDATE "order" SET "note" = ? WHERE "order_id" = ?'
 
 
 def test_note_target_column_must_exist():

@@ -12,12 +12,12 @@ DO $$
 DECLARE
     r text;
 BEGIN
-    FOREACH r IN ARRAY ARRAY['sqlguard_teller_ro', 'sqlguard_credit_ro', 'sqlguard_risk_ro', 'sqlguard_note_writer'] LOOP
+    FOREACH r IN ARRAY ARRAY['sqlguard_teller_ro', 'sqlguard_credit_ro', 'sqlguard_risk_ro'] LOOP
         IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = r) THEN
             EXECUTE format('CREATE ROLE %I NOLOGIN', r);
         END IF;
     END LOOP;
-    FOREACH r IN ARRAY ARRAY['sqlguard_teller_app', 'sqlguard_credit_app', 'sqlguard_risk_app', 'sqlguard_note_writer_app'] LOOP
+    FOREACH r IN ARRAY ARRAY['sqlguard_teller_app', 'sqlguard_credit_app', 'sqlguard_risk_app'] LOOP
         IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = r) THEN
             EXECUTE format('CREATE ROLE %I LOGIN INHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE '
                            'NOREPLICATION CONNECTION LIMIT 5', r);
@@ -30,7 +30,6 @@ $$;
 GRANT sqlguard_teller_ro TO sqlguard_teller_app;
 GRANT sqlguard_credit_ro TO sqlguard_credit_app;
 GRANT sqlguard_risk_ro TO sqlguard_risk_app;
-GRANT sqlguard_note_writer TO sqlguard_note_writer_app;
 
 -- Session guard rails applied at login of each runtime role.
 ALTER ROLE sqlguard_teller_app SET default_transaction_read_only = on;
@@ -39,23 +38,20 @@ ALTER ROLE sqlguard_risk_app SET default_transaction_read_only = on;
 ALTER ROLE sqlguard_teller_app SET statement_timeout = '3s';
 ALTER ROLE sqlguard_credit_app SET statement_timeout = '3s';
 ALTER ROLE sqlguard_risk_app SET statement_timeout = '3s';
-ALTER ROLE sqlguard_note_writer_app SET statement_timeout = '3s';
 ALTER ROLE sqlguard_teller_app SET idle_in_transaction_session_timeout = '10s';
 ALTER ROLE sqlguard_credit_app SET idle_in_transaction_session_timeout = '10s';
 ALTER ROLE sqlguard_risk_app SET idle_in_transaction_session_timeout = '10s';
-ALTER ROLE sqlguard_note_writer_app SET idle_in_transaction_session_timeout = '10s';
 ALTER ROLE sqlguard_teller_app SET search_path = public;
 ALTER ROLE sqlguard_credit_app SET search_path = public;
 ALTER ROLE sqlguard_risk_app SET search_path = public;
-ALTER ROLE sqlguard_note_writer_app SET search_path = public;
 
 -- Nobody but the owner may create objects; no implicit table access.
 REVOKE CREATE ON SCHEMA public FROM PUBLIC;
 REVOKE ALL ON ALL TABLES IN SCHEMA public FROM PUBLIC;
 GRANT USAGE ON SCHEMA public
-    TO sqlguard_teller_ro, sqlguard_credit_ro, sqlguard_risk_ro, sqlguard_note_writer;
+    TO sqlguard_teller_ro, sqlguard_credit_ro, sqlguard_risk_ro;
 REVOKE ALL ON ALL TABLES IN SCHEMA public
-    FROM sqlguard_teller_ro, sqlguard_credit_ro, sqlguard_risk_ro, sqlguard_note_writer;
+    FROM sqlguard_teller_ro, sqlguard_credit_ro, sqlguard_risk_ro;
 
 -- Resource-abuse functions callable by PUBLIC by default.
 REVOKE EXECUTE ON FUNCTION pg_sleep(double precision) FROM PUBLIC;
@@ -115,7 +111,3 @@ GRANT SELECT (order_id, account_id, bank_to, account_to, amount, k_symbol, note)
     ON "order" TO sqlguard_risk_ro;
 GRANT SELECT (trans_id, account_id, date, type, operation, amount, balance, k_symbol, bank, account)
     ON trans TO sqlguard_risk_ro;
-
--- Attack Lab note writer: may only rewrite the note_targets columns. Never given to the agent.
-GRANT SELECT (account_id, service_note), UPDATE (service_note) ON account TO sqlguard_note_writer;
-GRANT SELECT (order_id, note), UPDATE (note) ON "order" TO sqlguard_note_writer;
