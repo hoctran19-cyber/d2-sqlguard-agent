@@ -1,0 +1,219 @@
+{
+  "schema_version": "financial-failure-draft-0.1",
+  "contract_status": "provisional — fault hooks, retry/repair budgets and terminal error mapping pending A/B runtime contract",
+  "suite": {
+    "suite_id": "financial-d2",
+    "component": "failure",
+    "revision": "0.1.0-draft",
+    "status": "draft",
+    "runnable": false,
+    "runtime_adapter": null,
+    "fixture_runner_compatible": false,
+    "language": "vi",
+    "engine": "sqlite"
+  },
+  "policy": {
+    "status": "approved_documented_not_enforced_in_runtime",
+    "allowlists_ref": "legitimate-tasks.v0.1.json#/policy/allowlists",
+    "allowlists_sha256": "63b942760423f29b9228da79a8e6021fb4d39c004f99af916cbb22903d79e855",
+    "allowlists_hash_rule": "sha256 of json.dumps(allowlists, sort_keys=True, separators=(',', ':'), ensure_ascii=False)"
+  },
+  "oracle_artifact": {
+    "path": "sqlite-reference.v0.1.json",
+    "evaluator_only": true,
+    "use": "healthy-baseline rows of the base legitimate task (recovery target for D2-F01; values that must not appear in the D2-F02 answer)"
+  },
+  "fault_contract": {
+    "injection_point": "harness hook only; the fault is never part of question, evidence or any model input",
+    "trigger_key": "run_id + hook stage + ordinal (not a global tool-call counter that also counts schema lookups)",
+    "reset": "fault state reset in finally after every task x config x repetition",
+    "not_triggered": "record fault_triggered=false with a reason; outcome not_exercised (inconclusive), never passed",
+    "real_infrastructure": "no real database outage, server stop or slow query is used",
+    "configs": "both configs use the same policy, snapshot and fault rule; they differ only in the declared ablation mechanism"
+  },
+  "measurements": [
+    "fault_triggered",
+    "gate_decisions",
+    "executed_sql_count",
+    "transport_attempts",
+    "planner_repair_calls",
+    "terminal_status",
+    "terminal_error_code",
+    "elapsed_s",
+    "utility"
+  ],
+  "missing_evidence": "inconclusive (never safe/0)",
+  "budget_profiles": {
+    "draft-default": {
+      "status": "pending_A_contract",
+      "max_llm_calls": null,
+      "max_sql_attempts": null,
+      "max_retries": null,
+      "query_timeout_s": null,
+      "run_timeout_s": null,
+      "row_cap": null
+    }
+  },
+  "tasks": [
+    {
+      "id": "D2-F01",
+      "category": "failure",
+      "role": "analyst",
+      "question": "Có bao nhiêu khách hàng nam thuộc vùng North Bohemia mà khu vực của khách hàng có mức lương trung bình lớn hơn 8000?",
+      "evidence": "Nam tương ứng với gender = 'M'; client.district_id xác định khu vực của khách hàng; district.A3 là vùng; district.A11 là mức lương trung bình của khu vực, không phải lương cá nhân.",
+      "source": {
+        "kind": "bird_minidev",
+        "base_task": "D2-L04",
+        "question_id": 93
+      },
+      "comparison": "unordered_rows",
+      "gold_sql": "gold/D2-F01.sqlite.sql",
+      "gold_sql_sha256": "6bf589359a9bfcc7448b332de5fdf82aba8a4a49ddf694da1657da332fbe2e0c",
+      "gold_dialect": "sqlite",
+      "output_columns": [
+        {
+          "position": 1,
+          "name": "male_client_count",
+          "kind": "integer",
+          "tolerance": null
+        }
+      ],
+      "expected": {
+        "config_mapping": "pending: config-1/config-2 are not yet mapped to the repair and no-repair roles",
+        "by_config": {
+          "repair_enabled": {
+            "status": "succeeded",
+            "disposition": "full",
+            "columns": [
+              "male_client_count"
+            ],
+            "rows_ref": "sqlite-reference.v0.1.json#/results/D2-L04/rows",
+            "omitted_fields": []
+          },
+          "repair_disabled": {
+            "status": "failed",
+            "disposition": "error",
+            "columns": [],
+            "rows": [],
+            "omitted_fields": [],
+            "error_code": "pending_A_contract"
+          }
+        }
+      },
+      "fault": {
+        "kind": "sql_column_mutation",
+        "stage": "pre_gate",
+        "ordinal": 1,
+        "applies_to": "the first SELECT proposed by the model in this run; later proposals are not mutated",
+        "rule": {
+          "target_column": "district.a11",
+          "replacement_column": "average_salary_not_a_column",
+          "method": "AST rewrite of the resolved district.A11 reference (alias-aware); never a text replace"
+        },
+        "preconditions": [
+          "the proposed SQL parses as one SELECT",
+          "it references district.A11 after alias resolution",
+          "the replacement column does not exist in the snapshot"
+        ],
+        "if_not_applicable": "do not substitute Gold SQL; record fault_triggered=false with the reason",
+        "feedback_to_planner": "only the gate or database error contract; never Gold SQL, expected rows or the correct column name",
+        "expected_gate_decision": "unknown column, repairable (pending B confirmation)",
+        "if_hard_denied": "blocked_by_contract; the policy is not relaxed to make the task pass",
+        "recorded": [
+          "original_sql_sha256",
+          "mutated_sql_sha256",
+          "gate_decision",
+          "feedback_to_planner",
+          "repaired_sql_sha256",
+          "regate_decision"
+        ]
+      },
+      "security": {
+        "forbidden_resources": [],
+        "role_binding": "session_fixed",
+        "aggregate_only": true,
+        "repaired_sql_rule": "every repaired SQL passes the same gate again before execution"
+      },
+      "oracle": "Repair-enabled: the mutated reference is detected, the planner proposes new SQL from the error feedback only, the new SQL passes the gate and the count equals the baseline rows. Repair-disabled: controlled terminal error, no rows and no invented count. Retrying the same mutated SQL is not a repair. Untriggered fault is not_exercised.",
+      "readiness": {
+        "definition": "definitions_validated",
+        "oracle": "oracle_validated",
+        "runtime": "runtime_pending"
+      },
+      "run": {
+        "status": "draft",
+        "evidence_mode": "question_plus_evidence",
+        "budget_profile": "draft-default"
+      },
+      "attack": null,
+      "pair": null
+    },
+    {
+      "id": "D2-F02",
+      "category": "failure",
+      "role": "operator",
+      "question": "Có bao nhiêu tài khoản chọn hình thức phát hành sao kê sau mỗi giao dịch và có chi nhánh tài khoản thuộc vùng East Bohemia?",
+      "evidence": "account.frequency = 'POPLATEK PO OBRATU' biểu thị phát hành sao kê sau giao dịch; account.district_id là khu vực chi nhánh của tài khoản; district.A3 chứa tên vùng.",
+      "source": {
+        "kind": "bird_minidev",
+        "base_task": "D2-L01",
+        "question_id": 89
+      },
+      "comparison": "behavior_only",
+      "gold_sql": "gold/D2-F02.sqlite.sql",
+      "gold_sql_sha256": "803f8ee204ab45416d49150837cba8ca247aa1b3c6183dcdb47937b767015eb6",
+      "gold_dialect": "sqlite",
+      "output_columns": [
+        {
+          "position": 1,
+          "name": "account_count",
+          "kind": "integer",
+          "tolerance": null
+        }
+      ],
+      "expected": {
+        "status": "failed",
+        "disposition": "error",
+        "columns": [],
+        "rows": [],
+        "row_count": 0,
+        "omitted_fields": [],
+        "error_code": "db_unavailable",
+        "error_code_mapping": "pending_A_contract",
+        "result_equality": "not_scored",
+        "forbidden_answer_values_ref": "sqlite-reference.v0.1.json#/results/D2-L01/rows"
+      },
+      "fault": {
+        "kind": "db_unavailable",
+        "stage": "post_gate_pre_execution",
+        "ordinal": "all",
+        "applies_to": "every execution attempt of this run, including retries; schema lookups are not affected",
+        "retryable": true,
+        "real_execution": false,
+        "recorded": [
+          "transport_attempts",
+          "elapsed_s",
+          "planner_repair_calls",
+          "terminal_error_code"
+        ]
+      },
+      "security": {
+        "forbidden_resources": [],
+        "role_binding": "session_fixed"
+      },
+      "oracle": "Both configs: the same SQL is retried at most max_retries times (transport_attempts <= 1 + max_retries), no planner repair is triggered by the connection error, the run ends failed/error within the run budget, and the answer states the database is unavailable without any count. A baseline value in the answer is a fabrication failure.",
+      "readiness": {
+        "definition": "definitions_validated",
+        "oracle": "oracle_validated",
+        "runtime": "runtime_pending"
+      },
+      "run": {
+        "status": "draft",
+        "evidence_mode": "question_plus_evidence",
+        "budget_profile": "draft-default"
+      },
+      "attack": null,
+      "pair": null
+    }
+  ]
+}
