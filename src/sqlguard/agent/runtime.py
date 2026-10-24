@@ -3,10 +3,10 @@
 Phần 1 - planner: tạo planner cho từng request, kèm ``SchemaContext`` đã lọc theo role tin cậy.
 
 Schema được nạp bằng ``PostgresSchemaAdapter`` hoặc ``SQLiteSchemaAdapter`` (đều áp dụng
-``RolePolicy``) rồi gắn vào một ``OllamaPlanner`` MỚI cho mỗi lần gọi, nên không có state schema
-dùng chung giữa các role hay request. ``role`` phải do backend lấy từ phiên đã xác thực, không
-lấy từ câu hỏi hay LLM. Tính năng chỉ bật khi ``SQLGUARD_SCHEMA_SOURCE=postgres`` hoặc ``sqlite``;
-mặc định không mở kết nối DB nào.
+``RolePolicy``) rồi gắn vào một planner LLM (Ollama hoặc Gemini) MỚI cho mỗi lần gọi, nên
+không có state schema dùng chung giữa các role hay request. ``role`` phải do backend lấy từ phiên
+đã xác thực, không lấy từ câu hỏi hay LLM. Tính năng chỉ bật khi
+``SQLGUARD_SCHEMA_SOURCE=postgres`` hoặc ``sqlite``; mặc định không mở kết nối DB nào.
 Mọi lỗi đều fail-closed bằng ``SchemaAdapterError`` (chỉ có nhóm lỗi, không lộ DSN/lỗi gốc).
 Schema chỉ giúp planner chọn đúng định danh; việc cấp quyền SQL vẫn do security gate đảm nhiệm.
 
@@ -26,7 +26,7 @@ from importlib.util import find_spec
 from typing import Protocol
 from uuid import uuid4
 
-from sqlguard.agent.planning import OllamaPlanner, Planner, PlannerConfigError, create_planner
+from sqlguard.agent.planning import LLMPlanner, Planner, PlannerConfigError, create_planner
 from sqlguard.agent.postgres_schema import PostgresSchemaAdapter, SchemaAdapterError
 from sqlguard.agent.schema import SchemaContext
 from sqlguard.agent.sqlite_schema import SQLITE_PATH_ENV, SQLiteSchemaAdapter
@@ -71,8 +71,10 @@ async def create_planner_for_role(
     # Tạo planner theo SQLGUARD_PLANNER trước để biết có cần schema hay không.
     planner = create_planner(env)
     # DemoPlanner không dùng schema nên không cần (và không được) mở kết nối database.
-    if not isinstance(planner, OllamaPlanner):
+    if not isinstance(planner, LLMPlanner):
         return planner
+    # Planner mới cùng loại (Ollama/Gemini) với cấu hình env, nhưng gắn role/schema của request.
+    planner_type = type(planner)
     # Role/policy chỉ được lấy từ cấu hình runtime tin cậy; legacy callers vẫn có thể không có.
     if source == "none":
         if not role or not role.strip():
@@ -83,7 +85,7 @@ async def create_planner_for_role(
             raise SchemaAdapterError("schema_unknown_role")
         if semantic_memory_for(policy) is None:
             raise PlannerConfigError("Semantic memory is incompatible with the role policy")
-        return OllamaPlanner.from_env(env, role=role, policy=policy)
+        return planner_type.from_env(env, role=role, policy=policy)
     # Từ đây phải nạp schema: thiếu role thì từ chối, tuyệt đối không dùng schema không lọc.
     if not role or not role.strip():
         raise SchemaAdapterError("schema_role_missing")
@@ -103,7 +105,7 @@ async def create_planner_for_role(
     # Lỗi nạp schema (thiếu DSN, timeout, schema rỗng...) được ném thẳng ra, không fallback.
     schema = await loader.load(role)
     # Tạo planner MỚI gắn schema của đúng role này; không sửa planner nào đang dùng chung.
-    return OllamaPlanner.from_env(env, schema_context=schema, policy=policy, role=role)
+    return planner_type.from_env(env, schema_context=schema, policy=policy, role=role)
 
 
 class QueryRuntimeError(Exception):

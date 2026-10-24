@@ -550,13 +550,13 @@ def create_app(db_path: Path | None = None) -> FastAPI:
                     "Không tìm thấy database SQLite tổng hợp đã cấu hình."
                 ),
                 "synthetic_mode_requires_ollama": (
-                    "Chế độ SQLite tổng hợp yêu cầu SQLGUARD_PLANNER=ollama."
+                    "Chế độ SQLite tổng hợp yêu cầu SQLGUARD_PLANNER=ollama hoặc gemini."
                     if user.role not in BUSINESS_ROLES
-                    else "Truy vấn nghiệp vụ yêu cầu SQLGUARD_PLANNER=ollama."
+                    else "Truy vấn nghiệp vụ yêu cầu SQLGUARD_PLANNER=ollama hoặc gemini."
                 ),
                 "business_database_not_ready": "Database nghiệp vụ chưa sẵn sàng.",
                 "query_sqlite_schema_mismatch": "Database không khớp schema đã duyệt.",
-                "planner_configuration_invalid": "Cấu hình Ollama không hợp lệ.",
+                "planner_configuration_invalid": "Cấu hình planner LLM không hợp lệ.",
                 "query_runtime_unavailable": "Query runtime chưa sẵn sàng.",
                 "query_role_missing": "Query runtime thiếu role tin cậy.",
                 "query_unknown_role": "Role runtime không được policy cho phép.",

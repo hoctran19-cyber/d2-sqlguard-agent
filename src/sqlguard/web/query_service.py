@@ -1,6 +1,7 @@
 """Chạy câu hỏi qua AgentController và trả kết quả cho trang Query.
 
-Chế độ financial giữ planner demo legacy. Chế độ synthetic SQLite dùng Ollama cùng runtime
+Chế độ financial giữ planner demo legacy. Chế độ synthetic SQLite dùng planner LLM (Ollama hoặc
+Gemini, theo ``SQLGUARD_PLANNER``) cùng runtime
 PolicySQLGate/SecureSqlTool/SQLiteExecutor hiện có; không có đường thực thi SQL song song.
 Ba role nghiệp vụ dùng cùng runtime đó với policy ``business_financial_v1`` và role lấy từ phiên
 đăng nhập, chỉ khi ``SQLGUARD_BUSINESS_FINANCIAL_DB`` trỏ tới database đạt schema preflight.
@@ -20,7 +21,7 @@ from uuid import uuid4
 
 from sqlguard.agent.controller import AgentController, RunScope
 from sqlguard.agent.models import AgentRequest, ExecutionBudget, RunStatus
-from sqlguard.agent.planning import OllamaPlanner, Plan, PlannerConfigError
+from sqlguard.agent.planning import LLMPlanner, Plan, PlannerConfigError
 from sqlguard.agent.postgres_schema import SchemaAdapterError
 from sqlguard.agent.runtime import (
     QUERY_SOURCE_ENV,
@@ -442,8 +443,10 @@ class _WebRecordingRegistry:
 
 
 class _WebRecordingPlanner:
-    def __init__(self, planner: OllamaPlanner) -> None:
+    def __init__(self, planner: LLMPlanner) -> None:
         self._planner = planner
+        self.provider = planner.provider
+        self.request_parameters = planner.request_parameters
         self.model = planner.model
         self.schema_context = planner.schema_context
         self.last_sql: str | None = None
@@ -504,8 +507,9 @@ def _safe_policy_reason(decision: SecurityDecision | None) -> str:
 def _safe_runtime_reason(category: str | None) -> str:
     return {
         "planner_error": (
-            "Ollama không trả được kế hoạch hợp lệ; kiểm tra dịch vụ, model và timeout."
+            "Planner LLM không trả được kế hoạch hợp lệ; kiểm tra dịch vụ, model và timeout."
         ),
+        "planner_blocked": "Bộ lọc an toàn của nhà cung cấp LLM đã chặn yêu cầu.",
         "db_unavailable": "Không thể truy cập database demo đã cấu hình.",
         "db_timeout": "Truy vấn vượt quá thời gian cho phép.",
         "db_schema_error": "Truy vấn không khớp schema database demo.",
@@ -586,13 +590,14 @@ async def _answer_with_policy(
 ) -> dict:
     started = perf_counter()
     planner_name = (env.get("SQLGUARD_PLANNER") or "demo").casefold()
-    if planner_name != "ollama":
+    # Chỉ planner LLM thật; không bao giờ rơi về planner demo hay mock.
+    if planner_name not in {"ollama", "gemini"}:
         raise WebQueryConfigurationError("synthetic_mode_requires_ollama")
 
     runtime_env = dict(env)
     runtime_env.update(
         {
-            "SQLGUARD_PLANNER": "ollama",
+            "SQLGUARD_PLANNER": planner_name,
             SCHEMA_SOURCE_ENV: "sqlite",
             QUERY_SOURCE_ENV: "sqlite",
             SQLITE_PATH_ENV: str(database_path),
@@ -600,7 +605,7 @@ async def _answer_with_policy(
     )
     try:
         planner = await create_planner_for_role(role, runtime_env, policy=policy)
-        if not isinstance(planner, OllamaPlanner):
+        if not isinstance(planner, LLMPlanner):
             raise WebQueryConfigurationError("synthetic_mode_requires_ollama")
         query_factory = build_query_runtime_factory(role, runtime_env, policy=policy)
     except WebQueryConfigurationError:
@@ -696,7 +701,7 @@ async def _answer_with_policy(
         "policy_version": policy.version,
         "omitted_fields": removed,
         "question": question,
-        "planner": "ollama",
+        "planner": recording_planner.provider,
         "model": recording_planner.model,
         "run_id": state.run_id,
         "status": status,

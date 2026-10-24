@@ -55,6 +55,7 @@ SAFE_ERROR_CATEGORIES = frozenset(
         "output_check_error",
         "planner_call_budget_exhausted",
         "planner_error",
+        "planner_blocked",
         "run_timeout",
         "security_gate_error",
         "security_rejection",
