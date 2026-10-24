@@ -368,7 +368,7 @@ def test_pilot_uses_postgres_runtime_gate_and_keeps_gold_sql_out_of_planner(tmp_
     assert repaired["llm_call_count"] == 2
     assert repaired["sql_attempt_count"] == 2
     assert repaired["tool_call_count"] == 1
-    assert fake_executor.statements[-1][0] == "SELECT customer_id FROM customers LIMIT 100"
+    assert fake_executor.statements[-1][0] == "SELECT customer_id FROM customers LIMIT 101"
 
 
 async def _async_return(value):

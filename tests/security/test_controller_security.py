@@ -77,7 +77,7 @@ def test_allowed_query_reaches_database_only_as_normalized_sql():
     result, executor, audit, _ = run("select full_name from customers where city = 'HCM'")
 
     assert result.state.status is RunStatus.SUCCEEDED
-    assert executor.executed == ["SELECT full_name FROM customers WHERE city = 'HCM' LIMIT 100"]
+    assert executor.executed == ["SELECT full_name FROM customers WHERE city = 'HCM' LIMIT 101"]
     assert [(r.phase, r.outcome) for r in audit.records] == [
         ("gate", "allowed"),
         ("execute", "executed"),
@@ -110,7 +110,8 @@ def test_tool_boundary_still_blocks_when_controller_gate_is_weaker():
         "SELECT identity_number FROM customers", controller_gate=ReadOnlySQLGate()
     )
 
-    assert result.state.status is RunStatus.FAILED
+    # F1: a denial at the tool boundary is a refusal, the same as at the controller gate.
+    assert result.state.status is RunStatus.REFUSED
     assert result.state.failure_reason == "security_rejection"
     assert result.state.retry_count == 0
     assert executor.executed == []

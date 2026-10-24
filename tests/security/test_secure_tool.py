@@ -34,7 +34,7 @@ def test_allowed_query_executes_normalized_sql_and_returns_untrusted_envelope():
 
     envelope = call(tool, {"sql": "select full_name from customers -- comment"})
 
-    assert executor.executed == ["SELECT full_name FROM customers LIMIT 100"]
+    assert executor.executed == ["SELECT full_name FROM customers LIMIT 101"]
     assert envelope["trust"] == "untrusted" and envelope["source"] == "database"
     assert envelope["rows"] == [["Nguyen Van A"], ["Tran Thi B"], ["Le Van C"]]
     assert envelope["executed_sql"] == executor.executed[0]

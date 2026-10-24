@@ -11,7 +11,7 @@ from sqlglot import exp
 from sqlglot.errors import ParseError, SqlglotError
 
 from sqlguard.security.audit import AuditRecord, AuditSink
-from sqlguard.security.policy import RolePolicy, load_default_policy
+from sqlguard.security.policy import KEY, MEASURE, RolePolicy, load_default_policy
 from sqlguard.security.violations import VIOLATIONS, by_severity, is_repairable
 
 
@@ -187,6 +187,10 @@ _SELECT_ARGS = {
 _TABLE_ARGS = {"this", "db", "catalog", "alias", "only"}
 _JOIN_ARGS = {"this", "side", "kind", "on"}
 _SYSTEM_SCHEMAS = {"pg_catalog", "information_schema", "pg_toast"}
+# Output columns the gate adds itself; queries may not use identifiers with this prefix, so a
+# model cannot forge the group counts SecureSqlTool trusts.
+RESERVED_PREFIX = "__sqlguard"
+GROUP_COUNT_PREFIX = f"{RESERVED_PREFIX}_group_"
 
 
 class PolicySQLGate:
@@ -309,8 +313,9 @@ class _Evaluation:
                 notices=("gate_off",),
             )
 
+        dialect = policy.dialect
         try:
-            statements = sqlglot.parse(sql, read="postgres")
+            statements = sqlglot.parse(sql, read=dialect)
         except (SqlglotError, RecursionError, ValueError):
             return gate._denied(("parse_error",), input_hash=input_hash)
         if len(statements) != 1 or statements[0] is None:
@@ -332,6 +337,8 @@ class _Evaluation:
         # Collect structure, table and join findings together so a terminal finding (for example
         # a system catalog) is never hidden behind a repairable one (for example ``*``).
         self._check_structure(root)
+        if not limits.allow_constant_projections and _constant_projection(root):
+            self.violations.add("constant_projection")
         alias_map = self._check_tables(root, role)
         self._check_joins(root, alias_map)
         if self.violations:
@@ -342,16 +349,26 @@ class _Evaluation:
         referenced_columns: tuple[str, ...] = ()
         if gate.mode is GateMode.COLUMN_LEVEL:
             tree, removed, referenced_columns = self._check_columns(root, alias_map, role)
+            if not self.violations and policy.is_aggregate_only(role):
+                self._check_aggregate(tree, alias_map, role)
             if self.violations:
                 return gate._denied(self.violations, input_hash=input_hash)
 
-        tree, notices = _enforce_limit(tree, limits.max_rows)
-        normalized = tree.sql(dialect="postgres", comments=False)
+        notices: tuple[str, ...] = ()
+        if (
+            gate.mode is GateMode.COLUMN_LEVEL
+            and policy.is_aggregate_only(role)
+            and limits.min_group_size > 0
+        ):
+            tree, notices = _add_group_counts(tree, alias_map, policy)
+        tree, limit_notices = _enforce_limit(tree, limits.max_rows)
+        notices += limit_notices
+        normalized = tree.sql(dialect=dialect, comments=False)
         try:
-            reparsed = sqlglot.parse_one(normalized, read="postgres")
+            reparsed = sqlglot.parse_one(normalized, read=dialect)
         except (SqlglotError, RecursionError, ValueError):
             reparsed = None
-        if reparsed is None or reparsed.sql(dialect="postgres", comments=False) != normalized:
+        if reparsed is None or reparsed.sql(dialect=dialect, comments=False) != normalized:
             return gate._denied(("normalization_mismatch",), input_hash=input_hash)
 
         partial = bool(removed)
@@ -383,6 +400,10 @@ class _Evaluation:
         for node in root.walk():
             if node is root:
                 continue
+            if isinstance(node, exp.Identifier) and node.name.casefold().startswith(
+                RESERVED_PREFIX
+            ):
+                self.violations.add("unsupported_syntax")
             if isinstance(node, _WRITE_TYPES):
                 self.violations.add("write_operation")
             elif isinstance(node, exp.Into):
@@ -455,7 +476,11 @@ class _Evaluation:
             name, schema = table.name.casefold(), table.db.casefold()
             if table.catalog:
                 self.violations.add("schema_not_allowed")
-            elif schema in _SYSTEM_SCHEMAS or schema.startswith("pg_") or name.startswith("pg_"):
+            elif (
+                schema in _SYSTEM_SCHEMAS
+                or schema.startswith("pg_")
+                or name.startswith(("pg_", "sqlite_"))
+            ):
                 self.violations.add("system_catalog")
             elif schema and schema != policy.schema:
                 self.violations.add("schema_not_allowed")
@@ -573,6 +598,71 @@ class _Evaluation:
         removed = tuple(sorted(set(forbidden_direct.values())))
         return tree, removed, tuple(sorted(readable))
 
+    # -- aggregate-only roles ----------------------------------------------------------------
+
+    def _check_aggregate(self, root: exp.Select, alias_map: dict[str, str], role: str) -> None:
+        """Aggregate-only roles get grouped/aggregated results, never individual rows.
+
+        Keys may appear only in JOIN conditions and as what COUNT counts: its direct argument, or
+        the value of a CASE branch that COUNT counts directly (``COUNT(DISTINCT CASE WHEN
+        gender = 'F' THEN client_id END)``; the WHEN conditions are checked as any other
+        expression, so a key there is still exposed); measures only inside an aggregate
+        function; dimensions anywhere. Every projection is an aggregate
+        or a grouped expression, so SQLite's bare columns cannot return a row's value. Small
+        groups are not suppressed here (the cohort threshold is not approved yet).
+        """
+        policy = self.gate.policy
+        projections = list(root.expressions)
+        output_aliases = {
+            p.alias.casefold(): index
+            for index, p in enumerate(projections)
+            if isinstance(p, exp.Alias)
+        }
+        for column in root.find_all(exp.Column):
+            resolved = self._resolve_column(column, alias_map, output_aliases)
+            if resolved is None:
+                continue
+            kind = policy.column_kind(role, *resolved)
+            aggregate = _enclosing(column, root, exp.AggFunc)
+            if kind == KEY:
+                parent = column.parent
+                if isinstance(parent, exp.Distinct):
+                    parent = parent.parent
+                counted = isinstance(aggregate, exp.Count) and (
+                    parent is aggregate or _counted_case_value(column, aggregate)
+                )
+                if not (counted or _enclosing(column, root, exp.Join) is not None):
+                    self.violations.add("aggregate_key_exposed")
+            elif kind == MEASURE and aggregate is None:
+                self.violations.add("aggregate_measure_exposed")
+
+        group = root.args.get("group")
+        keys = list(group.expressions) if group else []
+        grouped_sql = {key.sql() for key in keys}
+        grouped_columns = set()
+        grouped_indexes = {int(key.this) - 1 for key in keys if _is_int_literal(key)}
+        for key in keys:
+            if not isinstance(key, exp.Column):
+                continue
+            if not key.table and key.name.casefold() in output_aliases:
+                grouped_indexes.add(output_aliases[key.name.casefold()])
+            else:
+                grouped_columns.add(self._resolve_column(key, alias_map, output_aliases))
+        has_aggregate = False
+        for index, projection in enumerate(projections):
+            target = projection.this if isinstance(projection, exp.Alias) else projection
+            has_aggregate = has_aggregate or target.find(exp.AggFunc) is not None
+            bare = [
+                self._resolve_column(c, alias_map, output_aliases)
+                for c in target.find_all(exp.Column)
+                if _enclosing(c, root, exp.AggFunc) is None
+            ]
+            if bare and index not in grouped_indexes and target.sql() not in grouped_sql:
+                if not all(c is not None and c in grouped_columns for c in bare):
+                    self.violations.add("aggregate_required")
+        if not has_aggregate:
+            self.violations.add("aggregate_required")
+
     def _resolve_column(
         self, column: exp.Column, alias_map: dict[str, str], output_aliases: dict[str, int]
     ) -> tuple[str, str] | None:
@@ -606,6 +696,35 @@ class _Evaluation:
         if name not in output_aliases:
             self.violations.add("column_unknown")
         return None
+
+
+def _counted_case_value(column: exp.Column, count: exp.Count) -> bool:
+    """True when the key is a THEN/ELSE value of a CASE that ``count`` counts directly."""
+    parent = column.parent
+    if isinstance(parent, exp.If) and parent.args.get("true") is column:
+        case = parent.parent
+    elif isinstance(parent, exp.Case) and parent.args.get("default") is column:
+        case = parent
+    else:
+        return False
+    if not isinstance(case, exp.Case):
+        return False
+    holder = case.parent
+    if isinstance(holder, exp.Distinct):
+        holder = holder.parent
+    return holder is count
+
+
+def _constant_projection(root: exp.Select) -> bool:
+    """A query that reads no table, or outputs a column that is only a literal (``SELECT 1``,
+    ``SELECT NULL AS card_id ...``): what it returns did not come from the database."""
+    if root.find(exp.Table) is None:
+        return True
+    for projection in root.expressions:
+        target = projection.this if isinstance(projection, exp.Alias) else projection
+        if target.find(exp.Column, exp.AggFunc) is None:
+            return True
+    return False
 
 
 def _select_arg_violation(key: str) -> str:
@@ -649,6 +768,16 @@ def _clause_of(node: exp.Expression, root: exp.Select) -> str:
     return "select"
 
 
+def _enclosing(node: exp.Expression, root: exp.Select, kind) -> exp.Expression | None:
+    """Nearest ancestor of ``node`` below ``root`` that is an instance of ``kind``."""
+    node = node.parent
+    while node is not None and node is not root:
+        if isinstance(node, kind):
+            return node
+        node = node.parent
+    return None
+
+
 def _projection_index(node: exp.Expression, root: exp.Select) -> int:
     while node.parent is not root:
         node = node.parent
@@ -663,13 +792,36 @@ def _has_positional_reference(root: exp.Select) -> bool:
     return any(_is_int_literal(key) for key in keys)
 
 
+def _add_group_counts(
+    tree: exp.Select, alias_map: dict[str, str], policy: RolePolicy
+) -> tuple[exp.Select, tuple[str, ...]]:
+    """Append ``COUNT(DISTINCT <cohort key>)`` per table holding individuals, so SecureSqlTool can
+    withhold groups below ``min_group_size``. Appended last, so positional references hold."""
+    counts = [
+        exp.alias_(
+            exp.Count(this=exp.Distinct(expressions=[exp.column(policy.cohort_keys[table], key)])),
+            f"{GROUP_COUNT_PREFIX}{index}",
+        )
+        for index, (key, table) in enumerate(sorted(alias_map.items()))
+        if table in policy.cohort_keys
+    ]
+    if not counts:
+        return tree, ()
+    tree = tree.copy()
+    tree.set("expressions", [*tree.expressions, *counts])
+    return tree, ("group_counts_added",)
+
+
 def _enforce_limit(tree: exp.Select, max_rows: int) -> tuple[exp.Select, tuple[str, ...]]:
+    # The gate's own LIMIT asks for one extra row: SecureSqlTool returns at most max_rows rows
+    # and flags the result truncated when that extra row arrives. With LIMIT max_rows the
+    # database never returns more, so a cut result would look complete.
     limit = tree.args.get("limit")
     if limit is None:
-        return tree.limit(max_rows, copy=True), ("limit_added",)
+        return tree.limit(max_rows + 1, copy=True), ("limit_added",)
     if int(limit.expression.this) > max_rows:
         tree = tree.copy()
-        tree.args["limit"].set("expression", exp.Literal.number(max_rows))
+        tree.args["limit"].set("expression", exp.Literal.number(max_rows + 1))
         return tree, ("limit_capped",)
     return tree, ()
 

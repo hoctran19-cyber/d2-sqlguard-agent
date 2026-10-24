@@ -10,7 +10,7 @@ from typing import Any
 
 from sqlguard.agent.controller import AgentController, RunScope
 from sqlguard.agent.models import AgentRequest, ExecutionBudget
-from sqlguard.agent.planning import OllamaPlanner, Planner, PlannerConfigError
+from sqlguard.agent.planning import LLMPlanner, Planner, PlannerConfigError
 from sqlguard.agent.postgres_schema import SchemaAdapterError
 from sqlguard.agent.runtime import (
     AUDIT_PATH_ENV,
@@ -122,21 +122,21 @@ def budget_from_env(env: Mapping[str, str] | None = None) -> ExecutionBudget:
         raise ValueError("SQLGUARD_RUN_TIMEOUT_SECONDS must be a positive number") from None
 
 
-# Trả về (tên planner, tên model) để hiển thị; model chỉ có với Ollama.
+# Trả về (tên planner, tên model) để hiển thị; model chỉ có với planner LLM.
 def _planner_label(planner: Planner) -> tuple[str, str | None]:
-    if isinstance(planner, OllamaPlanner):
-        return "ollama", planner.model
+    if isinstance(planner, LLMPlanner):
+        return planner.provider, planner.model
     return "demo", None
 
 
 # Đếm số bảng trong schema planner đang giữ; chỉ in số lượng, không in metadata nhạy cảm.
 def _schema_table_count(planner: Planner) -> int | None:
-    schema = planner.schema_context if isinstance(planner, OllamaPlanner) else None
+    schema = planner.schema_context if isinstance(planner, LLMPlanner) else None
     return len(schema.tables) if schema else None
 
 
 def _schema_dialect(planner: Planner) -> str | None:
-    schema = planner.schema_context if isinstance(planner, OllamaPlanner) else None
+    schema = planner.schema_context if isinstance(planner, LLMPlanner) else None
     return schema.dialect if schema else None
 
 
@@ -180,7 +180,7 @@ async def run_demo_report(
         raise QueryRuntimeError("mcp_invalid_config")
     if (
         planner is None
-        and (env.get("SQLGUARD_PLANNER") or "demo").casefold() == "ollama"
+        and (env.get("SQLGUARD_PLANNER") or "demo").casefold() in {"ollama", "gemini"}
         and query_factory is not None
         and query_factory.source == "sqlite"
         and (env.get(SCHEMA_SOURCE_ENV) or "none").casefold() != "sqlite"

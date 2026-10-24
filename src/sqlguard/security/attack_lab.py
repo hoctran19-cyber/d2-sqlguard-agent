@@ -1,8 +1,8 @@
-"""Attack Lab: the demo-only write surface that plants injection payloads in ``note`` columns.
+"""Attack Lab: the demo-only write surface that plants injection payloads in note columns.
 
 This is deliberately *not* an agent tool. The backend calls it for the ``/demo/attack-lab``
 route; it writes through the dedicated ``sqlguard_note_writer`` credential, which can only
-``UPDATE (note)`` on the tables listed in the policy's ``note_targets``. Every mutation:
+update the note column of the tables listed in the policy's ``note_targets``. Every mutation:
 
 * requires the lab to be enabled (demo profile) and a target on the allowlist;
 * is refused while an agent run is active, so a run never sees a note change mid-flight;
@@ -33,13 +33,14 @@ TARGETS_ENV = "SQLGUARD_ATTACK_LAB_TARGETS"
 def note_statements(policy: RolePolicy) -> dict[str, tuple[str, str]]:
     """Fixed read/update statements per note table. Identifiers come from the reviewed policy
     file, never from the request; values are always bound parameters."""
-    return {
-        table: (
-            f'SELECT note FROM "{table}" WHERE "{key}" = %s',
-            f'UPDATE "{table}" SET note = %s WHERE "{key}" = %s',
+    statements = {}
+    for table, key in policy.note_targets.items():
+        column = policy.note_column(table)
+        statements[table] = (
+            f'SELECT "{column}" FROM "{table}" WHERE "{key}" = %s',
+            f'UPDATE "{table}" SET "{column}" = %s WHERE "{key}" = %s',
         )
-        for table, key in policy.note_targets.items()
-    }
+    return statements
 
 
 def parse_targets(text: str) -> frozenset[tuple[str, int]]:

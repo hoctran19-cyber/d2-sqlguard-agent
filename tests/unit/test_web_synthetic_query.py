@@ -477,7 +477,7 @@ def test_ollama_failure_is_reported_without_demo_fallback(web_client, monkeypatc
     assert body["planner"] == "ollama"
     assert body["sql"] is None
     assert body["result"] is None
-    assert "Ollama" in body["reason"]
+    assert "Planner LLM" in body["reason"]
     assert "private" not in response.text
     assert len(calls) == 1
     assert_event_contract(body, "run_failed", "failed", "planner_error")

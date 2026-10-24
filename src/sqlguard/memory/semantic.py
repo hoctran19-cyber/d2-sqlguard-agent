@@ -319,3 +319,124 @@ DEFAULT_SEMANTIC_MEMORY = SemanticMemory(
         ),
     ),
 )
+
+BUSINESS_SEMANTIC_MEMORY_VERSION = "business-semantic-v1"
+BUSINESS_POLICY_VERSION = "business-financial-v1"
+_BUSINESS_POLICY_FILE = "src/sqlguard/security/policies/business_financial_v1.json"
+_ALL_BUSINESS_ROLES = ("operator", "analyst", "credit_officer")
+
+
+def _business(definition_id, title, meaning, columns, roles):
+    sources = tuple(
+        f"{_BUSINESS_POLICY_FILE}#/descriptions/{table}/{column}" for table, column in columns
+    )
+    return SemanticDefinition(
+        definition_id, BUSINESS_SEMANTIC_MEMORY_VERSION, title, meaning, columns, roles, sources
+    )
+
+
+BUSINESS_SEMANTIC_MEMORY = SemanticMemory(
+    version=BUSINESS_SEMANTIC_MEMORY_VERSION,
+    policy_version=BUSINESS_POLICY_VERSION,
+    definitions=(
+        _business(
+            "trans.type-codes",
+            "Chiều tiền của giao dịch",
+            "trans.type = 'PRIJEM' là tiền vào, 'VYDAJ' là tiền ra; amount luôn dương, nên "
+            "dòng tiền ròng phải tách theo type.",
+            (("trans", "type"), ("trans", "amount")),
+            _ALL_BUSINESS_ROLES,
+        ),
+        _business(
+            "trans.k-symbol",
+            "Mục đích giao dịch",
+            "trans.k_symbol phân loại mục đích, ví dụ 'UVER' là trả nợ vay, 'SIPO' là sinh hoạt, "
+            "'DUCHOD' là lương hưu, 'UROK' là lãi; có thể rỗng.",
+            (("trans", "k_symbol"),),
+            _ALL_BUSINESS_ROLES,
+        ),
+        _business(
+            "trans.balance-after",
+            "Số dư sau giao dịch",
+            "trans.balance là số dư lịch sử ngay sau giao dịch đó, không phải số dư hiện tại "
+            "của tài khoản.",
+            (("trans", "balance"),),
+            ("operator", "credit_officer"),
+        ),
+        _business(
+            "account.frequency-codes",
+            "Tần suất sao kê",
+            "account.frequency: 'POPLATEK MESICNE' hằng tháng, 'POPLATEK TYDNE' hằng tuần, "
+            "'POPLATEK PO OBRATU' sau mỗi giao dịch.",
+            (("account", "frequency"),),
+            _ALL_BUSINESS_ROLES,
+        ),
+        _business(
+            "disp.owner",
+            "Chủ tài khoản",
+            "disp nối client với account; disp.type = 'OWNER' là chủ tài khoản, 'DISPONENT' là "
+            "người được ủy quyền. Khi cần đúng một khách hàng cho mỗi tài khoản, thêm "
+            "disp.type = 'OWNER' vào WHERE (không đặt trong ON).",
+            (("disp", "type"), ("disp", "client_id"), ("disp", "account_id")),
+            _ALL_BUSINESS_ROLES,
+        ),
+        _business(
+            "district.region",
+            "Vùng và quận",
+            "district.a2 là tên quận, district.a3 là vùng; account.district_id là quận của chi "
+            "nhánh, client.district_id là quận của khách hàng.",
+            (("district", "a2"), ("district", "a3"), ("account", "district_id")),
+            _ALL_BUSINESS_ROLES,
+        ),
+        _business(
+            "district.average-salary",
+            "Lương trung bình vùng",
+            "district.a11 là lương trung bình của quận, không phải thu nhập của khách hàng; "
+            "a12/a13 là tỷ lệ thất nghiệp 1995/1996.",
+            (("district", "a11"), ("district", "a12"), ("district", "a13")),
+            ("analyst", "credit_officer"),
+        ),
+        _business(
+            "analyst.distinct-clients",
+            "Đếm khách hàng và tài khoản",
+            "Đếm khách hàng bằng COUNT(DISTINCT client.client_id) và tài khoản bằng "
+            "COUNT(DISTINCT account.account_id); không xuất danh sách ID.",
+            (("client", "client_id"), ("account", "account_id")),
+            ("analyst",),
+        ),
+        _business(
+            "loan.status-codes",
+            "Trạng thái khoản vay",
+            "loan.status: 'A' đã kết thúc, không vấn đề; 'B' đã kết thúc, chưa trả; 'C' đang "
+            "chạy, ổn; 'D' đang chạy, khách đang nợ. B và D là khoản vay cần theo dõi.",
+            (("loan", "status"),),
+            ("credit_officer",),
+        ),
+        _business(
+            "loan.amount-original",
+            "Số tiền vay",
+            "loan.amount là vốn vay ban đầu, không phải dư nợ hiện tại; loan.payments là số "
+            "tiền trả hằng tháng, loan.duration là thời hạn theo tháng.",
+            (("loan", "amount"), ("loan", "payments"), ("loan", "duration")),
+            ("credit_officer",),
+        ),
+        _business(
+            "order.standing-order",
+            "Lệnh thanh toán định kỳ",
+            "order là lệnh chuyển tiền định kỳ; một lệnh không chứng minh tiền đã chuyển thành "
+            "công. order.k_symbol = 'UVER' là lệnh trả nợ vay.",
+            (("order", "amount"), ("order", "k_symbol")),
+            ("operator", "credit_officer"),
+        ),
+    ),
+)
+
+_CATALOGS = {
+    catalog.policy_version: catalog
+    for catalog in (DEFAULT_SEMANTIC_MEMORY, BUSINESS_SEMANTIC_MEMORY)
+}
+
+
+def semantic_memory_for(policy: RolePolicy) -> SemanticMemory | None:
+    """The reviewed catalog written for this policy version, if any."""
+    return _CATALOGS.get(policy.version)

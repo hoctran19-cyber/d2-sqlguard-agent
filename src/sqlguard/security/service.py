@@ -1,7 +1,8 @@
 """Secure query service: the ``execute_sql`` boundary shared by NL runs and manual SQL.
 
 Pipeline per attempt: argument check -> gate -> execute ``normalized_sql`` with the role's own
-DB credential -> row/byte caps -> sanitize -> canary check -> audit -> untrusted envelope.
+DB credential -> small-group suppression (aggregate-only roles) -> row/byte caps -> sanitize ->
+canary check -> audit -> untrusted envelope.
 The role comes from the trusted :class:`SecurityContext` bound at construction; the LLM only
 supplies ``sql``.
 """
@@ -16,7 +17,7 @@ from typing import Any, Protocol
 
 from sqlguard.mcp.tools import ToolError
 from sqlguard.security.audit import AuditSink
-from sqlguard.security.gate import PolicySQLGate, SecurityDecision
+from sqlguard.security.gate import GROUP_COUNT_PREFIX, PolicySQLGate, SecurityDecision
 from sqlguard.security.policy import RolePolicy
 from sqlguard.security.sanitizer import (
     UNTRUSTED_DATA_NOTICE,
@@ -99,6 +100,7 @@ class SecureSqlTool:
                 "rows": {"type": "array", "items": {"type": "array"}},
                 "row_count": {"type": "integer"},
                 "truncated": {"type": "boolean"},
+                "small_groups_withheld": {"type": "boolean"},
                 "removed_columns": {"type": "array", "items": {"type": "string"}},
                 "decision": {"type": "string"},
                 "possible_injection": {"type": "boolean"},
@@ -198,10 +200,12 @@ class SecureSqlTool:
 
     def _build_envelope(self, decision, result: QueryResult, policy: RolePolicy, role: str):
         limits = policy.limits
-        rows = list(result.rows[: limits.max_rows])
         truncated = len(result.rows) > limits.max_rows
+        columns, rows, withheld = suppress_small_groups(
+            result.columns, result.rows[: limits.max_rows], limits.min_group_size
+        )
         sanitized = sanitize_rows(
-            result.columns,
+            columns,
             rows,
             max_text_length=limits.max_text_length,
             sensitive_terms=policy.forbidden_column_names(role),
@@ -214,6 +218,7 @@ class SecureSqlTool:
             "rows": [list(row) for row in sanitized.rows],
             "row_count": len(sanitized.rows),
             "truncated": truncated,
+            "small_groups_withheld": withheld,
             "removed_columns": list(decision.removed_columns),
             "decision": str(decision.kind),
             "possible_injection": bool(sanitized.flags),
@@ -228,6 +233,8 @@ class SecureSqlTool:
         notices: tuple[str, ...] = ()
         if envelope["truncated"]:
             notices += ("rows_truncated",)
+        if withheld:
+            notices += ("small_groups_withheld",)
         if sanitized.truncated_values:
             notices += ("values_truncated",)
         if sanitized.flags:
@@ -249,6 +256,28 @@ class SecureSqlTool:
                 raise ToolError(
                     "Audit write failed", category="audit_error", retryable=False
                 ) from None
+
+
+def suppress_small_groups(
+    columns: tuple[str, ...], rows, min_group_size: int
+) -> tuple[tuple[str, ...], list[tuple[Any, ...]], bool]:
+    """Drop rows whose gate-added group counts are below ``min_group_size``; strip the counts.
+
+    Only the gate adds ``GROUP_COUNT_PREFIX`` columns (queries may not use the prefix). A count
+    that is not an integer is treated as too small. Only whether something was withheld is
+    reported, never how many groups or rows.
+    """
+    hidden = {i for i, name in enumerate(columns) if name.casefold().startswith(GROUP_COUNT_PREFIX)}
+    if not hidden:
+        return tuple(columns), list(rows), False
+    kept = [
+        row
+        for row in rows
+        if all(isinstance(row[i], int) and row[i] >= min_group_size for i in hidden)
+    ]
+    visible = tuple(name for i, name in enumerate(columns) if i not in hidden)
+    stripped = [tuple(value for i, value in enumerate(row) if i not in hidden) for row in kept]
+    return visible, stripped, len(kept) != len(rows)
 
 
 def find_leaks(text: str, policy: RolePolicy, role: str) -> tuple[str, ...]:

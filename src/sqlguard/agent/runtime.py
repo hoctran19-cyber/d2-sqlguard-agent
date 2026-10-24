@@ -3,10 +3,10 @@
 Phần 1 - planner: tạo planner cho từng request, kèm ``SchemaContext`` đã lọc theo role tin cậy.
 
 Schema được nạp bằng ``PostgresSchemaAdapter`` hoặc ``SQLiteSchemaAdapter`` (đều áp dụng
-``RolePolicy``) rồi gắn vào một ``OllamaPlanner`` MỚI cho mỗi lần gọi, nên không có state schema
-dùng chung giữa các role hay request. ``role`` phải do backend lấy từ phiên đã xác thực, không
-lấy từ câu hỏi hay LLM. Tính năng chỉ bật khi ``SQLGUARD_SCHEMA_SOURCE=postgres`` hoặc ``sqlite``;
-mặc định không mở kết nối DB nào.
+``RolePolicy``) rồi gắn vào một planner LLM (Ollama hoặc Gemini) MỚI cho mỗi lần gọi, nên
+không có state schema dùng chung giữa các role hay request. ``role`` phải do backend lấy từ phiên
+đã xác thực, không lấy từ câu hỏi hay LLM. Tính năng chỉ bật khi
+``SQLGUARD_SCHEMA_SOURCE=postgres`` hoặc ``sqlite``; mặc định không mở kết nối DB nào.
 Mọi lỗi đều fail-closed bằng ``SchemaAdapterError`` (chỉ có nhóm lỗi, không lộ DSN/lỗi gốc).
 Schema chỉ giúp planner chọn đúng định danh; việc cấp quyền SQL vẫn do security gate đảm nhiệm.
 
@@ -26,15 +26,16 @@ from importlib.util import find_spec
 from typing import Protocol
 from uuid import uuid4
 
-from sqlguard.agent.planning import OllamaPlanner, Planner, PlannerConfigError, create_planner
+from sqlguard.agent.planning import LLMPlanner, Planner, PlannerConfigError, create_planner
 from sqlguard.agent.postgres_schema import PostgresSchemaAdapter, SchemaAdapterError
 from sqlguard.agent.schema import SchemaContext
 from sqlguard.agent.sqlite_schema import SQLITE_PATH_ENV, SQLiteSchemaAdapter
-from sqlguard.memory.semantic import DEFAULT_SEMANTIC_MEMORY
+from sqlguard.memory.semantic import BUSINESS_POLICY_VERSION, semantic_memory_for
 from sqlguard.security.audit import AuditSink, InMemoryAuditSink, JsonlAuditSink
 from sqlguard.security.gate import PolicySQLGate, SecurityContext
 from sqlguard.security.policy import RolePolicy, load_default_policy
 from sqlguard.security.postgres import DSN_ENV_PREFIX, PostgresExecutor
+from sqlguard.security.schema_preflight import preflight_financial_sqlite
 from sqlguard.security.service import ExecutorError, QueryExecutor, SecureSqlTool, find_leaks
 from sqlguard.security.sqlite import SQLiteExecutor
 
@@ -70,8 +71,10 @@ async def create_planner_for_role(
     # Tạo planner theo SQLGUARD_PLANNER trước để biết có cần schema hay không.
     planner = create_planner(env)
     # DemoPlanner không dùng schema nên không cần (và không được) mở kết nối database.
-    if not isinstance(planner, OllamaPlanner):
+    if not isinstance(planner, LLMPlanner):
         return planner
+    # Planner mới cùng loại (Ollama/Gemini) với cấu hình env, nhưng gắn role/schema của request.
+    planner_type = type(planner)
     # Role/policy chỉ được lấy từ cấu hình runtime tin cậy; legacy callers vẫn có thể không có.
     if source == "none":
         if not role or not role.strip():
@@ -80,9 +83,9 @@ async def create_planner_for_role(
         policy = policy or load_default_policy()
         if not policy.has_role(role):
             raise SchemaAdapterError("schema_unknown_role")
-        if policy.version != DEFAULT_SEMANTIC_MEMORY.policy_version:
+        if semantic_memory_for(policy) is None:
             raise PlannerConfigError("Semantic memory is incompatible with the role policy")
-        return OllamaPlanner.from_env(env, role=role, policy=policy)
+        return planner_type.from_env(env, role=role, policy=policy)
     # Từ đây phải nạp schema: thiếu role thì từ chối, tuyệt đối không dùng schema không lọc.
     if not role or not role.strip():
         raise SchemaAdapterError("schema_role_missing")
@@ -90,7 +93,7 @@ async def create_planner_for_role(
     policy = policy or load_default_policy()
     if not policy.has_role(role):
         raise SchemaAdapterError("schema_unknown_role")
-    if policy.version != DEFAULT_SEMANTIC_MEMORY.policy_version:
+    if semantic_memory_for(policy) is None:
         raise PlannerConfigError("Semantic memory is incompatible with the role policy")
     # Adapter tự kiểm tra role có trong policy, lấy DSN theo role và lọc schema theo RolePolicy.
     if schema_loader is not None:
@@ -102,7 +105,7 @@ async def create_planner_for_role(
     # Lỗi nạp schema (thiếu DSN, timeout, schema rỗng...) được ném thẳng ra, không fallback.
     schema = await loader.load(role)
     # Tạo planner MỚI gắn schema của đúng role này; không sửa planner nào đang dùng chung.
-    return OllamaPlanner.from_env(env, schema_context=schema, policy=policy, role=role)
+    return planner_type.from_env(env, schema_context=schema, policy=policy, role=role)
 
 
 class QueryRuntimeError(Exception):
@@ -162,9 +165,14 @@ class QueryRuntimeFactory:
     audit: AuditSink
     source: str = "postgres"
 
-    def for_run(self, run_id: str) -> QueryRuntime:
+    def for_run(
+        self, run_id: str, *, user_id: str = "cli", request_mode: str = "nl"
+    ) -> QueryRuntime:
         # run_id là của AgentState, nên audit của gate/tool khớp với run của controller.
-        context = SecurityContext(role=self.role, user_id="cli", run_id=run_id, request_mode="nl")
+        # user_id/request_mode do backend truyền từ phiên đăng nhập, chỉ dùng cho audit.
+        context = SecurityContext(
+            role=self.role, user_id=user_id, run_id=run_id, request_mode=request_mode
+        )
         return QueryRuntime(
             context=context,
             gate=PolicySQLGate(context, self.policy, audit=self.audit),
@@ -224,6 +232,9 @@ def build_query_runtime_factory(
             raise QueryRuntimeError("query_sqlite_path_missing")
         if not os.path.isfile(os.path.expanduser(path)):
             raise QueryRuntimeError("query_sqlite_db_missing")
+        # The business policy is only valid on the reviewed schema: fail closed on drift.
+        if policy.version == BUSINESS_POLICY_VERSION and not preflight_financial_sqlite(path).valid:
+            raise QueryRuntimeError("query_sqlite_schema_mismatch")
         if executor is None:
             try:
                 # Authorizer của executor dựng từ cùng policy với gate.

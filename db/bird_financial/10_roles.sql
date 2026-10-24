@@ -62,30 +62,30 @@ REVOKE EXECUTE ON FUNCTION pg_sleep(double precision) FROM PUBLIC;
 REVOKE EXECUTE ON FUNCTION pg_sleep_for(interval) FROM PUBLIC;
 REVOKE EXECUTE ON FUNCTION pg_sleep_until(timestamp with time zone) FROM PUBLIC;
 
--- Nobody gets client.national_id.
+-- Nobody gets client.id_number, client.address or card.placeholder.
 
 -- Giao dịch viên: no birth_date, no loan table, no counterparty bank/account.
-GRANT SELECT (account_id, district_id, frequency, date)
+GRANT SELECT (account_id, district_id, frequency, date, service_note)
     ON account TO sqlguard_teller_ro;
 GRANT SELECT (card_id, disp_id, type, issued)
     ON card TO sqlguard_teller_ro;
-GRANT SELECT (client_id, gender, district_id, note)
+GRANT SELECT (client_id, gender, district_id, full_name)
     ON client TO sqlguard_teller_ro;
 GRANT SELECT (disp_id, client_id, account_id, type)
     ON disp TO sqlguard_teller_ro;
 GRANT SELECT (district_id, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15, a16)
     ON district TO sqlguard_teller_ro;
-GRANT SELECT (order_id, account_id, amount, k_symbol)
+GRANT SELECT (order_id, account_id, amount, k_symbol, note)
     ON "order" TO sqlguard_teller_ro;
-GRANT SELECT (trans_id, account_id, date, type, operation, amount, balance, k_symbol, note)
+GRANT SELECT (trans_id, account_id, date, type, operation, amount, balance, k_symbol)
     ON trans TO sqlguard_teller_ro;
 
 -- Tín dụng: adds birth_date and loans; no counterparty bank/account.
-GRANT SELECT (account_id, district_id, frequency, date)
+GRANT SELECT (account_id, district_id, frequency, date, service_note)
     ON account TO sqlguard_credit_ro;
 GRANT SELECT (card_id, disp_id, type, issued)
     ON card TO sqlguard_credit_ro;
-GRANT SELECT (client_id, gender, birth_date, district_id, note)
+GRANT SELECT (client_id, gender, birth_date, district_id, full_name)
     ON client TO sqlguard_credit_ro;
 GRANT SELECT (disp_id, client_id, account_id, type)
     ON disp TO sqlguard_credit_ro;
@@ -93,17 +93,17 @@ GRANT SELECT (district_id, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a
     ON district TO sqlguard_credit_ro;
 GRANT SELECT (loan_id, account_id, date, amount, duration, payments, status)
     ON loan TO sqlguard_credit_ro;
-GRANT SELECT (order_id, account_id, amount, k_symbol)
+GRANT SELECT (order_id, account_id, amount, k_symbol, note)
     ON "order" TO sqlguard_credit_ro;
-GRANT SELECT (trans_id, account_id, date, type, operation, amount, balance, k_symbol, note)
+GRANT SELECT (trans_id, account_id, date, type, operation, amount, balance, k_symbol)
     ON trans TO sqlguard_credit_ro;
 
 -- Rủi ro–Tài chính: adds loans and counterparty bank/account; no birth_date.
-GRANT SELECT (account_id, district_id, frequency, date)
+GRANT SELECT (account_id, district_id, frequency, date, service_note)
     ON account TO sqlguard_risk_ro;
 GRANT SELECT (card_id, disp_id, type, issued)
     ON card TO sqlguard_risk_ro;
-GRANT SELECT (client_id, gender, district_id, note)
+GRANT SELECT (client_id, gender, district_id, full_name)
     ON client TO sqlguard_risk_ro;
 GRANT SELECT (disp_id, client_id, account_id, type)
     ON disp TO sqlguard_risk_ro;
@@ -111,11 +111,11 @@ GRANT SELECT (district_id, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a
     ON district TO sqlguard_risk_ro;
 GRANT SELECT (loan_id, account_id, date, amount, duration, payments, status)
     ON loan TO sqlguard_risk_ro;
-GRANT SELECT (order_id, account_id, bank_to, account_to, amount, k_symbol)
+GRANT SELECT (order_id, account_id, bank_to, account_to, amount, k_symbol, note)
     ON "order" TO sqlguard_risk_ro;
-GRANT SELECT (trans_id, account_id, date, type, operation, amount, balance, k_symbol, bank, account, note)
+GRANT SELECT (trans_id, account_id, date, type, operation, amount, balance, k_symbol, bank, account)
     ON trans TO sqlguard_risk_ro;
 
--- Attack Lab note writer: may only rewrite note columns. Never given to the agent.
-GRANT SELECT (client_id, note), UPDATE (note) ON client TO sqlguard_note_writer;
-GRANT SELECT (trans_id, note), UPDATE (note) ON trans TO sqlguard_note_writer;
+-- Attack Lab note writer: may only rewrite the note_targets columns. Never given to the agent.
+GRANT SELECT (account_id, service_note), UPDATE (service_note) ON account TO sqlguard_note_writer;
+GRANT SELECT (order_id, note), UPDATE (note) ON "order" TO sqlguard_note_writer;

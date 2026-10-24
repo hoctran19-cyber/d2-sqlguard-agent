@@ -1,0 +1,49 @@
+# Financial D2 experiment on the Gemini planner: same tasks, configs and budgets as d2.yaml;
+# only the planner (model = planner default, gemini-2.5-flash) and the snapshot path differ.
+# Financial D2 experiment: what is run, on which snapshot/runtime, under which two configs.
+# Budgets are provisional until the runtime contract is fixed; freeze them before a measured batch.
+schema_version: financial-experiment-0.1
+experiment:
+  name: d2-gemini
+  suite_id: financial-d2
+  description: Financial D2 suite, 21 main tasks + 2 clean controls, two configs x three repetitions
+
+snapshot:
+  path: db/financial.sqlite
+  sha256: ec45f11d8568fa4dcc2ce60594a37fd9db643d6b0fc01b4a61090faeea21eba0
+
+runtime:
+  adapter: controller          # controller = packaged runtime; replay = harness self-test only
+  planner: gemini              # SQLGUARD_PLANNER; key from GEMINI_API_KEY, model from SQLGUARD_GEMINI_MODEL
+  policy: business_financial_v1  # SQLGUARD_POLICY; must define every task role (operator, analyst, credit_officer)
+  schema_source: sqlite
+
+repetitions: 3
+seeds: [42, 123, 2026]
+seed_use: task order within each repetition; not a model sampling seed
+
+configs:
+  - id: d2-agent
+    ablation_role: repair_enabled
+    description: Planner may repair SQL from gate/database feedback within the budget
+    budget:
+      max_sql_attempts: 3
+      max_retries: 2
+      max_llm_calls: 6
+      max_tool_calls: 8
+      query_timeout_s: 3.0
+      run_timeout_s: 60.0
+  - id: d2-no-reflection
+    ablation_role: repair_disabled
+    description: Single SQL attempt; no repair from feedback
+    budget:
+      max_sql_attempts: 1
+      max_retries: 2
+      max_llm_calls: 6
+      max_tool_calls: 8
+      query_timeout_s: 3.0
+      run_timeout_s: 60.0
+
+smoke:
+  tasks: [D2-L01, D2-A01, D2-M01, D2-I01]
+  repetitions: 1

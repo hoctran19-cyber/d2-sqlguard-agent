@@ -2,8 +2,9 @@
 // Item đang chọn được lưu trên phần hash của URL:
 //   /home#/query            -> trang Query (mặc định, item đầu tiên của sidebar)
 //   /home#/database/<bảng>  -> dữ liệu của bảng tương ứng
-// Role nghiệp vụ (data_access = false) chỉ thấy thông báo truy vấn đang tắt + menu Info/Logout;
-// trang không gọi /api/tables, /api/sql, /api/query (server cũng trả 403).
+// Role nghiệp vụ có data_access = true khi server đã bật policy nghiệp vụ: thấy Query và các bảng
+// policy cấp cho role. Ngược lại (data_access = false) chỉ thấy thông báo truy vấn đang tắt +
+// menu Info/Logout; trang không gọi /api/tables, /api/sql, /api/query (server cũng trả 403).
 
 import { api } from "../api.js";
 import { h, spinner } from "../dom.js";
@@ -20,7 +21,10 @@ export async function renderHomePage(root) {
     renderRestrictedHome(root, user);
     return;
   }
-  const tables = (await api.tables()).tables;
+  const tableInfo = await api.tables();
+  const tables = tableInfo.tables;
+  // Role nghiệp vụ: server gửi câu SQL mặc định hợp lệ theo policy (không dùng SELECT *).
+  const defaultSql = tableInfo.default_sql || {};
 
   const sidebar = createSidebar({ user, tables });
   const content = h("section", { class: "content" });
@@ -32,7 +36,7 @@ export async function renderHomePage(root) {
     const table = hash.startsWith("/database/") ? hash.slice("/database/".length) : null;
     if (table && tables.includes(table)) {
       sidebar.setActive(hash);
-      renderDatabasePage(content, table);
+      renderDatabasePage(content, table, defaultSql[table]);
     } else if (hash === "/query") {
       sidebar.setActive("/query");
       renderQueryPage(content, user);

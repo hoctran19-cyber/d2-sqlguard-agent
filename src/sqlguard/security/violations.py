@@ -69,6 +69,25 @@ VIOLATIONS: dict[str, ViolationInfo] = {
         True,
         _POLICY,
     ),
+    # Aggregate-only roles
+    "aggregate_key_exposed": ViolationInfo(
+        "Query outputs, groups or filters by an individual key; keys may only join or be counted",
+        False,
+        _POLICY,
+    ),
+    "aggregate_measure_exposed": ViolationInfo(
+        "Query uses a measure outside an aggregate function", True, _POLICY
+    ),
+    "constant_projection": ViolationInfo(
+        "Every output column must be read from a table; constant placeholders are not answers",
+        False,
+        _POLICY,
+    ),
+    "aggregate_required": ViolationInfo(
+        "This role may only receive aggregate results; group by allowed dimensions and aggregate",
+        True,
+        _POLICY,
+    ),
     # Context
     "unknown_role": ViolationInfo("The caller role is not recognized", False, _POLICY),
     "gate_error": ViolationInfo("The security gate failed", False, _POLICY),

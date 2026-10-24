@@ -75,7 +75,9 @@ def test_validate_replay_has_no_blocker(tmp_path):
 
 
 def test_validate_blocks_on_snapshot_and_runtime_policy(tmp_path):
-    experiment = cli.load_experiment(_experiment(tmp_path, **{"snapshot.sha256": "0" * 64}))
+    # bird_financial_v1 defines teller/credit/risk, none of the suite's task roles.
+    changes = {"snapshot.sha256": "0" * 64, "runtime.policy": "bird_financial_v1"}
+    experiment = cli.load_experiment(_experiment(tmp_path, **changes))
     statuses = _statuses(cli.validate(experiment))
     assert statuses["snapshot"] == "fail"
     assert statuses["runtime_policy"] == "fail"  # Task roles absent from the runtime policy.
@@ -84,8 +86,13 @@ def test_validate_blocks_on_snapshot_and_runtime_policy(tmp_path):
     assert unknown["tasks"] == "fail"
 
 
+def test_default_runtime_policy_defines_every_task_role(tmp_path):
+    experiment = cli.load_experiment(_experiment(tmp_path))
+    assert _statuses(cli.validate(experiment))["runtime_policy"] == "ok"
+
+
 def test_blocked_run_writes_nothing(tmp_path):
-    path = _experiment(tmp_path)
+    path = _experiment(tmp_path, **{"runtime.policy": "bird_financial_v1"})
     output = tmp_path / "blocked"
     assert (
         runner.main(
@@ -163,3 +170,13 @@ def test_summarize_rebuilds_reports(tmp_path):
 def test_legacy_bootstrap_command_still_runs(tmp_path):
     assert runner.main(["bootstrap", "--output", str(tmp_path / "legacy")]) == 0
     assert (tmp_path / "legacy" / "summary.json").is_file()
+
+
+def test_validate_checks_the_gemini_key_without_calling_the_api(tmp_path, monkeypatch):
+    path = _experiment(tmp_path, **{"runtime.planner": "gemini"})
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    assert _statuses(cli.validate(cli.load_experiment(path)))["runtime_planner"] == "fail"
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key-not-real")
+    checks = cli.validate(cli.load_experiment(path))
+    assert _statuses(checks)["runtime_planner"] == "ok"
+    assert all("test-key-not-real" not in detail for _, _, detail in checks)
