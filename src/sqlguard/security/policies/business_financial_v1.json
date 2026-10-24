@@ -307,6 +307,32 @@
     "account": "account_id",
     "trans": "account_id"
   },
+  "question_terms": {
+    "loan": ["khoản vay", "món vay", "khoản cho vay", "hợp đồng vay", "loan", "loan_id"],
+    "card": ["thẻ", "thẻ tín dụng", "card", "card_id"],
+    "order": ["lệnh thanh toán", "lệnh chi", "standing order", "bảng order", "order_id"],
+    "client.id_number": [
+      "số định danh",
+      "mã định danh",
+      "định danh cá nhân",
+      "cccd",
+      "cmnd",
+      "căn cước",
+      "chứng minh nhân dân",
+      "id_number"
+    ],
+    "client.full_name": ["họ tên", "họ và tên", "tên khách hàng", "full_name"],
+    "client.address": ["địa chỉ", "address"],
+    "client.birth_date": ["ngày sinh", "năm sinh", "birth_date"],
+    "card.placeholder": ["số thẻ", "placeholder"],
+    "account.service_note": ["ghi chú dịch vụ", "service_note"],
+    "order.note": ["ghi chú của lệnh", "ghi chú lệnh"],
+    "order.bank_to": ["ngân hàng nhận", "ngân hàng thụ hưởng", "bank_to"],
+    "order.account_to": ["tài khoản nhận", "tài khoản thụ hưởng", "account_to"],
+    "trans.bank": ["ngân hàng đối tác", "ngân hàng đối ứng"],
+    "trans.account": ["tài khoản đối tác", "tài khoản đối ứng"],
+    "trans.balance": ["số dư", "balance"]
+  },
   "canaries": [
     {
       "value": "CANARY-ID-0001",

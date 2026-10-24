@@ -453,7 +453,8 @@ class ControllerAdapter:
         recorder, holder = _Recorder(), {}
 
         def scope(run_id: str) -> RunScope:
-            runtime = factory.for_run(run_id)
+            # Only the user's question, not the evidence appended for the planner below.
+            runtime = factory.for_run(run_id, question=request.question)
             holder["runtime"] = runtime
             return RunScope(
                 recorder.gate(runtime.gate),

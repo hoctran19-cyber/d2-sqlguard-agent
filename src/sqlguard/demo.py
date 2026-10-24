@@ -200,7 +200,7 @@ async def run_demo_report(
 
         # Gate/tool scope vẫn gắn với run_id của controller; MCP chỉ thay registry phía thực thi.
         def scope_factory(run_id: str) -> RunScope:
-            built = query_factory.for_run(run_id)
+            built = query_factory.for_run(run_id, question=question)
             scoped_tools: ToolRegistry = (
                 _RecordingRegistry(registry, tool_sql)
                 if registry is not None

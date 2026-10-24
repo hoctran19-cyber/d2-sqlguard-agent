@@ -166,12 +166,23 @@ class QueryRuntimeFactory:
     source: str = "postgres"
 
     def for_run(
-        self, run_id: str, *, user_id: str = "cli", request_mode: str = "nl"
+        self,
+        run_id: str,
+        *,
+        user_id: str = "cli",
+        request_mode: str = "nl",
+        question: str | None = None,
     ) -> QueryRuntime:
         # run_id là của AgentState, nên audit của gate/tool khớp với run của controller.
         # user_id/request_mode do backend truyền từ phiên đăng nhập, chỉ dùng cho audit.
+        # question là câu hỏi gốc của người dùng (không kèm evidence), để cả hai gate kiểm tra
+        # câu SQL có còn trả lời đúng câu hỏi không; không ghi vào audit.
         context = SecurityContext(
-            role=self.role, user_id=user_id, run_id=run_id, request_mode=request_mode
+            role=self.role,
+            user_id=user_id,
+            run_id=run_id,
+            request_mode=request_mode,
+            question=question,
         )
         return QueryRuntime(
             context=context,

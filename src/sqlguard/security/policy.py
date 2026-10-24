@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import unicodedata
 from dataclasses import dataclass, field
 from importlib import resources
 from pathlib import Path
@@ -80,6 +81,9 @@ class RolePolicy:
     # table -> column that identifies the individual a row belongs to (client or account); used
     # to count how many individuals an aggregate group covers.
     cohort_keys: dict[str, str] = field(default_factory=dict)
+    # Reviewed words that name a table ("loan") or column ("client.id_number") in a question;
+    # the gate refuses or withholds when a named resource is forbidden and the SQL skips it.
+    question_terms: dict[str, tuple[str, ...]] = field(default_factory=dict)
 
     def note_column(self, table: str) -> str:
         return self.note_columns.get(table.casefold(), "note")
@@ -167,6 +171,12 @@ class RolePolicy:
             cohort_keys = {
                 _fold(table): _fold(column) for table, column in data.get("cohort_keys", {}).items()
             }
+            question_terms = {
+                _fold(resource): tuple(
+                    unicodedata.normalize("NFC", str(term)).strip().casefold() for term in terms
+                )
+                for resource, terms in data.get("question_terms", {}).items()
+            }
         except (KeyError, TypeError, AttributeError) as error:
             raise PolicyError("Policy file is missing a required field") from error
 
@@ -204,6 +214,12 @@ class RolePolicy:
             column = note_columns.get(table, "note")
             if not {key, column} <= tables.get(table, frozenset()):
                 raise PolicyError(f"Note target {table!r} needs columns {key!r} and {column!r}")
+        for resource, terms in question_terms.items():
+            table, _, column = resource.partition(".")
+            if table not in tables or (column and column not in tables[table]):
+                raise PolicyError(f"Question terms reference an unknown resource {resource!r}")
+            if not terms or not all(terms):
+                raise PolicyError(f"Question terms for {resource!r} must be non-empty strings")
         return cls(
             version=version,
             schema=schema,
@@ -221,6 +237,7 @@ class RolePolicy:
             dialect=dialect,
             column_kinds=column_kinds,
             cohort_keys=cohort_keys,
+            question_terms=question_terms,
         )
 
     @classmethod
