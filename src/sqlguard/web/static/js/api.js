@@ -47,4 +47,14 @@ export const api = {
   },
   queryRunEvents: (runId) =>
     request("GET", `/api/query/history/${encodeURIComponent(runId)}`),
+  // Attack Lab (chỉ admin, chỉ khi server bật lab).
+  labTargets: () => request("GET", "/api/lab/targets"),
+  labNote: (target) => request("GET", `/api/lab/notes/${encodeURIComponent(target)}`),
+  labHistory: (target) => request("GET", `/api/lab/notes/${encodeURIComponent(target)}/history`),
+  labSave: (target, content, expectedRevision) =>
+    request("PUT", `/api/lab/notes/${encodeURIComponent(target)}`,
+      { content, expected_revision: expectedRevision }),
+  labRestore: (target, expectedRevision) =>
+    request("POST", `/api/lab/notes/${encodeURIComponent(target)}/restore`,
+      { expected_revision: expectedRevision }),
 };

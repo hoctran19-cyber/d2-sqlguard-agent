@@ -983,6 +983,14 @@ demo số 4 (Attack Lab) và số liệu injection.
 
 ### 16.2 P1-A: Attack Lab trên web (L6–L8)
 
+**Trạng thái (24/10 tối): A1–A4 xong.** `web/lab.py`, 5 route (thêm `GET /api/lab/targets` cho UI),
+trang `pages/lab.js`, thẻ cảnh báo `possible_injection` (Query và Database), dòng revision ở trang
+Query. 17 test mới trong `tests/unit/test_web_attack_lab.py`; kiểm bằng trình duyệt thật (hai phiên,
+payload `<img onerror>` hiện dạng chữ, không có popup/lỗi JS). Sửa kèm theo: admin có lab bật vẫn vào
+được `/home` khi DB legacy vắng (trước đó `/api/tables` lỗi làm cả trang không tải), và
+`/api/me` thêm khóa `lab_enabled`. `lab_revisions` lấy ở tầng web, nên trace/event của run chưa chứa
+revision (phần L8 cần Học).
+
 | ID | Việc | File chính | Done khi | Ước lượng |
 | --- | --- | --- | --- | --- |
 | A1 | `LabRunGuard`: đếm run nghiệp vụ đang chạy quanh `answer_business_question`; run mới chờ lần ghi lab đang diễn ra. Truyền `run_active=guard.active` vào `attack_lab_from_env`. Khởi động app với `SQLGUARD_ATTACK_LAB_ENABLED=1` mà cấu hình sai thì **dừng ngay** (fail closed), không âm thầm tắt lab | `web/query_service.py`, `web/app.py` | Test: ghi khi có run → 409 `run_active`; run mới chờ ghi | 1h |

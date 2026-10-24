@@ -60,6 +60,7 @@ export function createSidebar({ user, tables, dataAccess = true }) {
       ? h("nav", { class: "sidebar-nav" },
         link("/query", "Query"),
         user.role === "admin" ? link("/history", "Query History") : null,
+        user.role === "admin" && user.lab_enabled ? link("/lab", "Attack Lab") : null,
         h("div", { class: "nav-title" }, "Database"),
         tables.map((table) => link(`/database/${table}`, table, "nav-sub")),
       )
