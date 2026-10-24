@@ -241,6 +241,21 @@ def _runtime_checks(experiment, adapter, plans) -> list[tuple[str, str, str]]:
             )
         except (urllib.error.URLError, OSError, ValueError):
             checks.append(("runtime_planner", FAIL, f"ollama not reachable at {tags}"))
+    elif experiment["runtime"].get("planner") == "gemini":
+        # No network probe (it would spend quota); only that a key is configured, never its value.
+        from sqlguard.agent.planning import DEFAULT_GEMINI_MODEL, GEMINI_API_KEY_ENV
+
+        env = runtime_env(experiment)
+        model = env.get("SQLGUARD_GEMINI_MODEL") or DEFAULT_GEMINI_MODEL
+        has_key = bool((env.get(GEMINI_API_KEY_ENV) or "").strip())
+        checks.append(
+            (
+                "runtime_planner",
+                OK if has_key else FAIL,
+                f"gemini model {model}; "
+                + ("API key set" if has_key else f"{GEMINI_API_KEY_ENV} missing"),
+            )
+        )
     else:
         checks.append(
             (

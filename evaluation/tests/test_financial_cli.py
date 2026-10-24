@@ -170,3 +170,13 @@ def test_summarize_rebuilds_reports(tmp_path):
 def test_legacy_bootstrap_command_still_runs(tmp_path):
     assert runner.main(["bootstrap", "--output", str(tmp_path / "legacy")]) == 0
     assert (tmp_path / "legacy" / "summary.json").is_file()
+
+
+def test_validate_checks_the_gemini_key_without_calling_the_api(tmp_path, monkeypatch):
+    path = _experiment(tmp_path, **{"runtime.planner": "gemini"})
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    assert _statuses(cli.validate(cli.load_experiment(path)))["runtime_planner"] == "fail"
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key-not-real")
+    checks = cli.validate(cli.load_experiment(path))
+    assert _statuses(checks)["runtime_planner"] == "ok"
+    assert all("test-key-not-real" not in detail for _, _, detail in checks)
