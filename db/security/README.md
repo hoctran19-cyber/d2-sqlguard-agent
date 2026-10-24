@@ -5,7 +5,7 @@ Database-enforced least privilege for SQLGuard. It is independent of the AST gat
 | File | Purpose | Run as |
 | --- | --- | --- |
 | `00_reference_schema.sql` | Synthetic reference schema of policy `d2-synthetic-v1` (draft until D2-03 freezes the dataset) | migration owner |
-| `10_roles.sql` | Group roles with column-level `GRANT SELECT`, login roles with read-only/timeout/search_path settings, note-writer for the Attack Lab. Idempotent. | migration owner / superuser |
+| `10_roles.sql` | Group roles with column-level `GRANT SELECT`, login roles with read-only/timeout/search_path settings. Idempotent. (The Attack Lab no longer uses PostgreSQL; see `docs/threat-model/ATTACK_LAB.md`.) | migration owner / superuser |
 | `20_reference_seed.sql` | Minimal rows with canaries in every forbidden column and the injection notes used by `evaluation/datasets/security/injection_cases_v1.json` (customers #2–3, orders #1–3); customer #1 keeps a clean note | migration owner |
 | `30_local_role_passwords.sh` | Local-only bootstrap of the three agent login passwords from environment variables; uses psql literal quoting | local PostgreSQL container |
 
@@ -16,7 +16,6 @@ Database-enforced least privilege for SQLGuard. It is independent of the AST gat
 | `sqlguard_sales_app` | `sqlguard_sales_ro` | `SELECT` on Sales columns only; read-only sessions; 3 s statement timeout |
 | `sqlguard_finance_app` | `sqlguard_finance_ro` | `SELECT` on Finance columns only; same session settings |
 | `sqlguard_ops_app` | `sqlguard_ops_ro` | `SELECT` on Operations columns only; no `payments` |
-| `sqlguard_note_writer_app` | `sqlguard_note_writer` | `UPDATE (note)` on `orders`/`customers` only; used by `AttackLab` via `PostgresNoteWriter` (`SQLGUARD_DB_DSN_NOTE_WRITER`), never by the agent. Design: `docs/threat-model/ATTACK_LAB.md` |
 
 Nobody gets `identity_number`, `CREATE` on `public`, `TEMPORARY` on the database, or `pg_sleep*`.
 
@@ -68,7 +67,7 @@ set +a
 
 `PostgresExecutor.from_env()` reads `SQLGUARD_DB_DSN_SALES`,
 `SQLGUARD_DB_DSN_FINANCE`, and `SQLGUARD_DB_DSN_OPERATIONS`, then selects only the DSN matching
-the authenticated role. Do not configure the note-writer DSN as an agent query credential.
+the authenticated role.
 
 The security integration tests can use the local admin connection (the test fixture creates
 and drops its own temporary databases):

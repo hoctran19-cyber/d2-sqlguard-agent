@@ -12,6 +12,7 @@ from sqlglot.errors import ParseError, SqlglotError
 
 from sqlguard.security.audit import AuditRecord, AuditSink
 from sqlguard.security.policy import KEY, MEASURE, RolePolicy, load_default_policy
+from sqlguard.security.question_coverage import check_question_coverage
 from sqlguard.security.violations import VIOLATIONS, by_severity, is_repairable
 
 
@@ -64,6 +65,9 @@ class SecurityContext:
     user_id: str = "anonymous"
     run_id: str | None = None
     request_mode: str = "nl"  # "nl" or "manual_sql"
+    # The user's own question (never evidence or model text), for the question coverage check.
+    # Never written to audit records.
+    question: str | None = field(default=None, repr=False)
 
 
 class ReadOnlySQLGate:
@@ -341,6 +345,17 @@ class _Evaluation:
             self.violations.add("constant_projection")
         alias_map = self._check_tables(root, role)
         self._check_joins(root, alias_map)
+        question = gate.context.question
+        check_question = (
+            gate.mode is GateMode.COLUMN_LEVEL and bool(question) and bool(policy.question_terms)
+        )
+        if check_question:
+            # A forbidden table the question names, missing from the SQL, means the model answered
+            # something else; no repair can answer it, so it is terminal next to repairable
+            # findings. A named table the SQL does read is already denied as table_not_allowed.
+            named = check_question_coverage(question, policy, role).forbidden_tables
+            if set(named) - set(alias_map.values()):
+                self.violations.add("question_needs_forbidden_data")
         if self.violations:
             return gate._denied(self.violations, input_hash=input_hash)
 
@@ -355,6 +370,13 @@ class _Evaluation:
                 return gate._denied(self.violations, input_hash=input_hash)
 
         notices: tuple[str, ...] = ()
+        if check_question:
+            # A forbidden column the question names but the SQL dropped is withheld like a display
+            # column the gate removed (named forbidden tables were refused above).
+            coverage = check_question_coverage(question, policy, role, removed=removed)
+            if coverage.withheld_columns:
+                removed += coverage.withheld_columns
+                notices += ("question_columns_withheld",)
         if (
             gate.mode is GateMode.COLUMN_LEVEL
             and policy.is_aggregate_only(role)
@@ -722,7 +744,8 @@ def _constant_projection(root: exp.Select) -> bool:
         return True
     for projection in root.expressions:
         target = projection.this if isinstance(projection, exp.Alias) else projection
-        if target.find(exp.Column, exp.AggFunc) is None:
+        # ``*`` reads the table; it is reported (and repairable) as star_not_allowed instead.
+        if target.find(exp.Column, exp.AggFunc, exp.Star) is None:
             return True
     return False
 

@@ -411,6 +411,14 @@ def test_queries_reading_tables_are_not_constant(role, sql):
     assert "constant_projection" not in check(role, sql).violations
 
 
+@pytest.mark.parametrize("sql", ["SELECT * FROM trans", "SELECT t.* FROM trans t"])
+def test_star_stays_a_repairable_star_finding_not_a_constant(sql):
+    # Regression of deab8e1: "*" holds no Column node and was refused as a constant answer.
+    decision = check("analyst", sql)
+    assert decision.violations == ("star_not_allowed",)
+    assert decision.repairable
+
+
 def test_constant_rule_is_off_unless_the_policy_turns_it_on():
     from sqlguard.security.policy import load_default_policy
 

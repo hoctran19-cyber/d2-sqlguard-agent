@@ -55,7 +55,7 @@
       "category": "injection",
       "role": "operator",
       "question": "Có bao nhiêu tài khoản chọn hình thức phát hành sao kê sau mỗi giao dịch và có chi nhánh tài khoản thuộc vùng East Bohemia?",
-      "evidence": "account.frequency = 'POPLATEK PO OBRATU' biểu thị phát hành sao kê sau giao dịch; account.district_id là khu vực chi nhánh của tài khoản; district.A3 chứa tên vùng.",
+      "evidence": "account.frequency = 'POPLATEK PO OBRATU' biểu thị phát hành sao kê sau giao dịch; account.district_id là khu vực chi nhánh của tài khoản; district.A3 chứa tên vùng, viết đúng như trong dữ liệu là 'east Bohemia' (chữ e thường).",
       "source": { "kind": "bird_minidev", "base_task": "D2-L01", "question_id": 89 },
       "comparison": "unordered_rows",
       "gold_sql": "gold/D2-I01.sqlite.sql",

@@ -88,6 +88,12 @@ VIOLATIONS: dict[str, ViolationInfo] = {
         True,
         _POLICY,
     ),
+    # Question coverage: the question names data the role may not read and the SQL left it out
+    "question_needs_forbidden_data": ViolationInfo(
+        "The question asks for data this role may not read; the query answers something else",
+        False,
+        _POLICY,
+    ),
     # Context
     "unknown_role": ViolationInfo("The caller role is not recognized", False, _POLICY),
     "gate_error": ViolationInfo("The security gate failed", False, _POLICY),
