@@ -14,7 +14,7 @@ from typing import Any
 
 from sqlguard.mcp.tools import ToolError
 from sqlguard.security.gate import SecurityContext
-from sqlguard.security.policy import RolePolicy, load_default_policy
+from sqlguard.security.policy import DIMENSION, KEY, MEASURE, RolePolicy, load_default_policy
 
 SQL_SUBSET_RULES = (
     "One read-only SELECT statement only; no INSERT/UPDATE/DELETE/DDL, no SELECT INTO.",
@@ -23,9 +23,28 @@ SQL_SUBSET_RULES = (
     "No WITH/CTE, subqueries, UNION/INTERSECT/EXCEPT or window functions.",
     "Use only the listed tables, columns and functions.",
     "LIMIT and OFFSET must be integer literals; at most {max_rows} rows are returned.",
-    "Use half-open date ranges: <date column> >= DATE '2026-09-01' AND "
-    "<date column> < DATE '2026-10-01'.",
 )
+_DATE_RULES = {
+    "postgres": (
+        "Use half-open date ranges: <date column> >= DATE '2026-09-01' AND "
+        "<date column> < DATE '2026-10-01'."
+    ),
+    "sqlite": (
+        "Dates are TEXT 'YYYY-MM-DD'. Use half-open ranges such as <date column> >= "
+        "'1997-01-01' AND <date column> < '1998-01-01'; group by month or year with "
+        "strftime('%Y-%m', <date column>) or strftime('%Y', <date column>)."
+    ),
+}
+_DIALECT_NAMES = {"postgresql": "PostgreSQL", "sqlite": "SQLite"}
+AGGREGATE_ONLY_RULES = (
+    "This role receives aggregate results only: every selected value is an aggregate "
+    "(COUNT, SUM, AVG, MIN, MAX) or a dimension that is also in GROUP BY.",
+    "[key] columns may only appear in JOIN conditions and as COUNT(<key>) or "
+    "COUNT(DISTINCT <key>); never select, group, filter or order by them.",
+    "[measure] columns may only appear inside an aggregate function, also in WHERE/HAVING.",
+    "[dimension] columns may be selected when grouped, and used to filter and order.",
+)
+_KIND_LABELS = {KEY: "key", DIMENSION: "dimension", MEASURE: "measure"}
 _MIN_TOKEN = 3
 # Frequent question words that would otherwise match almost every description.
 _STOPWORDS = frozenset(
@@ -43,36 +62,51 @@ def schema_for_role(policy: RolePolicy, role: str, query: str | None = None) -> 
     tables = []
     for table in selected:
         notes = policy.descriptions.get(table, {})
-        columns = [
-            {"name": column, "description": notes.get(column, "")}
-            for column in sorted(policy.allowed_columns(role, table))
-        ]
+        columns = []
+        for column in sorted(policy.allowed_columns(role, table)):
+            entry = {"name": column, "description": notes.get(column, "")}
+            kind = policy.column_kind(role, table, column)
+            if kind is not None:
+                entry["kind"] = _KIND_LABELS[kind]
+            columns.append(entry)
         tables.append({"name": table, "description": notes.get("_table", ""), "columns": columns})
     joins = sorted(
         " = ".join(f"{t}.{c}" for t, c in sorted(pair))
         for pair in policy.foreign_keys
         if all(t in selected and policy.can_read(role, t, c) for t, c in pair)
     )
+    rules = [rule.format(max_rows=policy.limits.max_rows) for rule in SQL_SUBSET_RULES]
+    rules.append(_DATE_RULES[policy.dialect])
+    if policy.is_aggregate_only(role):
+        rules.extend(AGGREGATE_ONLY_RULES)
     return {
         "policy_version": policy.version,
         "role": role,
-        "dialect": "postgresql",
+        "dialect": "postgresql" if policy.dialect == "postgres" else policy.dialect,
         "tables": tables,
         "joins": joins,
         "functions": sorted(policy.functions),
         "max_rows": policy.limits.max_rows,
-        "rules": [rule.format(max_rows=policy.limits.max_rows) for rule in SQL_SUBSET_RULES],
+        "rules": rules,
     }
+
+
+def dialect_name(schema: dict[str, Any]) -> str:
+    return _DIALECT_NAMES[schema["dialect"]]
 
 
 def render_schema(schema: dict[str, Any]) -> str:
     """Compact text form for the system/context prompt."""
-    lines = [f"Schema for role {schema['role']} (PostgreSQL, policy {schema['policy_version']}):"]
+    lines = [
+        f"Schema for role {schema['role']} ({dialect_name(schema)}, "
+        f"policy {schema['policy_version']}):"
+    ]
     for table in schema["tables"]:
         lines.append(f"- {table['name']}: {table['description']}".rstrip(": "))
         for column in table["columns"]:
+            kind = f" [{column['kind']}]" if column.get("kind") else ""
             suffix = f" -- {column['description']}" if column["description"] else ""
-            lines.append(f"    {column['name']}{suffix}")
+            lines.append(f"    {column['name']}{kind}{suffix}")
     if schema["joins"]:
         lines.append("Join conditions: " + "; ".join(schema["joins"]))
     lines.append("Functions: " + ", ".join(schema["functions"]))

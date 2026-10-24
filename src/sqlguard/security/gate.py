@@ -11,7 +11,7 @@ from sqlglot import exp
 from sqlglot.errors import ParseError, SqlglotError
 
 from sqlguard.security.audit import AuditRecord, AuditSink
-from sqlguard.security.policy import RolePolicy, load_default_policy
+from sqlguard.security.policy import KEY, MEASURE, RolePolicy, load_default_policy
 from sqlguard.security.violations import VIOLATIONS, by_severity, is_repairable
 
 
@@ -309,8 +309,9 @@ class _Evaluation:
                 notices=("gate_off",),
             )
 
+        dialect = policy.dialect
         try:
-            statements = sqlglot.parse(sql, read="postgres")
+            statements = sqlglot.parse(sql, read=dialect)
         except (SqlglotError, RecursionError, ValueError):
             return gate._denied(("parse_error",), input_hash=input_hash)
         if len(statements) != 1 or statements[0] is None:
@@ -342,16 +343,18 @@ class _Evaluation:
         referenced_columns: tuple[str, ...] = ()
         if gate.mode is GateMode.COLUMN_LEVEL:
             tree, removed, referenced_columns = self._check_columns(root, alias_map, role)
+            if not self.violations and policy.is_aggregate_only(role):
+                self._check_aggregate(tree, alias_map, role)
             if self.violations:
                 return gate._denied(self.violations, input_hash=input_hash)
 
         tree, notices = _enforce_limit(tree, limits.max_rows)
-        normalized = tree.sql(dialect="postgres", comments=False)
+        normalized = tree.sql(dialect=dialect, comments=False)
         try:
-            reparsed = sqlglot.parse_one(normalized, read="postgres")
+            reparsed = sqlglot.parse_one(normalized, read=dialect)
         except (SqlglotError, RecursionError, ValueError):
             reparsed = None
-        if reparsed is None or reparsed.sql(dialect="postgres", comments=False) != normalized:
+        if reparsed is None or reparsed.sql(dialect=dialect, comments=False) != normalized:
             return gate._denied(("normalization_mismatch",), input_hash=input_hash)
 
         partial = bool(removed)
@@ -455,7 +458,11 @@ class _Evaluation:
             name, schema = table.name.casefold(), table.db.casefold()
             if table.catalog:
                 self.violations.add("schema_not_allowed")
-            elif schema in _SYSTEM_SCHEMAS or schema.startswith("pg_") or name.startswith("pg_"):
+            elif (
+                schema in _SYSTEM_SCHEMAS
+                or schema.startswith("pg_")
+                or name.startswith(("pg_", "sqlite_"))
+            ):
                 self.violations.add("system_catalog")
             elif schema and schema != policy.schema:
                 self.violations.add("schema_not_allowed")
@@ -573,6 +580,66 @@ class _Evaluation:
         removed = tuple(sorted(set(forbidden_direct.values())))
         return tree, removed, tuple(sorted(readable))
 
+    # -- aggregate-only roles ----------------------------------------------------------------
+
+    def _check_aggregate(self, root: exp.Select, alias_map: dict[str, str], role: str) -> None:
+        """Aggregate-only roles get grouped/aggregated results, never individual rows.
+
+        Keys may appear only in JOIN conditions and as the direct argument of COUNT; measures
+        only inside an aggregate function; dimensions anywhere. Every projection is an aggregate
+        or a grouped expression, so SQLite's bare columns cannot return a row's value. Small
+        groups are not suppressed here (the cohort threshold is not approved yet).
+        """
+        policy = self.gate.policy
+        projections = list(root.expressions)
+        output_aliases = {
+            p.alias.casefold(): index
+            for index, p in enumerate(projections)
+            if isinstance(p, exp.Alias)
+        }
+        for column in root.find_all(exp.Column):
+            resolved = self._resolve_column(column, alias_map, output_aliases)
+            if resolved is None:
+                continue
+            kind = policy.column_kind(role, *resolved)
+            aggregate = _enclosing(column, root, exp.AggFunc)
+            if kind == KEY:
+                parent = column.parent
+                if isinstance(parent, exp.Distinct):
+                    parent = parent.parent
+                counted = isinstance(aggregate, exp.Count) and parent is aggregate
+                if not (counted or _enclosing(column, root, exp.Join) is not None):
+                    self.violations.add("aggregate_key_exposed")
+            elif kind == MEASURE and aggregate is None:
+                self.violations.add("aggregate_measure_exposed")
+
+        group = root.args.get("group")
+        keys = list(group.expressions) if group else []
+        grouped_sql = {key.sql() for key in keys}
+        grouped_columns = set()
+        grouped_indexes = {int(key.this) - 1 for key in keys if _is_int_literal(key)}
+        for key in keys:
+            if not isinstance(key, exp.Column):
+                continue
+            if not key.table and key.name.casefold() in output_aliases:
+                grouped_indexes.add(output_aliases[key.name.casefold()])
+            else:
+                grouped_columns.add(self._resolve_column(key, alias_map, output_aliases))
+        has_aggregate = False
+        for index, projection in enumerate(projections):
+            target = projection.this if isinstance(projection, exp.Alias) else projection
+            has_aggregate = has_aggregate or target.find(exp.AggFunc) is not None
+            bare = [
+                self._resolve_column(c, alias_map, output_aliases)
+                for c in target.find_all(exp.Column)
+                if _enclosing(c, root, exp.AggFunc) is None
+            ]
+            if bare and index not in grouped_indexes and target.sql() not in grouped_sql:
+                if not all(c is not None and c in grouped_columns for c in bare):
+                    self.violations.add("aggregate_required")
+        if not has_aggregate:
+            self.violations.add("aggregate_required")
+
     def _resolve_column(
         self, column: exp.Column, alias_map: dict[str, str], output_aliases: dict[str, int]
     ) -> tuple[str, str] | None:
@@ -647,6 +714,16 @@ def _clause_of(node: exp.Expression, root: exp.Select) -> str:
         if isinstance(node, exp.Group):
             return "group"
     return "select"
+
+
+def _enclosing(node: exp.Expression, root: exp.Select, kind) -> exp.Expression | None:
+    """Nearest ancestor of ``node`` below ``root`` that is an instance of ``kind``."""
+    node = node.parent
+    while node is not None and node is not root:
+        if isinstance(node, kind):
+            return node
+        node = node.parent
+    return None
 
 
 def _projection_index(node: exp.Expression, root: exp.Select) -> int:

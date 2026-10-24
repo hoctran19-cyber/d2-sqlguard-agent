@@ -10,6 +10,14 @@ from typing import Any
 DEFAULT_POLICY = "d2_synthetic_v1"
 POLICY_ENV = "SQLGUARD_POLICY"
 _DEFAULT_DOMAIN = "an internal business database"
+_DIALECTS = frozenset({"postgres", "sqlite"})
+
+# How an aggregate-only role may use a column. A role grant is either a list of columns (plain
+# reads) or a {column: kind} map using only these kinds.
+KEY = "key"  # JOIN conditions and COUNT/COUNT(DISTINCT) only; never output, grouped or filtered
+DIMENSION = "dimension"  # grouping, filtering, ordering and labels of an aggregate query
+MEASURE = "measure"  # only inside an aggregate function
+AGGREGATE_KINDS = frozenset({KEY, DIMENSION, MEASURE})
 
 
 class PolicyError(ValueError):
@@ -59,9 +67,24 @@ class RolePolicy:
     # Name of the rewritable column per note target; tables not listed use "note".
     note_columns: dict[str, str] = field(default_factory=dict)
     domain_description: str = _DEFAULT_DOMAIN
+    # SQL dialect of the target database; the gate parses and regenerates SQL in it.
+    dialect: str = "postgres"
+    # Aggregate-only roles: role -> table -> column -> kind (KEY, DIMENSION or MEASURE).
+    column_kinds: dict[str, dict[str, dict[str, str]]] = field(default_factory=dict)
 
     def note_column(self, table: str) -> str:
         return self.note_columns.get(table.casefold(), "note")
+
+    def is_aggregate_only(self, role: str) -> bool:
+        return role.casefold() in self.column_kinds
+
+    def column_kind(self, role: str, table: str, column: str) -> str | None:
+        """KEY, DIMENSION or MEASURE for an aggregate-only role; None for plain reads."""
+        return (
+            self.column_kinds.get(role.casefold(), {})
+            .get(table.casefold(), {})
+            .get(column.casefold())
+        )
 
     def has_role(self, role: str) -> bool:
         return role.casefold() in self.roles
@@ -97,13 +120,17 @@ class RolePolicy:
                 _fold(table): frozenset(_fold(column) for column in columns)
                 for table, columns in data["tables"].items()
             }
-            roles = {
-                _fold(role): {
-                    _fold(table): frozenset(_fold(column) for column in columns)
-                    for table, columns in grants.items()
-                }
-                for role, grants in data["roles"].items()
-            }
+            roles: dict[str, dict[str, frozenset[str]]] = {}
+            column_kinds: dict[str, dict[str, dict[str, str]]] = {}
+            for role, grants in data["roles"].items():
+                roles[_fold(role)] = {}
+                for table, columns in grants.items():
+                    roles[_fold(role)][_fold(table)] = frozenset(_fold(c) for c in columns)
+                    if isinstance(columns, dict):
+                        column_kinds.setdefault(_fold(role), {})[_fold(table)] = {
+                            _fold(column): str(kind) for column, kind in columns.items()
+                        }
+            dialect = str(data.get("dialect", "postgres")).casefold()
             foreign_keys = frozenset(
                 frozenset((_split_column(left), _split_column(right)))
                 for left, right in data.get("foreign_keys", ())
@@ -131,12 +158,21 @@ class RolePolicy:
         except (KeyError, TypeError, AttributeError) as error:
             raise PolicyError("Policy file is missing a required field") from error
 
+        if dialect not in _DIALECTS:
+            raise PolicyError(f"Unsupported dialect {dialect!r}")
         for role, grants in roles.items():
             for table, columns in grants.items():
                 if table not in tables:
                     raise PolicyError(f"Role {role!r} references unknown table {table!r}")
                 if not columns <= tables[table]:
                     raise PolicyError(f"Role {role!r} grants unknown columns on {table!r}")
+        for role, by_table in column_kinds.items():
+            # A role is either plain-read or aggregate-only on every table, never a mix.
+            if set(by_table) != set(roles[role]):
+                raise PolicyError(f"Role {role!r} mixes plain and aggregate-only grants")
+            for kinds in by_table.values():
+                if not set(kinds.values()) <= AGGREGATE_KINDS:
+                    raise PolicyError(f"Role {role!r} uses an unknown column kind")
         for pair in foreign_keys:
             for table, column in pair:
                 if column not in tables.get(table, ()):
@@ -165,6 +201,8 @@ class RolePolicy:
             note_targets=note_targets,
             note_columns=note_columns,
             domain_description=domain_description,
+            dialect=dialect,
+            column_kinds=column_kinds,
         )
 
     @classmethod

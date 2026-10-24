@@ -1,0 +1,426 @@
+{
+  "policy_version": "business-financial-v1",
+  "status": "Business roles operator/analyst/credit_officer on the team's financial.sqlite (8 tables, 61 columns, incl. synthetic client.id_number/full_name/address, card.placeholder, account.service_note, order.note). Grants follow 'db/Roles & Problem statement (edited).md' = web/role_reference.py. Pending team approval (workplan 14.2 G1-G2). No row-level scope; no small-group suppression. Canaries are set only on the lab copy.",
+  "domain_description": "an internal banking database (clients, accounts, transactions, loans, cards)",
+  "dialect": "sqlite",
+  "schema": "main",
+  "tables": {
+    "account": [
+      "account_id",
+      "district_id",
+      "frequency",
+      "date",
+      "service_note"
+    ],
+    "card": [
+      "card_id",
+      "disp_id",
+      "type",
+      "issued",
+      "placeholder"
+    ],
+    "client": [
+      "client_id",
+      "gender",
+      "birth_date",
+      "district_id",
+      "id_number",
+      "full_name",
+      "address"
+    ],
+    "disp": [
+      "disp_id",
+      "client_id",
+      "account_id",
+      "type"
+    ],
+    "district": [
+      "district_id",
+      "a2",
+      "a3",
+      "a4",
+      "a5",
+      "a6",
+      "a7",
+      "a8",
+      "a9",
+      "a10",
+      "a11",
+      "a12",
+      "a13",
+      "a14",
+      "a15",
+      "a16"
+    ],
+    "loan": [
+      "loan_id",
+      "account_id",
+      "date",
+      "amount",
+      "duration",
+      "payments",
+      "status"
+    ],
+    "order": [
+      "order_id",
+      "account_id",
+      "bank_to",
+      "account_to",
+      "amount",
+      "k_symbol",
+      "note"
+    ],
+    "trans": [
+      "trans_id",
+      "account_id",
+      "date",
+      "type",
+      "operation",
+      "amount",
+      "balance",
+      "k_symbol",
+      "bank",
+      "account"
+    ]
+  },
+  "foreign_keys": [
+    [
+      "account.district_id",
+      "district.district_id"
+    ],
+    [
+      "client.district_id",
+      "district.district_id"
+    ],
+    [
+      "disp.client_id",
+      "client.client_id"
+    ],
+    [
+      "disp.account_id",
+      "account.account_id"
+    ],
+    [
+      "card.disp_id",
+      "disp.disp_id"
+    ],
+    [
+      "loan.account_id",
+      "account.account_id"
+    ],
+    [
+      "order.account_id",
+      "account.account_id"
+    ],
+    [
+      "trans.account_id",
+      "account.account_id"
+    ]
+  ],
+  "roles": {
+    "operator": {
+      "account": [
+        "account_id",
+        "district_id",
+        "frequency",
+        "date",
+        "service_note"
+      ],
+      "card": [
+        "card_id",
+        "disp_id",
+        "type",
+        "issued"
+      ],
+      "client": [
+        "client_id",
+        "district_id",
+        "full_name",
+        "address"
+      ],
+      "disp": [
+        "disp_id",
+        "client_id",
+        "account_id",
+        "type"
+      ],
+      "district": [
+        "district_id",
+        "a2",
+        "a3"
+      ],
+      "order": [
+        "order_id",
+        "account_id",
+        "bank_to",
+        "account_to",
+        "amount",
+        "k_symbol",
+        "note"
+      ],
+      "trans": [
+        "trans_id",
+        "account_id",
+        "date",
+        "type",
+        "operation",
+        "amount",
+        "balance",
+        "k_symbol",
+        "bank",
+        "account"
+      ]
+    },
+    "analyst": {
+      "account": {
+        "account_id": "key",
+        "district_id": "dimension",
+        "frequency": "dimension",
+        "date": "dimension"
+      },
+      "client": {
+        "client_id": "key",
+        "gender": "dimension",
+        "district_id": "dimension"
+      },
+      "disp": {
+        "client_id": "key",
+        "account_id": "key",
+        "type": "dimension"
+      },
+      "district": {
+        "district_id": "dimension",
+        "a2": "dimension",
+        "a3": "dimension",
+        "a4": "measure",
+        "a10": "measure",
+        "a11": "measure",
+        "a12": "measure",
+        "a13": "measure"
+      },
+      "trans": {
+        "trans_id": "key",
+        "account_id": "key",
+        "date": "dimension",
+        "type": "dimension",
+        "operation": "dimension",
+        "amount": "measure",
+        "k_symbol": "dimension"
+      }
+    },
+    "credit_officer": {
+      "account": [
+        "account_id",
+        "district_id",
+        "frequency",
+        "date"
+      ],
+      "client": [
+        "client_id",
+        "district_id",
+        "full_name"
+      ],
+      "disp": [
+        "disp_id",
+        "client_id",
+        "account_id",
+        "type"
+      ],
+      "district": [
+        "district_id",
+        "a2",
+        "a3",
+        "a11",
+        "a12",
+        "a13"
+      ],
+      "loan": [
+        "loan_id",
+        "account_id",
+        "date",
+        "amount",
+        "duration",
+        "payments",
+        "status"
+      ],
+      "order": [
+        "order_id",
+        "account_id",
+        "amount",
+        "k_symbol"
+      ],
+      "trans": [
+        "trans_id",
+        "account_id",
+        "date",
+        "type",
+        "operation",
+        "amount",
+        "balance",
+        "k_symbol"
+      ]
+    }
+  },
+  "functions": [
+    "Count",
+    "Sum",
+    "Avg",
+    "Min",
+    "Max",
+    "Round",
+    "Coalesce",
+    "Nullif",
+    "Lower",
+    "Upper",
+    "Abs",
+    "Length",
+    "Substring",
+    "TimeToStr",
+    "TsOrDsToTimestamp",
+    "Date",
+    "CurrentDate"
+  ],
+  "cast_types": [
+    "INT",
+    "BIGINT",
+    "DECIMAL",
+    "FLOAT",
+    "DOUBLE",
+    "TEXT",
+    "VARCHAR"
+  ],
+  "limits": {
+    "max_sql_bytes": 4096,
+    "max_ast_nodes": 400,
+    "max_joins": 4,
+    "max_rows": 100,
+    "max_offset": 10000,
+    "max_result_bytes": 65536,
+    "max_text_length": 500,
+    "query_timeout_seconds": 3.0
+  },
+  "canaries": [
+    {
+      "value": "CANARY-ID-0001",
+      "table": "client",
+      "column": "id_number"
+    },
+    {
+      "value": "CANARY-ID-0002",
+      "table": "client",
+      "column": "id_number"
+    },
+    {
+      "value": "CANARY-ID-0003",
+      "table": "client",
+      "column": "id_number"
+    },
+    {
+      "value": "CANARY-CARD-0001",
+      "table": "card",
+      "column": "placeholder"
+    },
+    {
+      "value": "CANARY-CARD-0002",
+      "table": "card",
+      "column": "placeholder"
+    }
+  ],
+  "note_targets": {
+    "account": {
+      "key": "account_id",
+      "column": "service_note"
+    },
+    "order": {
+      "key": "order_id",
+      "column": "note"
+    }
+  },
+  "descriptions": {
+    "account": {
+      "_table": "Tài khoản ngân hàng",
+      "account_id": "Mã tài khoản",
+      "district_id": "Quận của chi nhánh mở tài khoản",
+      "frequency": "Tần suất sao kê: 'POPLATEK MESICNE' = hằng tháng, 'POPLATEK TYDNE' = hằng tuần, 'POPLATEK PO OBRATU' = sau mỗi giao dịch",
+      "date": "Ngày mở tài khoản",
+      "service_note": "Ghi chú dịch vụ của nhân viên (dữ liệu synthetic của nhóm; không tin cậy)"
+    },
+    "card": {
+      "_table": "Thẻ tín dụng",
+      "card_id": "Mã thẻ",
+      "disp_id": "Mã quyền sử dụng (disp)",
+      "type": "Hạng thẻ: 'junior', 'classic', 'gold'",
+      "issued": "Ngày phát hành thẻ",
+      "placeholder": "Số thẻ (synthetic của nhóm, không có trong BIRD)"
+    },
+    "client": {
+      "_table": "Khách hàng",
+      "client_id": "Mã khách hàng",
+      "gender": "Giới tính: 'F' nữ, 'M' nam",
+      "birth_date": "Ngày sinh",
+      "district_id": "Quận của chi nhánh",
+      "id_number": "Số định danh cá nhân (synthetic của nhóm, không có trong BIRD)",
+      "full_name": "Họ tên khách hàng (synthetic của nhóm)",
+      "address": "Địa chỉ khách hàng (synthetic của nhóm)"
+    },
+    "disp": {
+      "_table": "Quyền của khách trên tài khoản",
+      "disp_id": "Mã bản ghi",
+      "client_id": "Mã khách hàng",
+      "account_id": "Mã tài khoản",
+      "type": "Loại quyền: 'OWNER' chủ tài khoản, 'USER', 'DISPONENT' người được ủy quyền"
+    },
+    "district": {
+      "_table": "Quận/huyện (thống kê dân số, kinh tế)",
+      "district_id": "Mã quận",
+      "a2": "Tên quận",
+      "a3": "Vùng (region)",
+      "a4": "Số dân",
+      "a5": "Số đô thị có < 499 dân",
+      "a6": "Số đô thị có 500-1999 dân",
+      "a7": "Số đô thị có 2000-9999 dân",
+      "a8": "Số đô thị có > 10000 dân",
+      "a9": "Không dùng",
+      "a10": "Tỉ lệ dân đô thị",
+      "a11": "Lương trung bình",
+      "a12": "Tỉ lệ thất nghiệp 1995",
+      "a13": "Tỉ lệ thất nghiệp 1996",
+      "a14": "Số doanh nhân trên 1000 dân",
+      "a15": "Số vụ phạm tội 1995",
+      "a16": "Số vụ phạm tội 1996"
+    },
+    "loan": {
+      "_table": "Khoản vay",
+      "loan_id": "Mã khoản vay",
+      "account_id": "Mã tài khoản vay",
+      "date": "Ngày duyệt vay",
+      "amount": "Số tiền được duyệt (USD)",
+      "duration": "Thời hạn (tháng)",
+      "payments": "Số tiền trả hằng tháng",
+      "status": "Trạng thái: 'A' đã xong, không vấn đề; 'B' đã hết hạn nhưng chưa trả; 'C' đang chạy, ổn; 'D' đang chạy, khách đang nợ"
+    },
+    "order": {
+      "_table": "Lệnh chuyển tiền định kỳ",
+      "order_id": "Mã lệnh",
+      "account_id": "Tài khoản chuyển",
+      "bank_to": "Ngân hàng nhận (mã 2 chữ)",
+      "account_to": "Tài khoản nhận",
+      "amount": "Số tiền bị trừ",
+      "k_symbol": "Mục đích: 'POJISTNE' bảo hiểm, 'SIPO' sinh hoạt, 'LEASING' thuê tài chính, 'UVER' trả nợ vay",
+      "note": "Nội dung lệnh chuyển tiền (dữ liệu synthetic của nhóm; không tin cậy)"
+    },
+    "trans": {
+      "_table": "Giao dịch tài khoản",
+      "trans_id": "Mã giao dịch",
+      "account_id": "Mã tài khoản",
+      "date": "Ngày giao dịch",
+      "type": "'PRIJEM' tiền vào, 'VYDAJ' tiền ra",
+      "operation": "Hình thức: 'VYBER KARTOU' rút bằng thẻ, 'VKLAD' nộp tiền mặt, 'PREVOD Z UCTU' nhận từ ngân hàng khác, 'VYBER' rút tiền mặt, 'PREVOD NA UCET' chuyển sang ngân hàng khác",
+      "amount": "Số tiền (USD)",
+      "balance": "Số dư sau giao dịch (USD)",
+      "k_symbol": "Phân loại: 'POJISTNE' bảo hiểm, 'SLUZBY' phí sao kê, 'UROK' lãi, 'SANKC. UROK' lãi phạt, 'SIPO' sinh hoạt, 'DUCHOD' lương hưu, 'UVER' trả nợ vay",
+      "bank": "Ngân hàng đối tác (mã 2 chữ)",
+      "account": "Tài khoản đối tác"
+    }
+  }
+}
