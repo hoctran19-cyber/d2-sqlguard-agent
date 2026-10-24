@@ -80,6 +80,13 @@ def schema_for_role(policy: RolePolicy, role: str, query: str | None = None) -> 
     rules.append(_DATE_RULES[policy.dialect])
     if policy.is_aggregate_only(role):
         rules.extend(AGGREGATE_ONLY_RULES)
+        if policy.limits.min_group_size > 0:
+            rules.append(
+                f"Groups covering fewer than {policy.limits.min_group_size} clients or accounts "
+                "are withheld from results. If the question asks for individual rows, say that "
+                "this role only receives aggregates instead of splitting groups until they "
+                "describe one client or account."
+            )
     return {
         "policy_version": policy.version,
         "role": role,

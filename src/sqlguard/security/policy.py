@@ -41,6 +41,9 @@ class PolicyLimits:
     max_result_bytes: int = 65_536
     max_text_length: int = 500
     query_timeout_seconds: float = 3.0
+    # Aggregate-only roles: groups covering fewer distinct individuals (cohort_keys) are
+    # withheld. 0 disables it. The value is provisional until the team approves it.
+    min_group_size: int = 0
 
 
 @dataclass(frozen=True)
@@ -71,6 +74,9 @@ class RolePolicy:
     dialect: str = "postgres"
     # Aggregate-only roles: role -> table -> column -> kind (KEY, DIMENSION or MEASURE).
     column_kinds: dict[str, dict[str, dict[str, str]]] = field(default_factory=dict)
+    # table -> column that identifies the individual a row belongs to (client or account); used
+    # to count how many individuals an aggregate group covers.
+    cohort_keys: dict[str, str] = field(default_factory=dict)
 
     def note_column(self, table: str) -> str:
         return self.note_columns.get(table.casefold(), "note")
@@ -155,6 +161,9 @@ class RolePolicy:
                 else:
                     note_targets[_fold(table)] = _fold(target)
             domain_description = str(data.get("domain_description", _DEFAULT_DOMAIN))
+            cohort_keys = {
+                _fold(table): _fold(column) for table, column in data.get("cohort_keys", {}).items()
+            }
         except (KeyError, TypeError, AttributeError) as error:
             raise PolicyError("Policy file is missing a required field") from error
 
@@ -183,6 +192,11 @@ class RolePolicy:
         for table, entries in descriptions.items():
             if table not in tables or not set(entries) - {"_table"} <= tables[table]:
                 raise PolicyError(f"Description references an unknown table or column: {table}")
+        for table, column in cohort_keys.items():
+            if column not in tables.get(table, frozenset()):
+                raise PolicyError(f"Cohort key {table}.{column} is not in the schema")
+        if limits.min_group_size < 0:
+            raise PolicyError("min_group_size cannot be negative")
         for table, key in note_targets.items():
             column = note_columns.get(table, "note")
             if not {key, column} <= tables.get(table, frozenset()):
@@ -203,6 +217,7 @@ class RolePolicy:
             domain_description=domain_description,
             dialect=dialect,
             column_kinds=column_kinds,
+            cohort_keys=cohort_keys,
         )
 
     @classmethod

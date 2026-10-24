@@ -266,6 +266,7 @@ async def run_business_sql(
         "total_pages": 1,
         "truncated": envelope["truncated"],
         "removed_columns": envelope.get("removed_columns", []),
+        "small_groups_withheld": envelope.get("small_groups_withheld", False),
         "policy_version": envelope.get("policy_version"),
     }
 
@@ -678,6 +679,12 @@ async def _answer_with_policy(
     else:
         status = "failed"
         reason = _safe_runtime_reason(state.failure_reason)
+    small_groups_withheld = bool(succeeded and result.get("small_groups_withheld"))
+    if small_groups_withheld:
+        reason += (
+            f" Các nhóm có dưới {policy.limits.min_group_size} khách hàng/tài khoản đã bị ẩn "
+            "để không lộ dữ liệu cá thể."
+        )
 
     page_result = None
     if succeeded and result is not None:
@@ -700,6 +707,7 @@ async def _answer_with_policy(
         "role": role,
         "policy_version": policy.version,
         "omitted_fields": removed,
+        "small_groups_withheld": small_groups_withheld,
         "question": question,
         "planner": recording_planner.provider,
         "model": recording_planner.model,
