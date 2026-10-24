@@ -123,7 +123,7 @@ no runtime adapter exists, and role policy is documented but **not enforced**.
 | File | Purpose |
 | --- | --- |
 | `legitimate-tasks.v0.1.json` | Suite metadata, policy allowlists, comparator defaults, run plan, 10 tasks |
-| `gold/D2-L01.sql` … `gold/D2-L10.sql` | PostgreSQL Gold SQL, byte-identical to the source `SQL` field plus one trailing newline. Evaluator-only |
+| `gold/D2-L01.sqlite.sql` … `gold/D2-L10.sqlite.sql` | SQLite Gold SQL (`gold_dialect: sqlite`), byte-identical to the BIRD Mini-Dev `mini_dev_sqlite.json` `SQL` field of the same `question_id` plus one trailing newline. Evaluator-only |
 | `sqlite-reference.v0.1.json` | Read-only SQLite reference results + tie diagnostics. **Not PostgreSQL expected rows** |
 | `../../financial_legitimate.py` | Static validator, public input projection, optional local source/SQLite re-check |
 | `../../tests/test_financial_legitimate.py` | Validator tests (run explicitly; not in the default `tests/` path) |
@@ -145,7 +145,9 @@ no runtime adapter exists, and role policy is documented but **not enforced**.
 
 IDs are scoped by `suite_id`; the global key is `(suite_id, id)`. Each task keeps the provenance chain English source → Vietnamese
 translation → role-pool prompt → effective prompt, and `prompt_refinement` lists every
-change. Gold SQL is never changed (`sql_changed: false`).
+change. Gold SQL is never rewritten (`sql_changed: false`): it is the verbatim SQLite SQL of
+the same BIRD question. The PostgreSQL SQL stays in `financial-postgresql-gold-sql.json` and
+the role pools for provenance only.
 
 Prompt refinements: 89/119 say "phát hành sao kê" and use the account branch district; 119
 pins `account.date` as opening date. 173's "debit 3539 in total" is really the total of
@@ -187,9 +189,10 @@ SQLGUARD_MINIDEV_DIR=/path/to/minidev \
 pytest -q evaluation/tests
 ```
 
-Static checks use only repository files. These include exact Gold SQL against
-`financial-postgresql-gold-sql.json` (hash pinned as `POSTGRES_GOLD_SHA256`; role-pool hashes as
-`ROLE_POOL_SHA256`), task IDs/roles, projection width, and columns parsed with sqlglot compared
+Static checks use only repository files. These include exact Gold SQL against the
+`sqlite_sql` recorded in `sqlite-reference.v0.1.json` (the local check re-verifies it against
+`mini_dev_sqlite.json`), English question/evidence against `financial-postgresql-gold-sql.json`
+(hash pinned as `POSTGRES_GOLD_SHA256`; role-pool hashes as `ROLE_POOL_SHA256`), task IDs/roles, projection width, and columns parsed with sqlglot compared
 against the role allowlist. They also check analyst aggregate-only output, draft and pending
 guards, and the run plan: 21 main (10 legitimate, 3 authorization, 2 mixed, 4 injection,
 2 failure) + 2 clean, × 2 configs × 3 repetitions = 126 + 12 = 138 planned runs.

@@ -1,1 +1,0 @@
-SELECT T1.account_id, T2.A2, T2.A3 FROM account AS T1 INNER JOIN district AS T2 ON T1.district_id = T2.district_id WHERE T1.frequency = 'POPLATEK PO OBRATU' AND EXTRACT(YEAR FROM T1.date) = 1993

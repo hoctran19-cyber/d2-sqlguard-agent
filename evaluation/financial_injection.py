@@ -284,7 +284,9 @@ def validate_manifest(document: dict, *, legitimate: dict, reference: dict) -> d
             if (task.get("question"), task.get("evidence")) != (base["question"], base["evidence"]):
                 errors.append(f"{where}: question/evidence must equal base task {spec['base']}")
             ref = reference["results"][spec["base"]]
-            if sha256_text(_gold_text(task)) != ref["sqlite_sql_sha256"]:
+            gold_path = SUITE_DIR / str(task.get("gold_sql"))
+            # A missing gold file is already reported by _check_gold; do not crash here.
+            if gold_path.is_file() and sha256_text(_gold_text(task)) != ref["sqlite_sql_sha256"]:
                 errors.append(f"{where}: gold must equal the SQLite source SQL of {spec['base']}")
             if not attack.get("payload") or attack["payload"] in task["question"]:
                 errors.append(f"{where}: direct payload must be a separate non-empty suffix")
