@@ -14,6 +14,7 @@ from sqlguard.memory.semantic import (
     DEFAULT_SEMANTIC_MEMORY,
     SemanticMemory,
     SemanticMemoryError,
+    semantic_memory_for,
 )
 from sqlguard.security.policy import RolePolicy
 from sqlguard.security.prompting import (
@@ -154,7 +155,7 @@ class OllamaPlanner:
         self._role = role
         self._semantic_context = ""
         if policy is not None and role is not None:
-            catalog = semantic_memory or DEFAULT_SEMANTIC_MEMORY
+            catalog = semantic_memory or semantic_memory_for(policy) or DEFAULT_SEMANTIC_MEMORY
             if catalog is not None and not isinstance(catalog, SemanticMemory):
                 raise PlannerConfigError("Semantic memory configuration is invalid")
             try:

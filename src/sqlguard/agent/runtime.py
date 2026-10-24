@@ -30,11 +30,12 @@ from sqlguard.agent.planning import OllamaPlanner, Planner, PlannerConfigError, 
 from sqlguard.agent.postgres_schema import PostgresSchemaAdapter, SchemaAdapterError
 from sqlguard.agent.schema import SchemaContext
 from sqlguard.agent.sqlite_schema import SQLITE_PATH_ENV, SQLiteSchemaAdapter
-from sqlguard.memory.semantic import DEFAULT_SEMANTIC_MEMORY
+from sqlguard.memory.semantic import BUSINESS_POLICY_VERSION, semantic_memory_for
 from sqlguard.security.audit import AuditSink, InMemoryAuditSink, JsonlAuditSink
 from sqlguard.security.gate import PolicySQLGate, SecurityContext
 from sqlguard.security.policy import RolePolicy, load_default_policy
 from sqlguard.security.postgres import DSN_ENV_PREFIX, PostgresExecutor
+from sqlguard.security.schema_preflight import preflight_financial_sqlite
 from sqlguard.security.service import ExecutorError, QueryExecutor, SecureSqlTool, find_leaks
 from sqlguard.security.sqlite import SQLiteExecutor
 
@@ -80,7 +81,7 @@ async def create_planner_for_role(
         policy = policy or load_default_policy()
         if not policy.has_role(role):
             raise SchemaAdapterError("schema_unknown_role")
-        if policy.version != DEFAULT_SEMANTIC_MEMORY.policy_version:
+        if semantic_memory_for(policy) is None:
             raise PlannerConfigError("Semantic memory is incompatible with the role policy")
         return OllamaPlanner.from_env(env, role=role, policy=policy)
     # Từ đây phải nạp schema: thiếu role thì từ chối, tuyệt đối không dùng schema không lọc.
@@ -90,7 +91,7 @@ async def create_planner_for_role(
     policy = policy or load_default_policy()
     if not policy.has_role(role):
         raise SchemaAdapterError("schema_unknown_role")
-    if policy.version != DEFAULT_SEMANTIC_MEMORY.policy_version:
+    if semantic_memory_for(policy) is None:
         raise PlannerConfigError("Semantic memory is incompatible with the role policy")
     # Adapter tự kiểm tra role có trong policy, lấy DSN theo role và lọc schema theo RolePolicy.
     if schema_loader is not None:
@@ -224,6 +225,9 @@ def build_query_runtime_factory(
             raise QueryRuntimeError("query_sqlite_path_missing")
         if not os.path.isfile(os.path.expanduser(path)):
             raise QueryRuntimeError("query_sqlite_db_missing")
+        # The business policy is only valid on the reviewed schema: fail closed on drift.
+        if policy.version == BUSINESS_POLICY_VERSION and not preflight_financial_sqlite(path).valid:
+            raise QueryRuntimeError("query_sqlite_schema_mismatch")
         if executor is None:
             try:
                 # Authorizer của executor dựng từ cùng policy với gate.
