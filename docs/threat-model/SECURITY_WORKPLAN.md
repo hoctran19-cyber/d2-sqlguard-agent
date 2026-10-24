@@ -639,7 +639,8 @@ So với `qwen2.5:3b`: câu 1 từ 5 bản nháp/176 s xuống 1 bản nháp/5 s
 
 **Chạy suite Financial của Kiệt qua runtime thật (24/10, nhánh `feat/d2-integration`):**
 
-Adapter `evaluation/financial_runtime.py` (`293512d`) chạy từng task qua đúng đường của CLI/web:
+Adapter `evaluation/financial_runtime.py` (`293512d`, đã gỡ sau đó, xem cuối mục) chạy từng task
+qua đúng đường của CLI/web:
 planner → `PolicySQLGate` → `SecureSqlTool` → `SQLiteExecutor` (authorizer), policy
 `business_financial_v1`, role của task là role tin cậy, DB `db/financial.sqlite` (SHA-256
 `ec45f11d…eba0`, trùng snapshot Kiệt ghim). Planner chỉ nhận `question` + `evidence`. Chấm bằng
@@ -672,10 +673,14 @@ Kiểm k = 5 (F5): không task legitimate nào của analyst bị ẩn sai (L05�
 với analyst, một phép đếm bằng 0 hiện thành "không có dòng".
 Chưa có: bộ injection (Kiệt đã merge PR #17 vào `main`, đã merge vào nhánh này ở `1e6229e`; vẫn
 cần Attack Lab SQLite P1-6). Runner mới của Kiệt (`evaluation/financial_runner.py`,
-`ControllerAdapter`) làm cùng việc với `financial_runtime.py` nhưng `evaluation/experiments/d2.yaml`
-đang chọn policy `bird_financial_v1` (không có role `operator`/`analyst`/`credit_officer`, health
-check báo `runtime_policy: FAIL`) và `qwen3:8b`; cần đổi sang `business_financial_v1` trước khi
-dùng runner này cho số liệu report.
+`ControllerAdapter`, hợp đồng `financial-result.v1`) là runner chính từ nay; `financial_runtime.py`
+đã gỡ. Đã sửa `ControllerAdapter` (chờ Kiệt review): `answer_text` để `None` (trước đây là
+envelope thô của tool), `notice` cho câu trả lời partial (cùng câu với web), cột bị gate bỏ ghi
+thành event `blocked` không thực thi, tên cột bịa không làm hỏng event, `rows_truncated` tính cả
+nhóm bị ẩn (F5), `values_modified` tính cả text bị sanitizer cắt, `authorization_context_unchanged`
+đo từ context của run, `evaluator_review` điền từ dữ kiện runtime, `describe()` ghi model Gemini.
+`evaluation/experiments/d2.yaml` đổi sang `business_financial_v1`; vẫn chọn `qwen3:8b` (chưa cài
+trên máy này) và DB ở `data/bird/financial.sqlite`, cần chốt trước khi chạy số liệu report.
 
 **Kế hoạch còn lại:**
 

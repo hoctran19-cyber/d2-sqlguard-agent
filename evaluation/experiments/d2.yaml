@@ -15,7 +15,7 @@ runtime:
   planner: ollama              # SQLGUARD_PLANNER
   model: qwen3:8b              # SQLGUARD_OLLAMA_MODEL
   ollama_url: http://localhost:11434/api/chat
-  policy: bird_financial_v1    # SQLGUARD_POLICY; must define every task role to run the suite
+  policy: business_financial_v1  # SQLGUARD_POLICY; must define every task role (operator, analyst, credit_officer)
   schema_source: sqlite
 
 repetitions: 3
