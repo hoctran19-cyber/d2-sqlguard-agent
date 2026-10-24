@@ -170,7 +170,8 @@ bản sao lab và sidecar. Chỉ process web có quyền đó, agent thì không
 
 **Trạng thái 24/10:** L1–L5 xong và đã commit, kèm CLI `show`/`history`/`save`/`restore` và
 `attack_lab_from_env`. L6, L7 xong (A1, A2, A4); L8 xong phần web (A3: `lab_revisions` trong kết
-quả query), chưa ghi vào trace của run. L9 chưa làm.
+quả query), chưa ghi vào trace của run. L9 xong phía adapter (24/10, `ControllerAdapter` dùng `create_lab_copy` + `AttackLab.save`
+mỗi run indirect, xóa bản sao sau run); Kiệt cần review.
 
 Thứ tự: L1 → L2 → L3 → L5 → L4 là phần security (khoảng 4h), làm trong ngày 26/10. L6–L7 cũng do
 Khang làm, vì đã làm P1-8 ở web. L8 cần Học review vì đụng `agent/`. Nếu L6–L8 không kịp trước
