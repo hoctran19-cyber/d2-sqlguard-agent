@@ -5,6 +5,7 @@ accepted for each role that may read its columns, and denied for every other rol
 """
 
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -68,10 +69,44 @@ def test_overlay_and_forbidden_columns_per_role():
         return PolicySQLGate(SecurityContext(role), POLICY).check(sql)
 
     for role in ROLES:
-        assert check(role, "SELECT national_id FROM client").violations == ("column_forbidden",)
-        assert check(role, "SELECT client_id, note FROM client").allowed
+        for sql in (
+            "SELECT id_number FROM client",
+            "SELECT address FROM client",
+            "SELECT placeholder FROM card",
+        ):
+            assert check(role, sql).violations == ("column_forbidden",), (role, sql)
+        assert check(role, "SELECT client_id, full_name FROM client").allowed
+        assert check(role, "SELECT account_id, service_note FROM account").allowed
+        assert check(role, 'SELECT order_id, note FROM "order"').allowed
+        assert check(role, "SELECT note FROM trans").violations == ("column_unknown",)
     assert check("credit", "SELECT birth_date FROM client").allowed
     assert not check("risk", "SELECT birth_date FROM client").allowed
     assert check("teller", "SELECT amount FROM loan").violations == ("table_not_allowed",)
     assert check("risk", "SELECT bank, account FROM trans").allowed
     assert not check("credit", 'SELECT bank_to FROM "order"').allowed
+
+
+def test_canaries_sit_in_columns_no_role_may_read():
+    assert {(c.table, c.column) for c in POLICY.canaries} == {
+        ("client", "id_number"),
+        ("card", "placeholder"),
+    }
+    for role in ROLES:
+        assert POLICY.canaries_for(role) == POLICY.canaries
+
+
+def test_note_targets_use_the_synthetic_note_columns():
+    assert POLICY.note_targets == {"account": "account_id", "order": "order_id"}
+    assert POLICY.note_column("account") == "service_note"
+    assert POLICY.note_column("order") == "note"
+
+
+def test_postgres_grants_match_the_policy():
+    """db/bird_financial/10_roles.sql must grant exactly the policy's columns per role."""
+    sql = (ROOT / "db/bird_financial/10_roles.sql").read_text(encoding="utf-8")
+    grants = {role: {} for role in ROLES}
+    pattern = r'GRANT SELECT \(([^)]*)\)\s+ON "?(\w+)"? TO sqlguard_(\w+)_ro;'
+    for columns, table, role in re.findall(pattern, sql):
+        grants[role][table] = frozenset(c.strip() for c in columns.split(","))
+
+    assert grants == {role: POLICY.roles[role] for role in ROLES}

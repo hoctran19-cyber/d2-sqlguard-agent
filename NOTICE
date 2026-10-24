@@ -8,5 +8,6 @@ licensed under CC BY-SA 4.0 (https://creativecommons.org/licenses/by-sa/4.0/):
 - db/bird_financial/00_schema.sql and src/sqlguard/security/policies/bird_financial_v1.json:
   the "financial" schema and column descriptions (translated to Vietnamese).
 
-The security overlay (client.national_id, client.note, trans.note and their values) is not part
-of BIRD. Derived data in these files is shared under the same CC BY-SA 4.0 license.
+The team's synthetic columns (client.id_number, client.full_name, client.address,
+card.placeholder, account.service_note, order.note and their values) and the canaries planted
+in them are not part of BIRD. Derived data in these files is shared under the same CC BY-SA 4.0 license.

@@ -56,7 +56,12 @@ class RolePolicy:
     descriptions: dict[str, dict[str, str]] = field(default_factory=dict)
     # Free-text columns the Attack Lab may rewrite: table -> primary key column.
     note_targets: dict[str, str] = field(default_factory=dict)
+    # Name of the rewritable column per note target; tables not listed use "note".
+    note_columns: dict[str, str] = field(default_factory=dict)
     domain_description: str = _DEFAULT_DOMAIN
+
+    def note_column(self, table: str) -> str:
+        return self.note_columns.get(table.casefold(), "note")
 
     def has_role(self, role: str) -> bool:
         return role.casefold() in self.roles
@@ -114,9 +119,14 @@ class RolePolicy:
                 _fold(table): {_fold(key): str(text) for key, text in entries.items()}
                 for table, entries in data.get("descriptions", {}).items()
             }
-            note_targets = {
-                _fold(table): _fold(key) for table, key in data.get("note_targets", {}).items()
-            }
+            # A target is either the key column (note column "note") or {"key": ..., "column": ...}.
+            note_targets, note_columns = {}, {}
+            for table, target in data.get("note_targets", {}).items():
+                if isinstance(target, dict):
+                    note_targets[_fold(table)] = _fold(target["key"])
+                    note_columns[_fold(table)] = _fold(target.get("column", "note"))
+                else:
+                    note_targets[_fold(table)] = _fold(target)
             domain_description = str(data.get("domain_description", _DEFAULT_DOMAIN))
         except (KeyError, TypeError, AttributeError) as error:
             raise PolicyError("Policy file is missing a required field") from error
@@ -138,8 +148,9 @@ class RolePolicy:
             if table not in tables or not set(entries) - {"_table"} <= tables[table]:
                 raise PolicyError(f"Description references an unknown table or column: {table}")
         for table, key in note_targets.items():
-            if not {key, "note"} <= tables.get(table, frozenset()):
-                raise PolicyError(f"Note target {table!r} needs columns {key!r} and 'note'")
+            column = note_columns.get(table, "note")
+            if not {key, column} <= tables.get(table, frozenset()):
+                raise PolicyError(f"Note target {table!r} needs columns {key!r} and {column!r}")
         return cls(
             version=version,
             schema=schema,
@@ -152,6 +163,7 @@ class RolePolicy:
             canaries=canaries,
             descriptions=descriptions,
             note_targets=note_targets,
+            note_columns=note_columns,
             domain_description=domain_description,
         )
 
