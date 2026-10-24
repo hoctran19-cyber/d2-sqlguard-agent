@@ -119,6 +119,7 @@ def test_business_user_login_mapping(client, username):
         "role_label": label,
         "home": "/home",
         "data_access": False,
+        "lab_enabled": False,
     }
     assert client.get("/api/me").json() == body
 

@@ -14,7 +14,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from collections import OrderedDict
+from dataclasses import asdict
 from pathlib import Path
 from uuid import UUID
 
@@ -34,6 +36,8 @@ from sqlguard.observability.events import (
     SQLiteEventStore,
 )
 from sqlguard.observability.trace import assess_trace, serialize_trace_event
+from sqlguard.security.attack_lab import AttackLab, LabError, attack_lab_from_env
+from sqlguard.security.audit import JsonlAuditSink
 from sqlguard.web.auth import (
     ADMIN_ROLE,
     BUSINESS_ROLES,
@@ -52,6 +56,7 @@ from sqlguard.web.database import (
     QueryTimeout,
     resolve_db_path,
 )
+from sqlguard.web.lab import LabRunGuard, lab_http_error, lab_revisions
 from sqlguard.web.query_service import (
     BusinessSqlDenied,
     WebQueryConfigurationError,
@@ -95,6 +100,12 @@ def create_app(db_path: Path | None = None) -> FastAPI:
     live_events = LiveEventHub()
     app.state.live_events = live_events
     run_owners: OrderedDict[str, str] = OrderedDict()
+    lab_guard = LabRunGuard()
+    # Attack Lab: tắt mặc định. Bật mà cấu hình sai thì LabError làm app không khởi động.
+    audit_path = os.environ.get("SQLGUARD_AUDIT_PATH")
+    lab = attack_lab_from_env(
+        audit=JsonlAuditSink(audit_path) if audit_path else None, run_active=lab_guard.active
+    )
 
     # ---------- Hàm tiện ích dùng chung ----------
 
@@ -151,6 +162,8 @@ def create_app(db_path: Path | None = None) -> FastAPI:
             "role_label": ROLE_LABELS.get(user.role, user.role),
             "home": user.home,
             "data_access": has_data_access(user),
+            # Chỉ admin thấy trang Attack Lab, và chỉ khi lab đã bật ở server.
+            "lab_enabled": lab is not None and user.role == ADMIN_ROLE,
         }
 
     async def read_json(request: Request) -> dict:
@@ -513,13 +526,18 @@ def create_app(db_path: Path | None = None) -> FastAPI:
             live_sink = LiveEventSink(live_events)
         try:
             if user.role in BUSINESS_ROLES:
-                answer = await answer_business_question(
-                    question,
-                    user.role,
-                    user_id=user.username,
-                    run_id=run_id,
-                    live_sink=live_sink,
-                )
+                async with lab_guard.run():
+                    # Revision note lúc bắt đầu run; guard chặn lab ghi trong lúc run đang chạy.
+                    revisions = lab_revisions(lab)
+                    answer = await answer_business_question(
+                        question,
+                        user.role,
+                        user_id=user.username,
+                        run_id=run_id,
+                        live_sink=live_sink,
+                    )
+                if revisions is not None:
+                    answer["lab_revisions"] = revisions
             else:
                 answer = await answer_question(
                     database,
@@ -574,6 +592,79 @@ def create_app(db_path: Path | None = None) -> FastAPI:
         finally:
             if run_id is not None:
                 live_events.complete(run_id)
+
+    # ---------- Attack Lab (chỉ admin; xem docs/threat-model/ATTACK_LAB.md) ----------
+
+    def lab_or_404() -> AttackLab:
+        if lab is None:
+            raise HTTPException(404, lab_http_error(LabError("lab_disabled"))[1])
+        return lab
+
+    def lab_failure(error: LabError) -> HTTPException:
+        status, message = lab_http_error(error)
+        return HTTPException(status, message)
+
+    def lab_int(payload: dict, name: str, *, default: int | None = None) -> int:
+        value = payload.get(name, default)
+        if type(value) is not int or value < 0:
+            raise HTTPException(422, f"{name} phải là số nguyên >= 0")
+        return value
+
+    @app.get("/api/lab/targets")
+    def lab_targets(user: User = Depends(require_admin)):
+        return {"targets": lab_or_404().targets}
+
+    @app.get("/api/lab/notes/{target}")
+    async def lab_get(target: str, user: User = Depends(require_admin)):
+        try:
+            return await lab_or_404().get(target)
+        except LabError as error:
+            raise lab_failure(error) from None
+
+    @app.get("/api/lab/notes/{target}/history")
+    def lab_history(target: str, user: User = Depends(require_admin)):
+        service = lab_or_404()
+        if target not in service.targets:
+            raise lab_failure(LabError("target_not_allowed"))
+        try:
+            return {"target": target, "history": [asdict(r) for r in service.history(target)]}
+        except LabError as error:
+            raise lab_failure(error) from None
+
+    @app.put("/api/lab/notes/{target}")
+    async def lab_save(target: str, request: Request, user: User = Depends(require_admin)):
+        service = lab_or_404()
+        payload = await read_json(request)
+        content = payload.get("content")
+        if not isinstance(content, str):
+            raise HTTPException(422, "content phải là chuỗi")
+        expected = lab_int(payload, "expected_revision")
+        try:
+            async with lab_guard.write():
+                revision = await service.save(
+                    target, content, expected_revision=expected, user_id=user.username
+                )
+        except LabError as error:
+            raise lab_failure(error) from None
+        return asdict(revision)
+
+    @app.post("/api/lab/notes/{target}/restore")
+    async def lab_restore(target: str, request: Request, user: User = Depends(require_admin)):
+        service = lab_or_404()
+        payload = await read_json(request)
+        expected = lab_int(payload, "expected_revision")
+        to_revision = lab_int(payload, "to_revision", default=0)
+        try:
+            async with lab_guard.write():
+                revision = await service.restore(
+                    target,
+                    expected_revision=expected,
+                    user_id=user.username,
+                    to_revision=to_revision,
+                )
+        except LabError as error:
+            raise lab_failure(error) from None
+        return asdict(revision)
 
     # ---------- Gắn console Evaluation đã có vào /evaluation/ ----------
 

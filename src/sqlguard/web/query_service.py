@@ -267,6 +267,7 @@ async def run_business_sql(
         "truncated": envelope["truncated"],
         "removed_columns": envelope.get("removed_columns", []),
         "small_groups_withheld": envelope.get("small_groups_withheld", False),
+        "possible_injection": bool(envelope.get("possible_injection")),
         "policy_version": envelope.get("policy_version"),
     }
 
@@ -713,6 +714,8 @@ async def _answer_with_policy(
         "policy_version": policy.version,
         "omitted_fields": removed,
         "small_groups_withheld": small_groups_withheld,
+        # Cờ của sanitizer: có ô trông như chỉ dẫn (ví dụ payload trong note). Chỉ để cảnh báo.
+        "possible_injection": bool(succeeded and result.get("possible_injection")),
         "question": question,
         "planner": recording_planner.provider,
         "model": recording_planner.model,
