@@ -2,6 +2,7 @@
 //  - Admin (access = "full"): toàn bộ bảng/cột đọc từ database.
 //  - Role nghiệp vụ (access = "reference"): ma trận tham chiếu theo tài liệu policy, CHƯA enforce;
 //    quyền thực tế (truy vấn dữ liệu) đang tắt và được hiển thị tách riêng.
+//  - Role nghiệp vụ (access = "policy"): cùng ma trận, đang được Security Gate enforce.
 
 import { api } from "../api.js";
 import { h, spinner } from "../dom.js";
@@ -22,8 +23,9 @@ export async function openInfoDialog() {
 
   try {
     const info = await api.info();
-    const nodes = info.access === "reference" ? renderReference(info) : renderFull(info);
-    if (info.access === "reference") title.textContent = "Thông tin";
+    const matrix = info.access === "reference" || info.access === "policy";
+    const nodes = matrix ? renderReference(info) : renderFull(info);
+    if (matrix) title.textContent = "Thông tin";
     // replaceChildren biến null thành chữ "null" (khác h()), nên bỏ các phần tử rỗng trước.
     body.replaceChildren(...nodes.filter((node) => node !== null && node !== undefined));
   } catch (error) {
@@ -54,16 +56,19 @@ const BADGE_CLASS = {
   denied: "denied",
 };
 
-/** Role nghiệp vụ: quyền thực tế (tắt) trước, rồi ma trận tham chiếu từng bảng/cột. */
+/** Role nghiệp vụ: quyền thực tế (tắt hoặc theo policy) trước, rồi ma trận từng bảng/cột. */
 function renderReference(info) {
   const ref = info.reference;
   const label = (code) => ref.access_labels[code] || code;
   const badge = (code) => h("span", { class: `badge ${BADGE_CLASS[code] || ""}` }, label(code));
+  const enabled = info.effective_access.data_queries === "enabled";
 
   return [
     h("p", {}, h("b", {}, info.role_label)),
     h("div", { class: "notice-box", role: "status" },
-      h("strong", {}, "Quyền thực tế: truy vấn dữ liệu đang tắt"),
+      h("strong", {}, enabled
+        ? `Quyền thực tế: theo policy ${info.effective_access.policy_version}`
+        : "Quyền thực tế: truy vấn dữ liệu đang tắt"),
       h("p", {}, info.effective_access.reason)),
     ref.conditions.length
       ? h("div", {},

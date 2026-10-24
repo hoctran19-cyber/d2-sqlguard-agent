@@ -163,9 +163,14 @@ class QueryRuntimeFactory:
     audit: AuditSink
     source: str = "postgres"
 
-    def for_run(self, run_id: str) -> QueryRuntime:
+    def for_run(
+        self, run_id: str, *, user_id: str = "cli", request_mode: str = "nl"
+    ) -> QueryRuntime:
         # run_id là của AgentState, nên audit của gate/tool khớp với run của controller.
-        context = SecurityContext(role=self.role, user_id="cli", run_id=run_id, request_mode="nl")
+        # user_id/request_mode do backend truyền từ phiên đăng nhập, chỉ dùng cho audit.
+        context = SecurityContext(
+            role=self.role, user_id=user_id, run_id=run_id, request_mode=request_mode
+        )
         return QueryRuntime(
             context=context,
             gate=PolicySQLGate(context, self.policy, audit=self.audit),

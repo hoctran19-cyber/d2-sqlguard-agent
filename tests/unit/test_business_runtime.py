@@ -5,9 +5,9 @@ keys), so the real ``financial.sqlite`` is never needed.
 """
 
 import asyncio
-import sqlite3
 
 import pytest
+from tests.conftest import create_financial_db
 
 from sqlguard.agent.controller import AgentController, RunScope
 from sqlguard.agent.models import AgentRequest, RunStatus
@@ -20,39 +20,14 @@ from sqlguard.observability.events import InMemoryEventSink
 from sqlguard.security.gate import ReadOnlySQLGate
 from sqlguard.security.policy import load_policy
 from sqlguard.security.prompting import build_system_prompt
-from sqlguard.security.schema_preflight import FINANCIAL_FOREIGN_KEYS, FINANCIAL_SCHEMA_CONTRACT
 
 POLICY = load_policy("business_financial_v1")
 ROLES = ("operator", "analyst", "credit_officer")
 
 
-def create_financial_db(path, *, drop_column=None):
-    references = {(t, c): (rt, rc) for t, c, rt, rc in FINANCIAL_FOREIGN_KEYS}
-    canaries = {(c.table, c.column): c.value for c in POLICY.canaries}
-    with sqlite3.connect(path) as connection:
-        for table, columns in FINANCIAL_SCHEMA_CONTRACT.items():
-            ordered = sorted(c for c in columns if c != drop_column)
-            definitions = [f'"{c}"' for c in ordered] + [
-                f'FOREIGN KEY ("{c}") REFERENCES "{references[(table, c)][0]}" '
-                f'("{references[(table, c)][1]}")'
-                for c in ordered
-                if (table, c) in references
-            ]
-            connection.execute(f'CREATE TABLE "{table}" ({", ".join(definitions)})')
-            for row in (1, 2, 3):
-                values = [
-                    canaries.get((table, c.casefold()), row if c.endswith("_id") else f"v{row}")
-                    for c in ordered
-                ]
-                marks = ", ".join("?" for _ in ordered)
-                connection.execute(f'INSERT INTO "{table}" VALUES ({marks})', values)
-    connection.close()
-    return path
-
-
 @pytest.fixture
-def env(tmp_path):
-    path = create_financial_db(tmp_path / "financial.sqlite")
+def env(financial_db):
+    path = financial_db
     return {"SQLGUARD_QUERY_SOURCE": "sqlite", "SQLGUARD_SQLITE_PATH": str(path)}
 
 

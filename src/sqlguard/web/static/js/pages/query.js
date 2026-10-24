@@ -67,9 +67,11 @@ function showAsk(container, user, previousQuestion = "") {
   const samples = h("div", { class: "samples" });
   api.samples().then((data) => samples.replaceChildren(
     h("p", { class: "muted small" },
-      data.mode === "synthetic_sqlite"
-        ? `SQLite tổng hợp · planner ${data.planner} (model ${data.model}) — câu hỏi gợi ý:`
-        : `Planner ${data.planner} (chưa tích hợp LLM) chỉ hiểu các câu hỏi mẫu dưới đây:`),
+      data.mode === "business_sqlite"
+        ? `Financial · role ${data.role} · policy ${data.policy} · planner ${data.planner} (model ${data.model}) — câu hỏi gợi ý:`
+        : data.mode === "synthetic_sqlite"
+          ? `SQLite tổng hợp · planner ${data.planner} (model ${data.model}) — câu hỏi gợi ý:`
+          : `Planner ${data.planner} (chưa tích hợp LLM) chỉ hiểu các câu hỏi mẫu dưới đây:`),
     // replaceChildren không tự trải mảng nên dùng "..." để thêm từng nút.
     ...data.questions.map((question) =>
       h("button", { class: "chip", onclick: () => send(question) }, question)),
@@ -247,11 +249,12 @@ function showAnswer(container, user, answer, visualizer = null) {
         `Run ID: ${answer.run_id} · planner ${answer.planner}${answer.model ? ` · model ${answer.model}` : ""} · ${Math.round(answer.duration_ms)} ms`)) : null,
     answer.execution_status
       ? h("p", { class: "muted small" },
-        `Backend: SQLite tổng hợp · execution: ${answer.execution_status} · ${answer.row_count} dòng${answer.truncated ? " (đã giới hạn kết quả)" : ""}`)
+        `Backend: ${answer.backend === "business_sqlite" ? `SQLite Financial · role ${answer.role} · policy ${answer.policy_version}` : "SQLite tổng hợp"} · execution: ${answer.execution_status} · ${answer.row_count} dòng${answer.truncated ? " (đã giới hạn kết quả)" : ""}`)
       : null,
   );
 
-  const synthetic = answer.backend === "synthetic_sqlite";
+  // Kết quả của runtime policy chỉ để hiển thị; không gửi lại qua /api/sql.
+  const synthetic = answer.backend === "synthetic_sqlite" || answer.backend === "business_sqlite";
   const gateArea = answer.gate
     ? h("div", { class: `gate-result ${answer.gate.status === "ALLOW" ? "allowed" : "blocked"}` },
       h("strong", {}, `Security Gate: ${answer.gate.status}`),

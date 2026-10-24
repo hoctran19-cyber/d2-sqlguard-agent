@@ -4,7 +4,9 @@ Routes giao diện (UI.md):
   /            -> chuyển tới /login (chưa đăng nhập) hoặc trang chủ của user
   /login       -> form đăng nhập
   /home        -> khung sidebar + Query/Database (tài khoản admin);
-                  role nghiệp vụ chỉ có thông báo + Info tham chiếu, API dữ liệu trả 403
+                  role nghiệp vụ: Query/Database qua policy business_financial_v1 khi
+                  SQLGUARD_BUSINESS_FINANCIAL_DB đạt preflight, nếu không chỉ có thông báo +
+                  Info tham chiếu và API dữ liệu trả 403
   /evaluation/ -> console evaluation đã có (chỉ tài khoản eval)
 """
 
@@ -12,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections import OrderedDict
 from pathlib import Path
 from uuid import UUID
 
@@ -50,17 +53,25 @@ from sqlguard.web.database import (
     resolve_db_path,
 )
 from sqlguard.web.query_service import (
+    BusinessSqlDenied,
     WebQueryConfigurationError,
+    answer_business_question,
     answer_question,
     build_gate,
+    business_policy,
+    business_queries_enabled,
+    business_sample_payload,
+    business_table_payload,
     explain_denial,
     query_sample_payload,
+    run_business_sql,
 )
 from sqlguard.web.role_reference import role_reference
 
 STATIC_DIR = Path(__file__).parent / "static"
 MAX_BODY_BYTES = 64_000  # Câu hỏi/SQL đều ngắn; chặn body quá lớn.
 MAX_TEXT_LENGTH = 5_000
+MAX_TRACKED_RUNS = 1_000  # run_id -> username, để một user không đọc được stream của user khác.
 
 
 def _sse_message(event_name: str, data: dict) -> str:
@@ -83,21 +94,45 @@ def create_app(db_path: Path | None = None) -> FastAPI:
     database = FinancialDatabase(db_path or resolve_db_path())
     live_events = LiveEventHub()
     app.state.live_events = live_events
+    run_owners: OrderedDict[str, str] = OrderedDict()
 
     # ---------- Hàm tiện ích dùng chung ----------
 
     def current_user(request: Request) -> User | None:
         return sessions.get(request.cookies.get(SESSION_COOKIE))
 
+    def has_data_access(user: User) -> bool:
+        # Role nghiệp vụ chỉ được truy vấn khi DB nghiệp vụ đạt preflight (kiểm ở mỗi request).
+        return user.role == ADMIN_ROLE or (
+            user.role in BUSINESS_ROLES and business_queries_enabled()
+        )
+
     def require_admin(request: Request) -> User:
-        """Dependency cho API dữ liệu: phải đăng nhập bằng tài khoản được xem dữ liệu."""
+        """Dependency cho API chỉ dành cho admin (Query History)."""
         user = current_user(request)
         if user is None:
             raise HTTPException(401, "Chưa đăng nhập")
         if user.role != ADMIN_ROLE:
-            # Role nghiệp vụ cũng bị chặn ở đây cho tới khi có Security Gate cho policy Financial.
             raise HTTPException(403, "Tài khoản này không được xem dữ liệu")
         return user
+
+    def require_data_user(request: Request) -> User:
+        """Dependency cho API dữ liệu: admin, hoặc role nghiệp vụ khi policy runtime sẵn sàng."""
+        user = current_user(request)
+        if user is None:
+            raise HTTPException(401, "Chưa đăng nhập")
+        if not has_data_access(user):
+            raise HTTPException(403, "Tài khoản này không được xem dữ liệu")
+        return user
+
+    def claim_run(run_id: str, user: User) -> None:
+        """Run thuộc về user đầu tiên dùng run_id (stream hoặc query); user khác nhận 404."""
+        owner = run_owners.setdefault(run_id, user.username)
+        run_owners.move_to_end(run_id)
+        while len(run_owners) > MAX_TRACKED_RUNS:
+            run_owners.popitem(last=False)
+        if owner != user.username:
+            raise HTTPException(404, "Không tìm thấy lần chạy.")
 
     def require_info_user(request: Request) -> User:
         """Dependency cho popup Info: admin và ba role nghiệp vụ (không gồm evaluator)."""
@@ -115,7 +150,7 @@ def create_app(db_path: Path | None = None) -> FastAPI:
             "role": user.role,
             "role_label": ROLE_LABELS.get(user.role, user.role),
             "home": user.home,
-            "data_access": user.role == ADMIN_ROLE,
+            "data_access": has_data_access(user),
         }
 
     async def read_json(request: Request) -> dict:
@@ -247,7 +282,10 @@ def create_app(db_path: Path | None = None) -> FastAPI:
     # ---------- API dữ liệu (tài khoản admin) ----------
 
     @app.get("/api/tables")
-    def tables(user: User = Depends(require_admin)):
+    def tables(user: User = Depends(require_data_user)):
+        if user.role in BUSINESS_ROLES:
+            # Chỉ các bảng policy cấp cho role; không chạm database legacy.
+            return business_table_payload(user.role)
         return {"database": "financial", "tables": database_call(database.table_names)}
 
     @app.get("/api/info")
@@ -257,6 +295,23 @@ def create_app(db_path: Path | None = None) -> FastAPI:
         Admin: toàn bộ dữ liệu, đọc cột thật từ database. Role nghiệp vụ: ma trận tham chiếu
         tĩnh (không chạm database), tách rõ với quyền thực tế đang bị tắt.
         """
+        if user.role in BUSINESS_ROLES and business_queries_enabled():
+            version = business_policy().version
+            return {
+                "username": user.username,
+                "role": user.role,
+                "role_label": ROLE_LABELS[user.role],
+                "access": "policy",
+                "effective_access": {
+                    "data_queries": "enabled",
+                    "policy_version": version,
+                    "reason": f"Mọi truy vấn đi qua Security Gate và SQLite authorizer theo policy "
+                    f"{version}; ma trận dưới đây là nguồn của policy đó. Chưa giới hạn theo "
+                    "nhân viên phụ trách và chưa ẩn nhóm nhỏ khi tổng hợp.",
+                },
+                "note": "Quyền theo bảng/cột dưới đây đang được enforce cho role này.",
+                "reference": role_reference(user.role),
+            }
         if user.role in BUSINESS_ROLES:
             return {
                 "username": user.username,
@@ -285,13 +340,23 @@ def create_app(db_path: Path | None = None) -> FastAPI:
         }
 
     @app.post("/api/sql")
-    async def run_sql(request: Request, user: User = Depends(require_admin)):
+    async def run_sql(request: Request, user: User = Depends(require_data_user)):
         """Chạy SQL thủ công (trang Database / bảng kết quả), luôn qua Security Gate."""
         payload = await read_json(request)
         sql = text_field(payload, "sql")
         page = payload.get("page", 1)
         if type(page) is not int or page < 1:
             raise HTTPException(422, "page phải là số nguyên >= 1")
+        if user.role in BUSINESS_ROLES:
+            # Role lấy từ session; trường "role" trong body hay header đều bị bỏ qua.
+            try:
+                return await run_business_sql(sql, user.role, user.username)
+            except BusinessSqlDenied as error:
+                raise HTTPException(422, error.reason) from None
+            except QueryError:
+                raise HTTPException(400, "Database không thể hoàn tất truy vấn.") from None
+            except WebQueryConfigurationError:
+                raise HTTPException(503, "Database nghiệp vụ chưa sẵn sàng.") from None
         decision = build_gate(database_call(database.table_names)).check(sql)
         if not decision.allowed:
             raise HTTPException(422, explain_denial(decision))
@@ -304,8 +369,10 @@ def create_app(db_path: Path | None = None) -> FastAPI:
         return result.to_dict()
 
     @app.get("/api/query/samples")
-    def query_samples(user: User = Depends(require_admin)):
+    def query_samples(user: User = Depends(require_data_user)):
         """Câu hỏi mẫu cho chế độ Query đang cấu hình; không khẳng định planner đã chạy."""
+        if user.role in BUSINESS_ROLES:
+            return business_sample_payload(user.role)
         try:
             return query_sample_payload()
         except WebQueryConfigurationError:
@@ -357,7 +424,7 @@ def create_app(db_path: Path | None = None) -> FastAPI:
     async def query_event_stream(
         run_id: str,
         request: Request,
-        user: User = Depends(require_admin),
+        user: User = Depends(require_data_user),
     ):
         """Stream authenticated, run-scoped events and replay them after reconnect."""
         if len(run_id) > 64:
@@ -366,6 +433,7 @@ def create_app(db_path: Path | None = None) -> FastAPI:
             normalized_run_id = str(UUID(run_id))
         except ValueError:
             raise HTTPException(404, "Không tìm thấy lần chạy.") from None
+        claim_run(normalized_run_id, user)
         raw_last_event_id = request.headers.get("last-event-id", "0")
         try:
             last_event_id = int(raw_last_event_id)
@@ -424,7 +492,7 @@ def create_app(db_path: Path | None = None) -> FastAPI:
         )
 
     @app.post("/api/query")
-    async def query(request: Request, user: User = Depends(require_admin)):
+    async def query(request: Request, user: User = Depends(require_data_user)):
         """Câu hỏi ngôn ngữ tự nhiên -> AgentController -> kết quả cho trang Query."""
         payload = await read_json(request)
         question = text_field(payload, "question")
@@ -435,19 +503,30 @@ def create_app(db_path: Path | None = None) -> FastAPI:
                 raise HTTPException(422, "run_id không hợp lệ")
             try:
                 run_id = str(UUID(run_id))
-                live_events.prepare(run_id)
             except ValueError:
                 raise HTTPException(422, "run_id không hợp lệ") from None
+            claim_run(run_id, user)
+            try:
+                live_events.prepare(run_id)
             except RuntimeError:
                 raise HTTPException(503, "Live event stream chưa sẵn sàng.") from None
             live_sink = LiveEventSink(live_events)
         try:
-            answer = await answer_question(
-                database,
-                question,
-                run_id=run_id,
-                live_sink=live_sink,
-            )
+            if user.role in BUSINESS_ROLES:
+                answer = await answer_business_question(
+                    question,
+                    user.role,
+                    user_id=user.username,
+                    run_id=run_id,
+                    live_sink=live_sink,
+                )
+            else:
+                answer = await answer_question(
+                    database,
+                    question,
+                    run_id=run_id,
+                    live_sink=live_sink,
+                )
             if run_id is not None:
                 records, capture_status = live_events.snapshot(run_id)
                 trace_events = [
@@ -472,7 +551,11 @@ def create_app(db_path: Path | None = None) -> FastAPI:
                 ),
                 "synthetic_mode_requires_ollama": (
                     "Chế độ SQLite tổng hợp yêu cầu SQLGUARD_PLANNER=ollama."
+                    if user.role not in BUSINESS_ROLES
+                    else "Truy vấn nghiệp vụ yêu cầu SQLGUARD_PLANNER=ollama."
                 ),
+                "business_database_not_ready": "Database nghiệp vụ chưa sẵn sàng.",
+                "query_sqlite_schema_mismatch": "Database không khớp schema đã duyệt.",
                 "planner_configuration_invalid": "Cấu hình Ollama không hợp lệ.",
                 "query_runtime_unavailable": "Query runtime chưa sẵn sàng.",
                 "query_role_missing": "Query runtime thiếu role tin cậy.",
