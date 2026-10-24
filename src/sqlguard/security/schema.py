@@ -19,7 +19,8 @@ from sqlguard.security.policy import DIMENSION, KEY, MEASURE, RolePolicy, load_d
 SQL_SUBSET_RULES = (
     "One read-only SELECT statement only; no INSERT/UPDATE/DELETE/DDL, no SELECT INTO.",
     "List columns explicitly; * is only allowed inside COUNT(*).",
-    "JOIN only with INNER JOIN or LEFT JOIN ... ON a listed join condition.",
+    "JOIN only with INNER JOIN or LEFT JOIN ... ON a listed join condition; ON holds only the "
+    "join condition, every other condition goes in WHERE.",
     "No WITH/CTE, subqueries, UNION/INTERSECT/EXCEPT or window functions.",
     "Use only the listed tables, columns and functions.",
     "LIMIT and OFFSET must be integer literals; at most {max_rows} rows are returned.",

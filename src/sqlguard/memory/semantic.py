@@ -375,7 +375,8 @@ BUSINESS_SEMANTIC_MEMORY = SemanticMemory(
             "disp.owner",
             "Chủ tài khoản",
             "disp nối client với account; disp.type = 'OWNER' là chủ tài khoản, 'DISPONENT' là "
-            "người được ủy quyền. Lọc OWNER khi cần đúng một khách hàng cho mỗi tài khoản.",
+            "người được ủy quyền. Khi cần đúng một khách hàng cho mỗi tài khoản, thêm "
+            "disp.type = 'OWNER' vào WHERE (không đặt trong ON).",
             (("disp", "type"), ("disp", "client_id"), ("disp", "account_id")),
             _ALL_BUSINESS_ROLES,
         ),
