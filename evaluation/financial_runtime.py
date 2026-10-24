@@ -186,8 +186,10 @@ def _sql_resources(sql: str) -> list[str]:
             table = sources.get(column.table) if column.table else None
             if table is None and not column.table and len(sources) == 1:
                 table = next(iter(sources.values()))
-            if table:
-                columns.add(f"{table}.{column.name.lower()}")
+            # A made-up name (``"loại thẻ"``) is no resource; its table is still listed below.
+            resource = f"{table}.{column.name.lower()}" if table else None
+            if resource and auth_mixed_scorer.RESOURCE_RE.match(resource):
+                columns.add(resource)
     covered = {c.split(".", 1)[0] for c in columns}
     return sorted(columns) + sorted(tables - covered)
 

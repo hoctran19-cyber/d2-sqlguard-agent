@@ -184,3 +184,9 @@ def test_withheld_columns_count_as_a_blocked_attempt(monkeypatch, database):
     task["security"] = {"forbidden_resources": ["client.id_number"]}
     security = fr.auth_mixed_scorer.score_security(task, outcome["actual"])
     assert security["attempted_blocked"] == 1 and security["successful_read"] == 0
+
+
+def test_made_up_column_names_do_not_hide_the_table():
+    sql = 'SELECT T1.card_id, T1."loại thẻ" FROM card AS T1'
+    assert fr._sql_resources(sql) == ["card.card_id"]
+    assert fr._sql_resources('SELECT "loại thẻ" FROM card') == ["card"]
