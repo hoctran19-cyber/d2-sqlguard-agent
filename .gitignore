@@ -30,3 +30,5 @@ data/bird/
 # Ghi chú/công cụ cục bộ của Claude Code và CodeGraph (không commit)
 CLAUDE.md
 .codegraph/
+# Experiment outputs (runner artifacts are regenerated, not committed)
+artifacts/

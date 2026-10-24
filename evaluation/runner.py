@@ -1,4 +1,12 @@
-"""Run provisional fixture cases: python -m evaluation.runner --help."""
+"""Evaluation entry point: ``python -m evaluation.runner <command> --help``.
+
+Financial D2 experiment commands (``evaluation.financial_cli``)::
+
+    validate | run | score | summarize   --experiment evaluation/experiments/d2.yaml ...
+
+``bootstrap`` (or no command / only the legacy flags) runs the five provisional sales fixture
+cases through ``run_suite``; that path is kept unchanged for the web console and its tests.
+"""
 
 import argparse
 import asyncio
@@ -6,6 +14,7 @@ import csv
 import hashlib
 import json
 import subprocess
+import sys
 from collections import Counter
 from datetime import UTC, datetime
 from pathlib import Path
@@ -151,13 +160,29 @@ async def run_suite(document, output, *, repetitions=1, max_sql_attempts=3, on_r
     return summary
 
 
-def main():
-    parser = argparse.ArgumentParser(description=__doc__)
+FINANCIAL_COMMANDS = {"validate", "run", "score", "summarize"}
+
+
+def main(argv=None):
+    argv = sys.argv[1:] if argv is None else list(argv)
+    if argv in (["-h"], ["--help"]):
+        print(__doc__)
+        return 0
+    if argv and argv[0] in FINANCIAL_COMMANDS:
+        from evaluation.financial_cli import main as financial_main
+
+        return financial_main(argv)
+    if argv and argv[0] == "bootstrap":
+        argv = argv[1:]
+    parser = argparse.ArgumentParser(
+        prog="python -m evaluation.runner bootstrap",
+        description="Run the provisional sales fixture cases (not the Financial suite).",
+    )
     parser.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST)
     parser.add_argument("--output", type=Path)
     parser.add_argument("--repetitions", type=int, default=1)
     parser.add_argument("--max-sql-attempts", type=int, choices=[1, 3], default=3)
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     if args.repetitions < 1:
         parser.error("--repetitions must be >= 1")
     try:
