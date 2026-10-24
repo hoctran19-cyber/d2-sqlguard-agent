@@ -77,7 +77,7 @@ def test_allowed_query_reaches_database_only_as_normalized_sql():
     result, executor, audit, _ = run("select full_name from customers where city = 'HCM'")
 
     assert result.state.status is RunStatus.SUCCEEDED
-    assert executor.executed == ["SELECT full_name FROM customers WHERE city = 'HCM' LIMIT 100"]
+    assert executor.executed == ["SELECT full_name FROM customers WHERE city = 'HCM' LIMIT 101"]
     assert [(r.phase, r.outcome) for r in audit.records] == [
         ("gate", "allowed"),
         ("execute", "executed"),

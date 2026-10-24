@@ -741,12 +741,15 @@ def _has_positional_reference(root: exp.Select) -> bool:
 
 
 def _enforce_limit(tree: exp.Select, max_rows: int) -> tuple[exp.Select, tuple[str, ...]]:
+    # The gate's own LIMIT asks for one extra row: SecureSqlTool returns at most max_rows rows
+    # and flags the result truncated when that extra row arrives. With LIMIT max_rows the
+    # database never returns more, so a cut result would look complete.
     limit = tree.args.get("limit")
     if limit is None:
-        return tree.limit(max_rows, copy=True), ("limit_added",)
+        return tree.limit(max_rows + 1, copy=True), ("limit_added",)
     if int(limit.expression.this) > max_rows:
         tree = tree.copy()
-        tree.args["limit"].set("expression", exp.Literal.number(max_rows))
+        tree.args["limit"].set("expression", exp.Literal.number(max_rows + 1))
         return tree, ("limit_capped",)
     return tree, ()
 

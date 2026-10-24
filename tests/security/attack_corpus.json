@@ -650,7 +650,7 @@
    "notices": [
     "limit_added"
    ],
-   "normalized": "SELECT order_id FROM orders LIMIT 100"
+   "normalized": "SELECT order_id FROM orders LIMIT 101"
   },
   {
    "id": "DOS-02",
@@ -661,7 +661,7 @@
    "notices": [
     "limit_capped"
    ],
-   "normalized": "SELECT order_id FROM orders LIMIT 100"
+   "normalized": "SELECT order_id FROM orders LIMIT 101"
   },
   {
    "id": "DOS-03",
