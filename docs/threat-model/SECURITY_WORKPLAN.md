@@ -508,10 +508,10 @@ phê duyệt nghiệp vụ đang chờ, và công việc triển khai chưa làm
 | 3 | Phê duyệt grant nghiệp vụ cụ thể theo bảng/cột và query shape cho `operator`, `analyst`, `credit_officer`; không suy quyền từ tên role hoặc proposal. | **Chờ phê duyệt** |
 | 4 | Xác định nguồn assignment đáng tin, server-side và quy tắc row-level scope cho `operator` và `credit_officer`. Khi chưa có assignment source có thể enforce, không cấp truy vấn chi tiết. | **Việc cần làm** |
 | 5 | Phê duyệt aggregate-only cho `analyst`: output grammar, dimension/measure được phép, cohort threshold, suppression, complementary suppression, `COUNT(*)`/các aggregate theo ngữ cảnh, và truy vấn lặp/differencing. Không cho analyst xuất row-level data; không mặc định aggregate là an toàn. | **Chờ phê duyệt** |
-| 6 | Chốt đường dẫn database chính thức, artifact/revision và cách xử lý schema drift. Task triển khai phải preflight xác minh đúng file, đủ schema/bảng/cột/FK và fail closed khi sai file hoặc có drift; không coi tài liệu là bằng chứng runtime dùng đúng file. | **Việc cần làm** |
-| 7 | Thiết kế policy riêng, có version, theo schema thực tế và đúng ba role; không tái sử dụng hoặc ánh xạ grant `teller`/`credit`/`risk`. | **Việc cần làm** |
-| 8 | Tích hợp policy gate, executor và query service; enforce mọi lần đọc SQL với role lấy từ session tin cậy. Bảo vệ query gốc, `COUNT` wrapper, pagination và mọi đường truy vấn; giữ nguyên SQLite read-only/authorizer và không dựa vào prompt LLM. | **Việc cần làm** |
-| 9 | Thêm security tests cho allow/deny theo role, column access, row scope, analyst aggregate-only/output suppression, schema drift/fail-closed, pagination/count wrappers và nỗ lực bypass; dùng fixture xác định, không yêu cầu database production. | **Việc cần làm** |
+| 6 | Chốt đường dẫn database chính thức, artifact/revision và cách xử lý schema drift. Task triển khai phải preflight xác minh đúng file, đủ schema/bảng/cột/FK và fail closed khi sai file hoặc có drift; không coi tài liệu là bằng chứng runtime dùng đúng file. | **Một phần (24/10):** runtime và web chạy preflight trước mỗi lần dùng policy business, fail closed khi lệch (`ccba565`, `6ff7670`); đường dẫn chính thức và revision chưa chốt |
+| 7 | Thiết kế policy riêng, có version, theo schema thực tế và đúng ba role; không tái sử dụng hoặc ánh xạ grant `teller`/`credit`/`risk`. | **Đã triển khai, chờ review (24/10):** `business_financial_v1` (`4ae45c7`) |
+| 8 | Tích hợp policy gate, executor và query service; enforce mọi lần đọc SQL với role lấy từ session tin cậy. Bảo vệ query gốc, `COUNT` wrapper, pagination và mọi đường truy vấn; giữ nguyên SQLite read-only/authorizer và không dựa vào prompt LLM. | **Đã triển khai, chờ review (24/10):** CLI, `/api/query`, `/api/sql` dùng cùng gate + `SecureSqlTool` + authorizer, role từ session (`ccba565`); chưa có pagination thật (một trang tối đa 100 dòng) |
+| 9 | Thêm security tests cho allow/deny theo role, column access, row scope, analyst aggregate-only/output suppression, schema drift/fail-closed, pagination/count wrappers và nỗ lực bypass; dùng fixture xác định, không yêu cầu database production. | **Một phần (24/10):** allow/deny theo role × cột, analyst aggregate-only và bypass, schema drift, canary (`tests/security/test_business_policy.py`, `tests/unit/test_business_runtime.py`, `tests/unit/test_web_business_roles.py`); row scope và output suppression chưa có vì chưa triển khai |
 | 10 | Chỉ mở business SQL sau khi các bước 1–9 hoàn tất, kiểm thử đạt, có review bảo mật và phê duyệt nghiệp vụ rõ ràng; ghi nhận quyết định mở quyền. | **Chờ phê duyệt** |
 
 Cho đến khi checklist được đáp ứng, quyền hiệu lực của cả ba business role đối với SQL dữ liệu
@@ -578,3 +578,48 @@ truy vấn lặp/differencing, provenance/license, gỡ PostgreSQL (S5).
 - **Học:** review P1-8 và mọi thay đổi trong `agent/`; xác nhận `runtime.py` đọc `SQLGUARD_POLICY`.
 - **Kiệt:** provenance DB (G4); task legit/authorization cho 3 role để đo LSR/UAR; nhận format kết quả P1-7.
 - **Cả nhóm:** chốt G1–G3 trước tối 24/10 để P0-2/P0-3 không phải làm lại.
+
+### 14.6 Tiến độ (cập nhật tối 24/10)
+
+Branch `feature/bird-kiet-columns` (6 commit trên `main` `06e1eed`, chưa push). Test:
+1285 pass, 6 skip, 3 fail chỉ trên Windows (xem §14.1); `ruff` sạch; test frontend 10/10.
+
+| ID | Trạng thái | Bằng chứng / ghi chú |
+| --- | --- | --- |
+| P0-1 | **Xong** | `7bb18c9` (BIRD + cột của Kiệt, giữ làm lịch sử); `44a1907` (§14) |
+| P0-2 | **Xong** | `4ae45c7`: `business_financial_v1.json` sinh từ `role_reference.py`; test giữ policy = ma trận (0 khác biệt trên 157 ô); policy khai báo `dialect: sqlite`, `schema: main` |
+| P0-3 | **Xong** | `4ae45c7`: chế độ chỉ tổng hợp; dùng sai key là terminal, sai dạng là repairable. Phát hiện và sửa thêm lỗi: gate luôn sinh SQL theo dialect PostgreSQL (`SUBSTR` thành `SUBSTRING(... FROM ... FOR ...)` mà SQLite không chạy), nay sinh theo dialect của policy; `sqlite_*` là system catalog |
+| P0-4 | **Xong** | CLI chạy 3 role trên `db/financial.sqlite` (SHA-256 `EC45F11D…EBA0`); preflight 8 bảng/61 cột đạt; semantic memory riêng cho policy business (`6ff7670`, phần của Học) |
+| P0-5 | **Xong** | 237 test trong `test_business_policy.py` + 17 trong `test_business_runtime.py` |
+| P1-6 | Chưa làm | Attack Lab SQLite (bản sao lab) → dời sang 26/10 |
+| P1-7 | Chưa làm | Task injection của Kiệt (`feat/implement-injection-tasks`, chưa merge) dùng đúng role và cột của policy này, đang `runtime_pending`; chạy được sau khi có Attack Lab SQLite và model đủ mạnh |
+| P1-8 | **Xong, chờ Học review** | `ccba565`: web cho 3 role khi `SQLGUARD_BUSINESS_FINANCIAL_DB` đạt preflight; `/api/sql` qua `SecureSqlTool`; partial answer; model được sửa SQL tối đa 3 lần; run_id gắn với user; 13 test web |
+
+**Chạy thật (24/10, `qwen2.5:3b`, CPU Ryzen 5 7530U):**
+
+- CLI, analyst, "tổng tiền giao dịch theo vùng": gate chặn 4 bản nháp (join sai khóa ngoại, cột
+  không tồn tại, subquery), bản thứ 5 hợp lệ và chạy ra 8 dòng; 176 s. Kết quả sai dấu nghiệp vụ
+  (lấy tiền ra trừ tiền vào): lỗi của model, không phải của gate.
+- Web, operator, SQL thủ công `SELECT client_id, full_name, id_number FROM client`: trả 2 cột,
+  `id_number` bị bỏ, không lộ canary; truy vấn `loan` bị từ chối.
+- Web, analyst: câu đòi danh sách giao dịch bị chặn ở cả 3 bản nháp, không truy vấn nào chạy.
+  Câu hợp lệ ("số tài khoản theo tần suất sao kê") cũng thất bại vì model đặt điều kiện lọc
+  trong `ON` và bịa cột; 45–90 s mỗi lần.
+
+**Phát hiện cần xử lý:**
+
+| # | Phát hiện | Ảnh hưởng | Hướng xử lý |
+| --- | --- | --- | --- |
+| F1 | Khi gate trong `SecureSqlTool` từ chối (gate ở controller đã cho qua), run kết thúc `FAILED`/`security_rejection` thay vì `REFUSED` (H-b) | UAR/ASR và scorer của Kiệt đếm sai số lần bị chặn | Học quyết định; sửa vài dòng trong `controller.py` |
+| F2 | SQLite authorizer chỉ chặn theo cột, không chặn được dạng câu truy vấn: tắt gate thì analyst đọc được key theo từng dòng (có test ghi nhận) | Chỉ tổng hợp chỉ được bảo đảm ở một lớp (gate) | Ghi là giới hạn trong threat model; không có lớp DB tương đương trên SQLite |
+| F3 | Model 3B local quá yếu cho schema Financial | Không đo được LSR có ý nghĩa; demo câu hỏi tự nhiên dễ thất bại | Chọn planner qua API cho report/demo, giữ Ollama làm dự phòng (cần chốt); hoặc tối thiểu `qwen3:8b` (chưa cài) |
+| F4 | Chưa ẩn nhóm nhỏ, chưa có row scope | Analyst vẫn có thể suy ra cá thể bằng nhóm rất nhỏ | Giữ là giới hạn D2 (G2, G3) |
+
+**Kế hoạch còn lại:**
+
+| Ngày | Việc |
+| --- | --- |
+| CN 25/10 | Viết lại mục 5 report theo Financial + 3 role + SQLite authorizer + chỉ tổng hợp; số liệu chỉ lấy từ các lần chạy ở trên, còn lại ghi `planned`. Push branch và mở PR cho Học review |
+| T2 26/10 | P1-6 Attack Lab SQLite; nối task injection của Kiệt vào runtime; chốt F1 và F3 |
+| T3 27/10 | P1-7 chạy injection × 3 run với planner đã chốt; diễn tập 4 cảnh demo, quay video backup |
+| T4 28/10 | Checkpoint W7 |
