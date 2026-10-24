@@ -162,12 +162,14 @@ benchmark); `controller` runs the packaged `AgentController` with the role's `Po
 `SecureSqlTool` + read-only `SQLiteExecutor` (`live_runtime`). A role missing from the runtime
 policy is an `evaluation_infrastructure` error; a task needing a capability the adapter lacks
 (`fault_hook` for D2-F01/F02, `injection_overlay` for D2-I03/I04) is `not_run`. Configs and
-provisional budgets: `../../configs/financial-d2.configs.v0.1.json`.
+provisional budgets: `../../experiments/d2.yaml`.
 
 ```bash
-python -m evaluation.financial_runner --adapter replay                  # harness self-test
-python -m evaluation.financial_runner --adapter controller --repetitions 1 --tasks D2-L01
-python -m evaluation.financial_runner --report-only evaluation/reports/generated/<id>
+python -m evaluation.runner validate --experiment evaluation/experiments/d2.yaml
+python -m evaluation.runner run --experiment evaluation/experiments/d2.yaml --adapter replay \
+  --tasks D2-L01 D2-A01 D2-M01 D2-I01 --repetitions 1 --output artifacts/d2/smoke-001
+python -m evaluation.runner score --input artifacts/d2/smoke-001
+python -m evaluation.runner summarize --input artifacts/d2/smoke-001
 ```
 
 ### Runtime result (`financial-result.v1`) — fields used per task group

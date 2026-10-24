@@ -32,6 +32,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
 
+import yaml
+
 from evaluation import auth_mixed_scorer as ams
 from evaluation import financial_auth_mixed as fam
 from evaluation import financial_failure as ff
@@ -50,7 +52,7 @@ from evaluation.financial_contract import CONTRACT_VERSION, SCORER_VERSION, eval
 from evaluation.financial_scoring import ConfigContext, TaskPlan, error_category, score
 
 ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_CONFIGS = Path(__file__).parent / "configs" / "financial-d2.configs.v0.1.json"
+DEFAULT_CONFIGS = Path(__file__).parent / "experiments" / "d2.yaml"
 DEFAULT_OUTPUT_DIR = Path(__file__).parent / "reports" / "generated"
 CATEGORY_ORDER = ("legitimate", "authorization", "mixed", "injection", "failure", "clean")
 HARNESS_GRACE_S = 5.0
@@ -115,7 +117,8 @@ def load_plans() -> list[TaskPlan]:
 
 
 def load_configs(path: Path = DEFAULT_CONFIGS) -> dict:
-    document = json.loads(Path(path).read_text(encoding="utf-8"))
+    """Configs, repetitions and seeds from the experiment file (YAML; JSON is valid YAML)."""
+    document = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
     configs = document.get("configs") or []
     ids = [c.get("id") for c in configs]
     if len(configs) != 2 or len(set(ids)) != 2:
@@ -187,7 +190,9 @@ def _implementation_sha256() -> str:
     return digest.hexdigest()
 
 
-def build_manifest(experiment_id, adapter, configs_doc, plans, repetitions, seeds) -> dict:
+def build_manifest(
+    experiment_id, adapter, configs_doc, plans, repetitions, seeds, experiment_ref=None
+) -> dict:
     suite_files = sorted(fl.SUITE_DIR.glob("*.v0.1.json")) + sorted(
         (fl.SUITE_DIR / "expected").glob("*.json")
     )
@@ -197,6 +202,7 @@ def build_manifest(experiment_id, adapter, configs_doc, plans, repetitions, seed
         "experiment_id": experiment_id,
         "created_at": datetime.now(UTC).isoformat(),
         "suite_id": fl.SUITE_ID,
+        "experiment_file": experiment_ref,
         "contract_version": CONTRACT_VERSION,
         "scorer_version": SCORER_VERSION,
         "adapter": adapter_info,
@@ -295,7 +301,11 @@ async def run_one(adapter, plan, config, repetition, run_id) -> tuple[dict, dict
         overlay = fi.prepare_overlay(plan.task, fi.load_all()[2], fi.new_nonce())
         plan = copy.copy(plan)
         plan.expected_rows = overlay["expected_rows"]
-        trace["overlay"] = {"marker": overlay["marker"], "patch": overlay["patch"]}
+        trace["overlay"] = {
+            "marker": overlay["marker"],
+            "patch": overlay["patch"],
+            "expected_rows": overlay["expected_rows"],  # Kept so `score` can re-score offline.
+        }
     else:
         overlay = None
     request = RunRequest(
@@ -402,6 +412,7 @@ async def run_experiment(
     repetitions: int | None = None,
     task_ids: set[str] | None = None,
     resume: bool = False,
+    experiment_ref: dict | None = None,
 ) -> dict:
     plans = [p for p in load_plans() if not task_ids or p.task_id in task_ids]
     repetitions = repetitions or configs_doc["repetitions"]
@@ -415,7 +426,9 @@ async def run_experiment(
     if not manifest_path.exists():
         _write_json(
             manifest_path,
-            build_manifest(experiment_id, adapter, configs_doc, plans, repetitions, seeds),
+            build_manifest(
+                experiment_id, adapter, configs_doc, plans, repetitions, seeds, experiment_ref
+            ),
         )
     done = set()
     for name in ("results.jsonl", "clean-pairs.jsonl"):
