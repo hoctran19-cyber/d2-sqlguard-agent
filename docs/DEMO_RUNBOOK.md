@@ -36,6 +36,8 @@ Mật khẩu `123456` cho cả năm tài khoản: `operator`, `analyst`, `credit
 
 ## 3. Kịch bản gợi ý (câu mẫu có sẵn trong trang Query của mỗi role)
 
+Kịch bản sân khấu 8 phút (legit · auth · mixed · injection, 4 phiên đăng nhập): `docs/DEMO_SCRIPT_8MIN.md`.
+
 | Cảnh | Tài khoản | Thao tác | Điều cần chỉ ra |
 | --- | --- | --- | --- |
 | 1. Partial | `operator` | "Cho biết họ tên và số định danh (id_number) của khách hàng 4." | `id_number` bị giữ lại, trả phần còn lại kèm thông báo; không lộ canary |
