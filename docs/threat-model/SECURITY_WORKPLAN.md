@@ -1101,3 +1101,56 @@ Thứ tự theo giá trị cho buổi 28/10: **A (lab + cờ cảnh báo) → C 
 | D2 | Cảnh 4 dùng hai phiên đăng nhập (`admin` tiêm, `operator` hỏi) | Đồng ý; thêm vào runbook. Nếu không, thêm role `presenter` (LA1) |
 | D3 | Report ghi I03/I04 là "payload hiển thị, chưa tới model" khi chưa có E5 | Đồng ý; không dùng từ "chống được" |
 | D4 | Có chạy một cấu hình E5 bật để đo ASR indirect trước W7 | Không; để sau W7 |
+
+## 17. Sau W7: việc còn tồn và thứ tự (cập nhật 03/11/2026)
+
+Trên `main` (`708dd63`) không có commit nào sau `5dac168` (27/10, kịch bản demo). Repo không ghi kết
+quả buổi W7 (28/10); mục này chỉ dựa trên trạng thái code và tài liệu, cần bổ sung nhận xét W7 nếu có.
+
+### 17.1 Trạng thái P1 (§16)
+
+| Phần | Trạng thái |
+| --- | --- |
+| A1–A4 (Attack Lab trên web) | Xong (`858ea2f`) |
+| L8 (revision vào trace của run) | Chỉ có ở tầng web (`lab_revisions`); trace/event chưa có. Cần Học |
+| C1, C2 (overlay, offline Financial) | Xong (`ba38748`) |
+| C3 (Gemini × 3 trên commit sạch) | **Chưa chạy.** Số D2-I01/I02 trong report vẫn từ lượt `dirty: true` |
+| C4 (hai hợp đồng `pending`) | **Chưa chốt** |
+| B1–B4 (E5) | **Chưa code.** D4 để sau W7 |
+| Tài liệu | Report mục 5 và `README.md` của threat model đã đồng bộ ngày 03/11 (Financial/SQLite, I03/I04 ghi kết quả offline) |
+
+### 17.2 Mâu thuẫn cần chốt lại
+
+- **Q5 với §16.5/D4:** Q5 chốt “E5 bật trong demo”, nhưng §16.5 xếp E5 cuối, D4 để sau W7, và
+  `DEMO_SCRIPT_8MIN.md` nói “chưa có model nào đọc dòng kết quả”. Cần quyết lại: làm E5 hay không, và
+  để demo hay để đo.
+- **E5 theo §16.3 không đo được ASR indirect.** Vì không tóm tắt khi có `possible_injection`, payload
+  D2-I03 (bật 5 pattern) không bao giờ tới model; số đo được thực chất là recall của detector regex.
+  Đề xuất tách hai cấu hình:
+  - **demo/production:** giữ “có cờ thì không tóm tắt” (an toàn);
+  - **eval:** tắt quy tắc đó, để payload tới model và đo model có làm theo không. Báo hai số riêng,
+    ghi rõ cấu hình eval không phải cấu hình triển khai.
+- **F10 với E5:** kiểm “số trong tóm tắt phải có trong dòng kết quả” không bắt được số đã giả ngay
+  trong SQL. D2-I04 khi có E5 cần một kiểm số liệu khác (ví dụ chạy lại phép tính đơn giản trên cột
+  gốc) hoặc ghi là giới hạn.
+
+### 17.3 Thứ tự đề xuất
+
+| # | Việc | Ai | Done khi |
+| --- | --- | --- | --- |
+| 1 | C4: chốt mapping disposition cho direct (I01 đang lệch: gate trả partial, suite mong `full`) và cách xử lý text cho indirect | Kiệt, Khang | Ghi vào `injection-tasks` |
+| 2 | C3: `d2-gemini` cho toàn suite, 2 cấu hình × 3 lượt, commit sạch, worktree LF; lưu run ID + commit; lấy `cost-report.md` | Khang chạy, Kiệt chấm | Thay số `dirty` trong report; điền chi phí/token |
+| 3 | Quyết định E5 theo §17.2 | Cả nhóm | Ghi vào §16.6 (D1, D4) |
+| 4 | E5 (B1–B4), kèm cấu hình eval nếu chọn đo | Khang; Học review nếu đụng `agent/` | Test “model bị chiếm hoàn toàn” cho summarizer; số ASR indirect có run ID |
+| 5 | E2: mask PII trước planner, cả Gemini và Ollama (Q3) | Khang, Học review | T15 chuyển từ planned sang implemented |
+| 6 | L8: `(revision, hash)` vào trace/event của run | Học | Observe hiện revision |
+| 7 | Nhỏ: test T17 (API key không xuất hiện trong log/audit/trace); E4 loại (ii) | Khang | Test xanh |
+
+C3 cần API key Gemini và DB đã ghim trên máy chạy, nên không làm được trong container CI.
+
+### 17.4 Đến W12 (theo report mục 5)
+
+- Injection và authorization × 3 lượt cho các cấu hình đối chứng (`table_level`, `column_level`).
+- Fuzz/differential test SQLGlot ↔ SQLite.
+- D2-F01/F02: cần fault hook trong runtime, chưa có kế hoạch.
+- Mở: giới hạn theo dòng; duyệt k = 5; chống complementary suppression, truy vấn lặp, differencing.
