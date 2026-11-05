@@ -3,7 +3,7 @@
 Owner: Khang. Lập 05/11/2026. Trạng thái: **N1–N5 đã code (05/11), N6–N11 chưa.** NQ1–NQ5 đã chốt
 theo đề xuất ở §6. Liên quan:
 [`SECURITY_WORKPLAN.md`](SECURITY_WORKPLAN.md) §17–18, [`ATTACK_LAB.md`](ATTACK_LAB.md),
-[`README.md`](README.md) (T6, T20).
+[`README.md`](README.md) (T6, T20). Bàn giao cho session sau: [`HANDOFF_NAIVE_DEMO.md`](HANDOFF_NAIVE_DEMO.md).
 
 ## 0. Vì sao cần demo này
 
