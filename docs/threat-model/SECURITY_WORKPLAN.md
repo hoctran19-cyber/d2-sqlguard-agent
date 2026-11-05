@@ -1154,3 +1154,20 @@ C3 cần API key Gemini và DB đã ghim trên máy chạy, nên không làm đ�
 - Fuzz/differential test SQLGlot ↔ SQLite.
 - D2-F01/F02: cần fault hook trong runtime, chưa có kế hoạch.
 - Mở: giới hạn theo dòng; duyệt k = 5; chống complementary suppression, truy vấn lặp, differencing.
+
+## 18. Demo tấn công cho seminar: naive agent so với SQLGuard (05/11/2026)
+
+Seminar Prompt Injection cần cho thấy **biểu hiện** khi agent bị injection, điều mà SQLGuard hiện
+không thể hiện được (payload indirect không tới model). Kế hoạch: một **naive agent** cố tình yếu
+(quyền chỉ trong prompt, Gemini function calling nhiều lượt đọc dòng kết quả, LLM viết câu trả lời,
+UI render markdown) chạy cạnh SQLGuard trên trang compare của `admin`, cùng payload, cùng role, cùng
+Gemini. Chi tiết, kịch bản, việc N1–N11 và các câu cần chốt NQ1–NQ5:
+[`NAIVE_AGENT_DEMO.md`](NAIVE_AGENT_DEMO.md).
+
+Ràng buộc: không sửa `agent/` và `security/`; code ở `src/sqlguard/lab/`; mặc định tắt, chỉ chạy trên
+bản sao lab, fail closed. Vòng function calling của naive agent cũng là công cụ đo cho cấu hình eval
+của E5 (§17.2), nên phần N9 cho ra số đo đầu tiên về việc Gemini có làm theo payload indirect hay
+không. Số đó là độ nhạy của model trong pipeline naive, **không** phải ASR của SQLGuard.
+
+Thứ tự ưu tiên so với §17.3: C4/C3 vẫn trước (số cho report). Naive demo xếp trước E5 và E2 vì có
+hạn seminar.

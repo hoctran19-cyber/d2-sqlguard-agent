@@ -110,6 +110,7 @@ flowchart LR
 | T18 | Provider không sẵn sàng / hết quota | Không fallback; run lỗi với category riêng; demo dùng video dự phòng | Chấp nhận | `test_gemini_planner.py` |
 | T19 | Output provider bị thao túng | Output là không tin cậy; gate + authorizer quyết định | Implemented | như T2, T5 |
 | T20 | Injection qua dòng kết quả vào model tóm tắt (E5) | Thiết kế: chỉ model local, không tóm tắt khi `possible_injection`, bọc `render_tool_result`, kiểm số, luôn hiện bảng gốc | **Planned (chưa code).** Hiện không có bề mặt này | workplan §16.3 |
+| T21 | Chế độ naive demo (cố tình không an toàn) bị bật ngoài lab, hoặc bị dùng để giả danh role | Tắt mặc định; cần `SQLGUARD_NAIVE_DEMO=1` và Attack Lab bật với DB là bản sao lab (kiểm marker), không thì app không khởi động; chỉ `admin`; không ghi dòng kết quả vào audit/history. Ở chế độ này dòng kết quả synthetic đi ra Gemini | **Planned** | [`NAIVE_AGENT_DEMO.md`](NAIVE_AGENT_DEMO.md) |
 
 ## 6. Policy matrix (`business_financial_v1`)
 
