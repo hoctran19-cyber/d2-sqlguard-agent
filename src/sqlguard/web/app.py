@@ -25,6 +25,7 @@ from fastapi import Query as FastAPIQuery
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
+from sqlguard.lab.naive_guard import naive_demo_from_env
 from sqlguard.observability.events import (
     DEFAULT_HISTORY_LIMIT,
     MAX_HISTORY_LIMIT,
@@ -106,6 +107,9 @@ def create_app(db_path: Path | None = None) -> FastAPI:
     lab = attack_lab_from_env(
         audit=JsonlAuditSink(audit_path) if audit_path else None, run_active=lab_guard.active
     )
+    # Naive demo (cố tình không an toàn, chỉ cho seminar): tắt mặc định; bật thì bắt buộc có
+    # Attack Lab trên bản sao lab, sai cấu hình thì NaiveDemoError làm app không khởi động.
+    app.state.naive_demo = naive_demo_from_env(lab=lab)
 
     # ---------- Hàm tiện ích dùng chung ----------
 
