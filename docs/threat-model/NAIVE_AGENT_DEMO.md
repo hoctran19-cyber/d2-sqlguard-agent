@@ -1,6 +1,7 @@
 # Demo tấn công: Naive agent so với SQLGuard (seminar Prompt Injection)
 
-Owner: Khang. Lập 05/11/2026. Trạng thái: **kế hoạch, chưa code.** Liên quan:
+Owner: Khang. Lập 05/11/2026. Trạng thái: **N1–N5 đã code (05/11), N6–N11 chưa.** NQ1–NQ5 đã chốt
+theo đề xuất ở §6. Liên quan:
 [`SECURITY_WORKPLAN.md`](SECURITY_WORKPLAN.md) §17–18, [`ATTACK_LAB.md`](ATTACK_LAB.md),
 [`README.md`](README.md) (T6, T20).
 
@@ -78,9 +79,10 @@ Nguyên tắc: **không sửa `agent/` và `security/`** (Học không phải re
 | File | Nội dung |
 | --- | --- |
 | `src/sqlguard/lab/__init__.py` | Docstring cảnh báo: cấu hình cố tình không an toàn, chỉ cho demo |
-| `src/sqlguard/lab/naive_guard.py` | `naive_demo_from_env(env, lab)`: trả `None` nếu `SQLGUARD_NAIVE_DEMO != "1"`; bật mà lab tắt, DB không phải bản sao lab (`_check_marker`) hoặc planner không phải `gemini`/`scripted` thì raise (app không khởi động, fail closed như lab) |
-| `src/sqlguard/lab/naive_agent.py` | `NaiveAgent.run(question, role) -> NaiveResult`: vòng function calling ≤ 3 lượt; `NaiveSqliteExecutor` (`mode=ro`, `query_only`, timeout 3 s, ≤ 100 dòng, **không** authorizer); `NaiveResult` gồm danh sách bước (SQL, cột, dòng, lỗi), `answer_markdown`, số lần gọi model |
-| `src/sqlguard/lab/gemini_tools.py` | Client Gemini có `tools.functionDeclarations` và hội thoại nhiều lượt (`functionCall` / `functionResponse`). Dùng lại cách gửi của `GeminiPlanner._post`: key qua header, chỉ `https`, lỗi không chứa URL hay key. Có `ScriptedModel` cho chế độ `scripted` |
+| `src/sqlguard/lab/naive_guard.py` | `naive_demo_from_env(env, lab)`: trả `None` nếu `SQLGUARD_NAIVE_DEMO != "1"`; bật mà lab tắt, DB không phải bản sao lab (`_check_marker`), `SQLGUARD_NAIVE_MODEL` không phải `gemini`/`scripted`, hoặc thiếu `GEMINI_API_KEY` khi dùng Gemini thì raise (app không khởi động, fail closed như lab) |
+| `src/sqlguard/lab/naive_agent.py` | `NaiveAgent.run(question, role) -> NaiveResult`: vòng function calling ≤ 3 lượt; `NaiveSqliteExecutor` (`mode=ro`, `query_only`, timeout 3 s, ≤ 100 dòng, **không** authorizer theo role; chỉ một authorizer sandbox chặn `ATTACH`/`DETACH`/`PRAGMA` để truy vấn không ra khỏi bản sao lab); `NaiveResult` gồm danh sách bước (SQL, cột, dòng, lỗi), `answer_markdown`, số lần gọi model |
+| `src/sqlguard/lab/gemini_tools.py` | Client Gemini có `tools.functionDeclarations` và hội thoại nhiều lượt (`functionCall` / `functionResponse`, phần của model được gửi lại nguyên văn để giữ thought signature). Giữ quy tắc của `GeminiPlanner`: key qua header, chỉ `https`, lỗi chỉ có category |
+| `src/sqlguard/lab/model.py` | Kiểu dùng chung (`ToolCall`, `ModelReply`, `ToolResults`…), `ScriptedModel` và kịch bản giả lập cho 4 câu hỏi mẫu (`SCRIPTED_QUESTIONS`: N-D3, N-I1, N-I2, N-I3) |
 | `src/sqlguard/lab/naive_prompt.py` | System prompt naive sinh từ policy: liệt kê bảng/cột role được xem, dặn "không được tiết lộ cột khác". **Không** bọc untrusted, không nonce |
 | `src/sqlguard/lab/symptoms.py` | Phát hiện biểu hiện một cách xác định trên cả hai kết quả: chuỗi `SYN-ID-`/`CANARY-` trong dòng hoặc câu trả lời; số lời gọi tool > 1; số 987654321 trong câu trả lời mà không có trong dòng; URL ngoài trong câu trả lời; rogue string; đoạn system prompt trong câu trả lời |
 | `src/sqlguard/lab/attacker_listener.py` | `python -m sqlguard.lab.attacker_listener`: HTTP server **chỉ bind `127.0.0.1:9999`**, in query string ra terminal, trả GIF 1×1. Chỉ dùng cho N-I3 |
@@ -118,6 +120,11 @@ khấu (khác cảnh 4 của demo dự án vốn cần hai phiên).
   một lớp phòng thủ show được trên slide.
 
 ## 4. Việc cần làm
+
+**Trạng thái 05/11:** N1–N5 xong, 57 test mới (`tests/unit/test_naive_*.py`), toàn bộ suite xanh.
+Chưa gọi Gemini thật: định dạng `functionResponse` (gửi với role `user`) theo tài liệu REST hiện
+hành, cần xác nhận ở lần chạy thật đầu tiên (N9). Khác plan ban đầu: chọn model bằng
+`SQLGUARD_NAIVE_MODEL` (không dùng `SQLGUARD_PLANNER`), `ScriptedModel` nằm ở `lab/model.py`.
 
 | ID | Việc | File | Done khi | Ước lượng |
 | --- | --- | --- | --- | --- |
