@@ -57,4 +57,7 @@ export const api = {
   labRestore: (target, expectedRevision) =>
     request("POST", `/api/lab/notes/${encodeURIComponent(target)}/restore`,
       { expected_revision: expectedRevision }),
+  // Trang so sánh naive agent / SQLGuard (chỉ admin, chỉ khi server bật naive demo).
+  compareScenarios: () => request("GET", "/api/lab/compare/scenarios"),
+  compare: (question, role) => request("POST", "/api/lab/compare", { question, role }),
 };

@@ -110,7 +110,8 @@ flowchart LR
 | T18 | Provider không sẵn sàng / hết quota | Không fallback; run lỗi với category riêng; demo dùng video dự phòng | Chấp nhận | `test_gemini_planner.py` |
 | T19 | Output provider bị thao túng | Output là không tin cậy; gate + authorizer quyết định | Implemented | như T2, T5 |
 | T20 | Injection qua dòng kết quả vào model tóm tắt (E5) | Thiết kế: chỉ model local, không tóm tắt khi `possible_injection`, bọc `render_tool_result`, kiểm số, luôn hiện bảng gốc | **Planned (chưa code).** Hiện không có bề mặt này | workplan §16.3 |
-| T21 | Chế độ naive demo (cố tình không an toàn) bị bật ngoài lab, hoặc bị dùng để giả danh role | Tắt mặc định; cần `SQLGUARD_NAIVE_DEMO=1` và Attack Lab bật với DB là bản sao lab (kiểm marker), không thì app không khởi động; chỉ `admin`; không ghi dòng kết quả vào audit/history. Ở chế độ này dòng kết quả synthetic đi ra Gemini | **Planned** | [`NAIVE_AGENT_DEMO.md`](NAIVE_AGENT_DEMO.md) |
+| T21 | Chế độ naive demo (cố tình không an toàn) bị bật ngoài lab, hoặc bị dùng để giả danh role | Tắt mặc định; cần `SQLGUARD_NAIVE_DEMO=1` và Attack Lab bật với DB là bản sao lab (kiểm marker lúc khởi động và trước mỗi truy vấn), không thì app không khởi động hoặc route trả 503; executor có authorizer sandbox chặn `ATTACH`/`DETACH`/`PRAGMA`; chỉ `admin`; không ghi câu trả lời naive vào audit/history. Ở chế độ này dòng kết quả synthetic đi ra Gemini | **Implemented** (N1–N8, 06/11). Chưa chạy với Gemini thật (N9) | `test_naive_guard.py`, `test_naive_agent.py`, `test_web_naive_compare.py` |
+| T22 | Indirect injection qua MCP server: tool `query` trả envelope (gồm cột note) dạng JSON thẳng cho LLM phía client MCP, **không** bọc `wrap_untrusted`. Nếu client có thêm tool web/fetch thì lethal trifecta lắp lại bên ngoài SQLGuard | Gate và authorizer vẫn lọc cột cấm, nên payload không mở được `id_number`; envelope có `trust: untrusted` và `possible_injection` nhưng client không bắt buộc phải tôn trọng | **Open**, suy luận từ code, chưa test. Hướng xử lý: bọc nội dung text bằng `wrap_untrusted`, ghi rõ trong tài liệu MCP rằng client không được có tool gửi dữ liệu ra ngoài | `src/sqlguard/mcp/server.py` |
 
 ## 6. Policy matrix (`business_financial_v1`)
 
@@ -188,7 +189,11 @@ PostgreSQL, không còn là đường demo.
 - **Indirect injection chưa đo trên model thật:** chưa có đường nào đưa dòng kết quả vào model. Nếu
   làm E5 theo thiết kế §16.3 (không tóm tắt khi có `possible_injection`), số đo được sẽ phản ánh
   recall của detector chứ không phải độ bền của model; cần cấu hình eval riêng (workplan §17).
-- **Detector là regex:** payload D2-I04 không bật cờ `possible_injection`.
+- **Detector là regex:** payload D2-I04 không bật cờ `possible_injection`. Trên payload chuẩn của demo
+  (`src/sqlguard/lab/scenarios.py`, role `operator`): N-I1 bị gắn cờ vì nêu tên tool và tên cột; N-I2
+  (sửa số tiền) và N-I3 (exfiltration qua ảnh) viết như ghi chú nghiệp vụ nên **lọt**
+  (`test_naive_scenarios.py`). Phòng thủ của SQLGuard không dựa vào detector.
+- **MCP server (T22):** dòng kết quả, kể cả note, tới LLM của client MCP mà không bọc untrusted.
 - **Chế độ chỉ tổng hợp không có lớp DB độc lập:** authorizer chỉ thấy (bảng, cột), không biết cột
   nằm trong hàm tổng hợp.
 - **Chưa có giới hạn theo dòng;** k = 5 chưa duyệt; chưa chống complementary suppression, truy vấn
