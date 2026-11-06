@@ -25,7 +25,8 @@ from fastapi import Query as FastAPIQuery
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from sqlguard.lab.naive_guard import naive_demo_from_env
+from sqlguard.lab.naive_guard import NaiveDemoConfig, NaiveDemoError, naive_demo_from_env
+from sqlguard.lab.scenarios import SCENARIOS
 from sqlguard.observability.events import (
     DEFAULT_HISTORY_LIMIT,
     MAX_HISTORY_LIMIT,
@@ -58,6 +59,7 @@ from sqlguard.web.database import (
     resolve_db_path,
 )
 from sqlguard.web.lab import LabRunGuard, lab_http_error, lab_revisions
+from sqlguard.web.naive_compare import compare_payload, naive_model, run_naive
 from sqlguard.web.query_service import (
     BusinessSqlDenied,
     WebQueryConfigurationError,
@@ -78,6 +80,37 @@ STATIC_DIR = Path(__file__).parent / "static"
 MAX_BODY_BYTES = 64_000  # Câu hỏi/SQL đều ngắn; chặn body quá lớn.
 MAX_TEXT_LENGTH = 5_000
 MAX_TRACKED_RUNS = 1_000  # run_id -> username, để một user không đọc được stream của user khác.
+
+# Mã lỗi cấu hình Query Web -> thông báo an toàn (không nêu đường dẫn hay lỗi SQLite).
+QUERY_CONFIG_MESSAGES = {
+    "synthetic_database_path_missing": "Chưa cấu hình database SQLite tổng hợp cho Query Web.",
+    "synthetic_database_missing": "Không tìm thấy database SQLite tổng hợp đã cấu hình.",
+    "business_database_not_ready": "Database nghiệp vụ chưa sẵn sàng.",
+    "query_sqlite_schema_mismatch": "Database không khớp schema đã duyệt.",
+    "planner_configuration_invalid": "Cấu hình planner LLM không hợp lệ.",
+    "query_runtime_unavailable": "Query runtime chưa sẵn sàng.",
+    "query_role_missing": "Query runtime thiếu role tin cậy.",
+    "query_unknown_role": "Role runtime không được policy cho phép.",
+    "query_sqlite_path_missing": "Query runtime thiếu đường dẫn SQLite.",
+    "query_sqlite_db_missing": "Không tìm thấy SQLite database đã cấu hình.",
+    "query_sqlite_db_unavailable": "Không thể mở SQLite database đã cấu hình.",
+    "schema_sqlite_path_missing": "Schema runtime thiếu đường dẫn SQLite.",
+    "schema_sqlite_db_missing": "Không tìm thấy SQLite database cho schema.",
+    "schema_sqlite_db_unavailable": "Không thể mở SQLite database cho schema.",
+    "schema_sqlite_error": "Không thể đọc schema SQLite đã cấu hình.",
+    "schema_empty": "SQLite database không có schema được policy hỗ trợ.",
+    "schema_unknown_role": "Role schema không được policy cho phép.",
+}
+
+
+def query_config_message(category: str, *, business: bool) -> str:
+    if category == "synthetic_mode_requires_ollama":
+        return (
+            "Truy vấn nghiệp vụ yêu cầu SQLGUARD_PLANNER=ollama hoặc gemini."
+            if business
+            else "Chế độ SQLite tổng hợp yêu cầu SQLGUARD_PLANNER=ollama hoặc gemini."
+        )
+    return QUERY_CONFIG_MESSAGES.get(category, "Query Web chưa sẵn sàng theo cấu hình hiện tại.")
 
 
 def _sse_message(event_name: str, data: dict) -> str:
@@ -109,7 +142,8 @@ def create_app(db_path: Path | None = None) -> FastAPI:
     )
     # Naive demo (cố tình không an toàn, chỉ cho seminar): tắt mặc định; bật thì bắt buộc có
     # Attack Lab trên bản sao lab, sai cấu hình thì NaiveDemoError làm app không khởi động.
-    app.state.naive_demo = naive_demo_from_env(lab=lab)
+    naive_demo: NaiveDemoConfig | None = naive_demo_from_env(lab=lab)
+    app.state.naive_demo = naive_demo
 
     # ---------- Hàm tiện ích dùng chung ----------
 
@@ -168,6 +202,8 @@ def create_app(db_path: Path | None = None) -> FastAPI:
             "data_access": has_data_access(user),
             # Chỉ admin thấy trang Attack Lab, và chỉ khi lab đã bật ở server.
             "lab_enabled": lab is not None and user.role == ADMIN_ROLE,
+            # Trang so sánh naive agent / SQLGuard: chỉ admin, chỉ khi server bật naive demo.
+            "naive_demo_enabled": naive_demo is not None and user.role == ADMIN_ROLE,
         }
 
     async def read_json(request: Request) -> dict:
@@ -564,34 +600,7 @@ def create_app(db_path: Path | None = None) -> FastAPI:
         except DatabaseUnavailable as error:
             raise HTTPException(503, str(error)) from None
         except WebQueryConfigurationError as error:
-            safe_detail = {
-                "synthetic_database_path_missing": (
-                    "Chưa cấu hình database SQLite tổng hợp cho Query Web."
-                ),
-                "synthetic_database_missing": (
-                    "Không tìm thấy database SQLite tổng hợp đã cấu hình."
-                ),
-                "synthetic_mode_requires_ollama": (
-                    "Chế độ SQLite tổng hợp yêu cầu SQLGUARD_PLANNER=ollama hoặc gemini."
-                    if user.role not in BUSINESS_ROLES
-                    else "Truy vấn nghiệp vụ yêu cầu SQLGUARD_PLANNER=ollama hoặc gemini."
-                ),
-                "business_database_not_ready": "Database nghiệp vụ chưa sẵn sàng.",
-                "query_sqlite_schema_mismatch": "Database không khớp schema đã duyệt.",
-                "planner_configuration_invalid": "Cấu hình planner LLM không hợp lệ.",
-                "query_runtime_unavailable": "Query runtime chưa sẵn sàng.",
-                "query_role_missing": "Query runtime thiếu role tin cậy.",
-                "query_unknown_role": "Role runtime không được policy cho phép.",
-                "query_sqlite_path_missing": "Query runtime thiếu đường dẫn SQLite.",
-                "query_sqlite_db_missing": "Không tìm thấy SQLite database đã cấu hình.",
-                "query_sqlite_db_unavailable": "Không thể mở SQLite database đã cấu hình.",
-                "schema_sqlite_path_missing": "Schema runtime thiếu đường dẫn SQLite.",
-                "schema_sqlite_db_missing": "Không tìm thấy SQLite database cho schema.",
-                "schema_sqlite_db_unavailable": "Không thể mở SQLite database cho schema.",
-                "schema_sqlite_error": "Không thể đọc schema SQLite đã cấu hình.",
-                "schema_empty": "SQLite database không có schema được policy hỗ trợ.",
-                "schema_unknown_role": "Role schema không được policy cho phép.",
-            }.get(error.category, "Query Web chưa sẵn sàng theo cấu hình hiện tại.")
+            safe_detail = query_config_message(error.category, business=user.role in BUSINESS_ROLES)
             raise HTTPException(503, safe_detail) from None
         finally:
             if run_id is not None:
@@ -669,6 +678,54 @@ def create_app(db_path: Path | None = None) -> FastAPI:
         except LabError as error:
             raise lab_failure(error) from None
         return asdict(revision)
+
+    # ---------- Naive demo: so sánh naive agent với SQLGuard (chỉ admin) ----------
+    # Cố tình không an toàn, chỉ cho seminar; xem docs/threat-model/NAIVE_AGENT_DEMO.md.
+
+    def naive_or_404() -> NaiveDemoConfig:
+        if naive_demo is None:
+            raise HTTPException(404, "Naive demo đang tắt.")
+        return naive_demo
+
+    @app.get("/api/lab/compare/scenarios")
+    def compare_scenarios(user: User = Depends(require_admin)):
+        config = naive_or_404()
+        targets = lab.targets if lab is not None else []
+        return {
+            "naive_model": config.model,
+            "roles": sorted(BUSINESS_ROLES),
+            "scenarios": [scenario.to_payload(targets) for scenario in SCENARIOS],
+        }
+
+    @app.post("/api/lab/compare")
+    async def compare(request: Request, user: User = Depends(require_admin)):
+        """Cùng câu hỏi, cùng role, cùng bản sao lab: SQLGuard trước, naive agent sau.
+
+        Chạy tuần tự trong ``lab_guard.run()`` nên lab không ghi được giữa hai bên. Kết quả naive
+        không được ghi vào history/audit.
+        """
+        config = naive_or_404()
+        payload = await read_json(request)
+        question = text_field(payload, "question")
+        role = payload.get("role")
+        if not isinstance(role, str) or role not in BUSINESS_ROLES:
+            raise HTTPException(422, "role phải là một role nghiệp vụ")
+        try:
+            model = naive_model(config, question)
+        except ValueError:
+            raise HTTPException(503, "Cấu hình model của naive demo không hợp lệ.") from None
+        try:
+            async with lab_guard.run():
+                revisions = lab_revisions(lab)
+                guarded = await answer_business_question(question, role, user_id=user.username)
+                naive = await run_naive(config, question, role, model=model)
+        except NaiveDemoError:
+            raise HTTPException(503, "Bản sao lab của naive demo không còn hợp lệ.") from None
+        except DatabaseUnavailable as error:
+            raise HTTPException(503, str(error)) from None
+        except WebQueryConfigurationError as error:
+            raise HTTPException(503, query_config_message(error.category, business=True)) from None
+        return compare_payload(config, role, guarded, naive, revisions)
 
     # ---------- Gắn console Evaluation đã có vào /evaluation/ ----------
 

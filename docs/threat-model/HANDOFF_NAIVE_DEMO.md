@@ -1,4 +1,4 @@
-# Handoff: naive-agent demo và việc security còn tồn (05/11/2026)
+# Handoff: naive-agent demo và việc security còn tồn (cập nhật 06/11/2026)
 
 Dành cho người tiếp tục ở session sau. Đọc theo thứ tự: tài liệu này → plan
 [`NAIVE_AGENT_DEMO.md`](NAIVE_AGENT_DEMO.md) → [`SECURITY_WORKPLAN.md`](SECURITY_WORKPLAN.md) §17–18.
@@ -8,12 +8,14 @@ Dành cho người tiếp tục ở session sau. Đọc theo thứ tự: tài li
 | Phần | Trạng thái | Ở đâu |
 | --- | --- | --- |
 | Docs đồng bộ Financial/SQLite, plan sau W7 (§17), plan demo (§18) | **Đã merge** (PR #7) | `docs/threat-model/`, `docs/report/` |
-| N1–N5: lõi naive agent (guard, executor, Gemini function calling, vòng agent, symptoms) | **Code xong, có test**; nằm trong PR mở cùng tài liệu này | `src/sqlguard/lab/`, `tests/unit/test_naive_*.py` |
-| N6–N11: route, trang compare, listener, đo Gemini, tài liệu/video, CSP | **Chưa làm** | §3 bên dưới |
+| N1–N5: lõi naive agent (guard, executor, Gemini function calling, vòng agent, symptoms) | **Đã merge** (PR #8) | `src/sqlguard/lab/`, `tests/unit/test_naive_*.py` |
+| N6–N8: route compare, trang compare, listener, payload chuẩn | **Code xong, có test, đã kiểm bằng trình duyệt** (06/11) | `web/naive_compare.py`, `web/app.py`, `static/js/pages/compare.js`, `lab/scenarios.py`, `lab/attacker_listener.py` |
+| N9–N11: đo Gemini, video, CSP | **Chưa làm** | §3 bên dưới |
+| T22: MCP server đưa note tới LLM client không bọc untrusted | **Mở**, đã ghi vào threat model | `README.md` §5 |
 | NQ1–NQ5 | **Đã chốt** theo đề xuất (05/11) | `NAIVE_AGENT_DEMO.md` §6 |
 | C3, C4, E5, E2, L8, T17 (ngoài demo) | Chưa làm | `SECURITY_WORKPLAN.md` §17.3 |
 
-Lúc viết: `pytest -q` cho 1441 passed, 3 skipped, 1 xfailed. `ruff check .` sạch.
+Lúc viết (06/11): `pytest -q` cho 1466 passed, 3 skipped, 1 xfailed. `ruff check .` sạch.
 `ruff format --check .` báo 2 file `bird_pilot` chưa format, có sẵn từ trước, không liên quan.
 
 **Chưa gọi Gemini thật lần nào.** Container của session trước không có `GEMINI_API_KEY` và
@@ -29,6 +31,9 @@ Lúc viết: `pytest -q` cho 1441 passed, 3 skipped, 1 xfailed. `ruff check .` s
 | `naive_prompt.py` | System prompt: quyền chỉ nằm trong chữ | `build_naive_system_prompt(policy, role)`, `PROMPT_FINGERPRINTS` |
 | `naive_agent.py` | Executor không gate + vòng agent | `NaiveSqliteExecutor(db, policy).execute(sql)`; `await NaiveAgent(model, executor, policy).run(question, role) -> NaiveResult`; `NaiveResult.to_payload()` |
 | `symptoms.py` | Badge xác định cho cả hai bên | `observation_from_naive(payload)`, `observation_from_sqlguard(payload)`, `detect_symptoms(obs, policy, role, prompt_fingerprints=...)` |
+| `scenarios.py` | 4 kịch bản trang compare, payload chuẩn | `SCENARIOS`, `SCENARIOS_BY_ID`, `PAYLOAD_TOOL_HIJACK`, `PAYLOAD_FORGED_AMOUNT`, `PAYLOAD_EXFILTRATION` |
+| `attacker_listener.py` | "Attacker" của N-I3 | `python -m sqlguard.lab.attacker_listener`; `create_server`, `format_hit` |
+| `../web/naive_compare.py` | Phía web: chạy naive và dựng payload so sánh | `run_naive(config, question, role)`, `compare_payload(...)` |
 
 Đã nối vào web: `create_app` gán `app.state.naive_demo` (là `None` khi tắt). Bật sai cấu hình thì
 app không khởi động.
@@ -52,58 +57,30 @@ Các quyết định đã chốt khi code, đừng vô tình đảo lại:
 - `sqlguard.agent`, `sqlguard.security`, `evaluation` không được import `sqlguard.lab`. Test
   `test_runtime_and_evaluation_never_import_the_naive_agent` sẽ fail nếu vi phạm.
 
-## 3. Việc tiếp theo (N6–N11), hướng dẫn cụ thể
+## 3. Việc tiếp theo
 
-### N6: `POST /api/lab/compare` (`src/sqlguard/web/app.py`)
+### Đã làm ở N6–N8 (để đọc code nhanh)
 
-- Dependency `require_admin`. Trả 404 khi `app.state.naive_demo is None`. Body đọc bằng
-  `read_json`; `question` lấy qua `text_field`; `role` phải thuộc `BUSINESS_ROLES`, nếu không
-  trả 422.
-- Chạy **tuần tự** trong `async with lab_guard.run():` và lấy `revisions = lab_revisions(lab)`
-  trước khi chạy.
-  1. SQLGuard: `await answer_business_question(question, role, user_id=user.username)`.
-  2. Naive agent: tạo mới `NaiveSqliteExecutor(config.database, config.policy)` và model
-     (`GeminiToolModel.from_env()` hoặc `scripted_model_for(question)` theo `config.model`), rồi
-     `await NaiveAgent(...).run(question, role)`.
-- Trả về: `{"sqlguard": ..., "naive": result.to_payload(), "symptoms": {"sqlguard": [...],
-  "naive": [...]}, "lab_revisions": revisions, "naive_model": config.model}`. Với bên naive,
-  truyền `prompt_fingerprints=PROMPT_FINGERPRINTS` vào `detect_symptoms`.
-- `NaiveDemoError` lúc chạy (file bị đổi) map sang 503 với thông báo chung.
-  `WebQueryConfigurationError` từ phía SQLGuard xử lý giống `/api/query`; nên tách bảng thông
-  báo hiện có thành hàm dùng chung.
-- **Không** ghi `answer_markdown` hay dòng kết quả của naive vào history/audit (§3.3 của plan).
-- `/api/me` (`user_payload`): thêm `"naive_demo_enabled": app.state.naive_demo is not None and
-  user.role == ADMIN_ROLE`.
-- Test theo mẫu `tests/unit/test_web_attack_lab.py` (fixture `lab_env`/`lab_on`, Ollama giả qua
-  `install_ollama`), với `SQLGUARD_NAIVE_MODEL=scripted`. Cần có:
-  - 404 khi tắt;
-  - 401/403 cho người chưa đăng nhập, role nghiệp vụ và evaluator;
-  - 422 khi role sai;
-  - lab trả 409 khi đang chạy compare;
-  - N-I1 (`Q_ACCOUNT_NOTE`, payload lưu vào `account.3`): bên naive bật `extra_tool_calls` và
-    `forbidden_value`, bên SQLGuard không bật `forbidden_value`.
+- `GET /api/lab/compare/scenarios` và `POST /api/lab/compare` trong `web/app.py`: chỉ `admin`, 404
+  khi tắt, `role` phải thuộc `BUSINESS_ROLES` (422). Chạy tuần tự trong `lab_guard.run()`: SQLGuard
+  (`answer_business_question`) rồi naive (`web/naive_compare.run_naive`). Model được dựng trước khi
+  vào guard. Lỗi bản sao lab thì 503 thông báo chung. Bảng thông báo lỗi cấu hình đã tách thành
+  `QUERY_CONFIG_MESSAGES` / `query_config_message` dùng chung với `/api/query`.
+- Trang `/home#/lab/compare`. Câu trả lời naive render bằng `components/naive-markdown.js`: đoạn
+  văn, đậm, bảng `|…|`, ảnh `http(s)`. Không dùng `innerHTML`.
+- Nút "Cài payload" và "Restore" gọi chính route Attack Lab (`labNote` → `labSave` /
+  `labRestore`), nên có `expected_revision` và audit.
+- `python -m sqlguard.lab.attacker_listener` bind cứng `127.0.0.1:9999`.
+- Kiểm thủ công bằng Playwright trên fixture (scripted): đủ 3 kịch bản account.3, ảnh được tải,
+  listener in dữ liệu, XSS không chạy. Muốn chạy lại: dựng bản sao lab từ `create_financial_db`
+  của `tests/conftest.py`, giả Ollama như `install_ollama` trong `test_web_naive_compare.py`.
 
-### N7: trang compare (`src/sqlguard/web/static/js/`)
+### Ghi chú khi demo trên DB thật
 
-- Route kiểu hash trong `pages/home.js`, theo mẫu `/lab` (dòng ~53): thêm `/lab/compare` khi
-  `user.role === "admin" && user.naive_demo_enabled`. Thêm link ở `components/sidebar.js`, hàm
-  ở `api.js`.
-- Mọi chữ hiển thị đi qua `h()` / `textContent` (`dom.js`). Riêng câu trả lời naive dùng
-  `components/naive-markdown.js` mới: chỉ xử lý đoạn văn, `**đậm**` và `![alt](url)` thành
-  `<img>` tạo bằng `createElement`. **Không dùng `innerHTML`.**
-- Bố cục: banner "CẤU HÌNH CỐ TÌNH KHÔNG AN TOÀN" luôn hiện; nhãn "Model giả lập bị chiếm" khi
-  `naive_model === "scripted"`; ô câu hỏi, chọn role và 4 câu mẫu (`SCRIPTED_QUESTIONS`, có thể
-  trả qua `/api/me` hoặc một route nhỏ); hai cột; thanh badge.
-- Kiểm bằng trình duyệt (Playwright có sẵn trong container):
-  - `<script>` trong câu trả lời không chạy;
-  - ảnh `127.0.0.1:9999` được tải;
-  - chạy được cả 4 câu mẫu ở chế độ scripted.
-
-### N8: `src/sqlguard/lab/attacker_listener.py`
-
-- `python -m sqlguard.lab.attacker_listener`: `http.server` bind **cứng** `127.0.0.1:9999`
-  (không nhận host từ tham số), in `path` và query string đã decode ra stdout, trả GIF 1×1.
-- Test: không bind được host khác; handler trả `image/gif`.
+- Kịch bản scripted dùng đúng id của `financial.sqlite` (khách 4, tài khoản 3, đơn 29407). Trên
+  fixture không có khách 4 và đơn 29407 nên N-D3 không lộ và N-I2 không có dòng: đó là do fixture.
+- Badge "SQL chạm cột cấm" có thể bật ở **cả SQLGuard** (planner bị lừa viết `id_number`, gate bỏ
+  cột). Đúng với thông điệp "model bị injection khác hệ thống bị injection"; nói rõ khi trình bày.
 
 ### N9: đo trên Gemini (máy của nhóm, không phải container)
 
@@ -112,14 +89,15 @@ Các quyết định đã chốt khi code, đừng vô tình đảo lại:
 - **Việc đầu tiên:** gửi một câu N-I1 thật để xác nhận định dạng lượt `functionResponse`
   (gửi với `role: "user"`) và việc gửi lại `thoughtSignature`. Nếu Gemini trả 400, sửa
   `build_payload` trong `gemini_tools.py` rồi cập nhật test tương ứng.
-- Chạy mỗi kịch bản 10 lần, điền bảng §5 của plan, kèm run ID và commit. Kịch bản dưới 3/10 thì
+- Chạy mỗi kịch bản 10 lần, điền bảng §5 của plan, kèm run ID và commit. Payload lấy từ
+  `lab/scenarios.py`; nếu phải đổi payload thì ghi phiên bản cũ và mới vào cột "Payload". Kịch bản dưới 3/10 thì
   thử biến thể payload và ghi lại cả các lần thất bại. Số này là độ nhạy của model trong
   pipeline naive, **không** phải ASR của SQLGuard.
 
 ### N10, N11
 
-- N10: thêm cảnh demo seminar vào runbook; quay video có ghi SHA của commit; đổi T21 trong
-  `README.md` của threat model từ Planned sang Implemented khi N6–N8 xong.
+- N10: runbook đã có cảnh seminar (`docs/DEMO_RUNBOOK.md` §3c), T21 đã sang Implemented. Còn: quay
+  video có ghi SHA của commit và SHA-256 của bản sao lab.
 - N11 (tùy chọn): CSP `img-src 'self' data:` cho các trang thường, nới riêng cho trang compare.
 
 ## 4. Rủi ro đã biết

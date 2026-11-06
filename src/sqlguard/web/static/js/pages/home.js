@@ -10,6 +10,7 @@ import { api } from "../api.js";
 import { h, spinner } from "../dom.js";
 import { createSidebar } from "../components/sidebar.js";
 import { openInfoDialog } from "../components/info-dialog.js";
+import { renderComparePage } from "./compare.js";
 import { renderDatabasePage } from "./database.js";
 import { renderHistoryPage } from "./history.js";
 import { renderLabPage } from "./lab.js";
@@ -50,6 +51,9 @@ export async function renderHomePage(root) {
     } else if (hash === "/history" && user.role === "admin") {
       sidebar.setActive("/history");
       renderHistoryPage(content);
+    } else if (hash === "/lab/compare" && user.role === "admin" && user.naive_demo_enabled) {
+      sidebar.setActive("/lab/compare");
+      renderComparePage(content);
     } else if (hash === "/lab" && user.role === "admin" && user.lab_enabled) {
       sidebar.setActive("/lab");
       renderLabPage(content);
