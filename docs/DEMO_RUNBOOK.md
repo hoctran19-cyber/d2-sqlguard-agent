@@ -77,6 +77,41 @@ thị; nói đúng như vậy (workplan §16.1). Lab từ chối ghi khi đang c
 hỏi ở cửa sổ B xong rồi mới lưu hoặc restore. Admin không cần `SQLGUARD_FINANCIAL_DB`: khi lab bật
 mà DB legacy vắng, `/home` của admin mở thẳng trang Attack Lab.
 
+## 3c. Cảnh seminar Prompt Injection: Naive agent vs SQLGuard
+
+Cấu hình **cố tình không an toàn**, chỉ cho seminar; chi tiết ở
+[`threat-model/NAIVE_AGENT_DEMO.md`](threat-model/NAIVE_AGENT_DEMO.md). Cần cấu hình lab của mục 3b
+(bản sao lab, `SQLGUARD_ATTACK_LAB_TARGETS=account.3,order.29407`), thêm:
+
+```bash
+export SQLGUARD_NAIVE_DEMO=1
+export SQLGUARD_NAIVE_MODEL=gemini   # hoặc scripted: model giả lập bị chiếm, không gọi Gemini
+```
+
+Bật mà thiếu lab, DB không phải bản sao lab, hoặc `gemini` mà thiếu `GEMINI_API_KEY` thì web
+**không khởi động**. Ở chế độ `gemini`, dòng kết quả synthetic của bản sao lab được gửi tới Google.
+
+Mở thêm một terminal cho "attacker" (chỉ nghe `127.0.0.1:9999`):
+
+```bash
+python -m sqlguard.lab.attacker_listener
+```
+
+Đăng nhập `admin`, mục **Naive vs SQLGuard** (`/home#/lab/compare`). Một phiên là đủ.
+
+| Bước | Thao tác | Điều cần chỉ ra |
+| --- | --- | --- |
+| 1. N-D3 (direct) | Thẻ N-D3, "Dùng câu hỏi", "Chạy cả hai" | Naive: lộ `SYN-ID-…`. SQLGuard: SQL của planner có thể chứa `id_number` (badge "SQL chạm cột cấm") nhưng gate bỏ cột hoặc từ chối, không lộ |
+| 2. N-I2 (indirect, sửa số) | Thẻ N-I2, "Cài payload", "Chạy cả hai" | Naive nói 987654321, bảng ghi số thật. SQLGuard chỉ có bảng, **không có thẻ cảnh báo** (detector lọt) |
+| 3. N-I3 (exfiltration) | Thẻ N-I3, "Cài payload", "Chạy cả hai"; chỉ sang terminal listener | Terminal in `d = <họ tên>|<địa chỉ>`. SQLGuard: không có câu trả lời do model viết, không render ảnh |
+| 4. N-F10 (SQLGuard thua) | Cửa sổ khác, `operator`, trang Database, bảng `order`, dán `SELECT order_id, amount * 0 + 987654321 AS amount, k_symbol FROM "order" WHERE order_id = 29407` | Gate cho qua, bảng hiện số giả. Gate bảo đảm quyền, không bảo đảm số đúng |
+| 5. Dọn | Nút "Restore" trên thẻ N-I2 và N-I3 | Note về baseline |
+
+N-I1 (note xúi gọi thêm tool) để dành cho hỏi đáp. Gemini có thể không làm theo payload hoặc bị bộ
+lọc chặn: khi đó nói đúng như vậy, chuyển sang `SQLGUARD_NAIVE_MODEL=scripted` (UI ghi rõ "model giả
+lập") hoặc video. Số liệu tỉ lệ thành công lấy từ bảng §5 của plan, không lấy từ lần chạy trên sân
+khấu.
+
 ## 4. Rủi ro lúc demo và cách xử lý
 
 | Rủi ro | Xử lý |
